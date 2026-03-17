@@ -261,6 +261,7 @@ export class AudioEngine {
   }
 
   // Prepare a track's temp WAV file for playback (write to disk).
+  // Writes a stereo WAV with pan baked in (equal-power panning law).
   // Returns the temp path, or null if the track has nothing to play.
   async prepareTrackWav(
     track: Track,
@@ -270,7 +271,7 @@ export class AudioEngine {
     const tempPath = `/tmp/tuidaw_play_${track.id}.wav`
     const offsetSamples = track.samples.subarray(startSample)
     if (offsetSamples.length === 0) return null
-    await this.writeWav(tempPath, offsetSamples, track.sampleRate)
+    await this.writeStereoWav(tempPath, offsetSamples, track.sampleRate, track.pan)
     return tempPath
   }
 
@@ -280,10 +281,12 @@ export class AudioEngine {
     trackId: string,
     wavPath: string,
     targetDeviceId?: number | null,
+    volume: number = 1,
   ): void {
     const cmd = [
       "pw-play",
       "--latency", LATENCY,
+      "--volume", String(Math.max(0, Math.min(1, volume)).toFixed(3)),
     ]
     if (targetDeviceId != null) {
       cmd.push("--target", String(targetDeviceId))
@@ -299,7 +302,7 @@ export class AudioEngine {
   }
 
   // Play a track's audio using pw-play (optionally targeting a specific sink).
-  // Convenience wrapper: prepares WAV + spawns player.
+  // Convenience wrapper: prepares WAV (with pan) + spawns player (with volume).
   async playTrack(
     track: Track,
     startSample: number = 0,
@@ -307,7 +310,18 @@ export class AudioEngine {
   ): Promise<void> {
     const wavPath = await this.prepareTrackWav(track, startSample)
     if (!wavPath) return
-    this.spawnTrackPlayer(track.id, wavPath, targetDeviceId)
+    this.spawnTrackPlayer(track.id, wavPath, targetDeviceId, track.volume)
+  }
+
+  // Restart a single track's playback with updated volume/pan.
+  // Kills the current pw-play, rewrites the WAV with new pan, respawns with new volume.
+  async restartTrackPlayback(
+    track: Track,
+    currentSample: number,
+    targetDeviceId?: number | null,
+  ): Promise<void> {
+    this.stopTrackPlayback(track.id)
+    await this.playTrack(track, currentSample, targetDeviceId)
   }
 
   // Mark the engine as "playing" and record the wall-clock start time.
@@ -325,16 +339,17 @@ export class AudioEngine {
   async playAll(state: ProjectState): Promise<void> {
     // Phase 1: prepare all WAV files in parallel
     const hasSolo = state.tracks.some((t) => t.solo)
-    const preparations: { trackId: string; wavPath: string }[] = []
+    const preparations: { trackId: string; wavPath: string; volume: number }[] = []
 
     const prepPromises: Promise<void>[] = []
     for (const track of state.tracks) {
       if (track.muted || !track.samples || track.samples.length === 0) continue
       if (hasSolo && !track.solo) continue
 
+      const trackVolume = track.volume
       prepPromises.push(
         this.prepareTrackWav(track, state.playheadPosition).then((path) => {
-          if (path) preparations.push({ trackId: track.id, wavPath: path })
+          if (path) preparations.push({ trackId: track.id, wavPath: path, volume: trackVolume })
         }),
       )
     }
@@ -353,8 +368,8 @@ export class AudioEngine {
     // Phase 2: spawn all processes back-to-back (no awaits between spawns)
     this.markTransportStart()
 
-    for (const { trackId, wavPath } of preparations) {
-      this.spawnTrackPlayer(trackId, wavPath, state.outputDeviceId)
+    for (const { trackId, wavPath, volume } of preparations) {
+      this.spawnTrackPlayer(trackId, wavPath, state.outputDeviceId, volume)
     }
 
     if (clickWavPath) {
@@ -532,6 +547,47 @@ export class AudioEngine {
     header.writeUInt16LE(blockAlign, 32)
     header.writeUInt16LE(bitsPerSample, 34)
     // data chunk
+    header.write("data", 36)
+    header.writeUInt32LE(dataSize, 40)
+
+    const wavBuffer = Buffer.concat([header, pcmData])
+    await Bun.write(filePath, wavBuffer)
+  }
+
+  // Write a stereo WAV file from mono Float32 samples with pan applied.
+  // Uses equal-power panning law: pan=-1 → full left, pan=0 → center, pan=1 → full right
+  async writeStereoWav(filePath: string, samples: Float32Array, sampleRate: number, pan: number = 0): Promise<void> {
+    const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
+    const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
+
+    const numChannels = 2
+    const bitsPerSample = 16
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
+    const blockAlign = numChannels * (bitsPerSample / 8)
+
+    // Interleave stereo samples: L, R, L, R, ...
+    const pcmData = Buffer.alloc(samples.length * numChannels * BYTES_PER_SAMPLE)
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]))
+      const left = Math.round(s * leftGain * 32767)
+      const right = Math.round(s * rightGain * 32767)
+      pcmData.writeInt16LE(Math.max(-32768, Math.min(32767, left)), i * 4)
+      pcmData.writeInt16LE(Math.max(-32768, Math.min(32767, right)), i * 4 + 2)
+    }
+
+    const dataSize = pcmData.length
+    const header = Buffer.alloc(44)
+    header.write("RIFF", 0)
+    header.writeUInt32LE(36 + dataSize, 4)
+    header.write("WAVE", 8)
+    header.write("fmt ", 12)
+    header.writeUInt32LE(16, 16)
+    header.writeUInt16LE(1, 20) // PCM format
+    header.writeUInt16LE(numChannels, 22)
+    header.writeUInt32LE(sampleRate, 24)
+    header.writeUInt32LE(byteRate, 28)
+    header.writeUInt16LE(blockAlign, 32)
+    header.writeUInt16LE(bitsPerSample, 34)
     header.write("data", 36)
     header.writeUInt32LE(dataSize, 40)
 

@@ -160,8 +160,8 @@ export class UIRenderer {
 
   setupMouseHandlers(callbacks: {
     onScrollChange: (deltaSamples: number) => void
-    onVolumeChange: (trackIndex: number, delta: number) => void
-    onPanChange: (trackIndex: number, delta: number) => void
+    onVolumeChange: (delta: number) => void
+    onPanChange: (delta: number) => void
   }): void {
     // Main area: mouse wheel scrolls the timeline horizontally
     this.mainFB.onMouseScroll = (event: MouseEvent) => {
@@ -175,36 +175,27 @@ export class UIRenderer {
       }
     }
 
-    // Sidebar: mouse wheel over track rows adjusts volume or pan
-    // Layout per track row (TRACK_ROW_HEIGHT=4, starting at y=1):
-    //   Row 0: color dot + name + input device label
-    //   Row 1: M(1-2) S(4-5) R(7-8) V:xx%(11-16)
-    //   Row 2: level meter / input device
-    //   Row 3: separator
-    //
-    // Volume zone: x >= 10 (the V:xx% area and beyond)
-    // Pan zone:    we'll put pan display at x >= 17 on row 1
-    // If x < 10 on row 1, or any other row → volume control
+    // Sidebar: mouse wheel adjusts volume or pan on the SELECTED track
+    // Pan zone: row 1 of any track row, x >= 17
+    // Volume zone: everything else in sidebar
     this.sidebarFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
       const dir = event.scroll.direction
       const delta = (dir === "up" || dir === "left") ? 1 : -1
 
-      // Determine which track row the cursor is in
-      // Track rows start at y=1 (y=0 is "TRACKS" header)
+      // Determine row within track to distinguish volume vs pan zone
       const trackY = event.y - 1
       if (trackY < 0) return
-      const trackIndex = Math.floor(trackY / TRACK_ROW_HEIGHT)
       const rowInTrack = trackY % TRACK_ROW_HEIGHT
 
       // Pan control: row 1, x >= 17 (where pan indicator is drawn)
       if (rowInTrack === 1 && event.x >= 17) {
-        callbacks.onPanChange(trackIndex, delta * 0.05)
+        callbacks.onPanChange(delta * 0.05)
         return
       }
 
-      // Volume control: everything else within the track row
-      callbacks.onVolumeChange(trackIndex, delta * 0.05)
+      // Volume control: everything else within the sidebar
+      callbacks.onVolumeChange(delta * 0.05)
     }
   }
 

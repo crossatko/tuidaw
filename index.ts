@@ -49,16 +49,24 @@ async function main() {
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * scrollAmount)
       render()
     },
-    onVolumeChange: (trackIndex: number, delta: number) => {
-      const track = state.tracks[trackIndex]
+    onVolumeChange: async (delta: number) => {
+      const track = getSelectedTrack(state)
       if (!track) return
       track.volume = Math.max(0, Math.min(1, track.volume + delta))
+      if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
+        const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+        await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+      }
       render()
     },
-    onPanChange: (trackIndex: number, delta: number) => {
-      const track = state.tracks[trackIndex]
+    onPanChange: async (delta: number) => {
+      const track = getSelectedTrack(state)
       if (!track) return
       track.pan = Math.max(-1, Math.min(1, Math.round((track.pan + delta) * 100) / 100))
+      if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
+        const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+        await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+      }
       render()
     },
   })
@@ -734,6 +742,10 @@ async function main() {
       const track = getSelectedTrack(state)
       if (track) {
         track.volume = Math.min(1, track.volume + 0.05)
+        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
+          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+        }
         render()
       }
       return
@@ -744,6 +756,10 @@ async function main() {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
+        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
+          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+        }
         render()
       }
       return
@@ -754,6 +770,10 @@ async function main() {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
+        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
+          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+        }
         render()
       }
       return
