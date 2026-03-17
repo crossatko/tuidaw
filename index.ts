@@ -54,8 +54,7 @@ async function main() {
       if (!track) return
       track.volume = Math.max(0, Math.min(1, track.volume + delta))
       if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-        const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-        await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+        audioEngine.setTrackVolume(track.id, track.volume)
       }
       render()
     },
@@ -65,7 +64,7 @@ async function main() {
       track.pan = Math.max(-1, Math.min(1, Math.round((track.pan + delta) * 100) / 100))
       if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
         const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-        await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+        await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
       }
       render()
     },
@@ -743,8 +742,7 @@ async function main() {
       if (track) {
         track.volume = Math.min(1, track.volume + 0.05)
         if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+          audioEngine.setTrackVolume(track.id, track.volume)
         }
         render()
       }
@@ -758,7 +756,7 @@ async function main() {
         track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
         if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
           const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+          await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
         }
         render()
       }
@@ -772,7 +770,7 @@ async function main() {
         track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
         if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
           const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-          await audioEngine.restartTrackPlayback(track, currentPos, state.outputDeviceId)
+          await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
         }
         render()
       }
