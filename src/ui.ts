@@ -162,6 +162,8 @@ export class UIRenderer {
     onScrollChange: (deltaSamples: number) => void
     onVolumeChange: (delta: number) => void
     onPanChange: (delta: number) => void
+    onTrackClick: (trackIndex: number) => void
+    onTimelineClick: (x: number, mainWidth: number) => void
   }): void {
     // Main area: mouse wheel scrolls the timeline horizontally
     this.mainFB.onMouseScroll = (event: MouseEvent) => {
@@ -196,6 +198,21 @@ export class UIRenderer {
 
       // Volume control: everything else within the sidebar
       callbacks.onVolumeChange(delta * 0.05)
+    }
+
+    // Sidebar: click to select track
+    this.sidebarFB.onMouseDown = (event: MouseEvent) => {
+      const trackY = event.y - 1
+      if (trackY < 0) return
+      const trackIndex = Math.floor(trackY / TRACK_ROW_HEIGHT)
+      callbacks.onTrackClick(trackIndex)
+    }
+
+    // Main area: click on timeline (row 0) to set playhead position
+    this.mainFB.onMouseDown = (event: MouseEvent) => {
+      if (event.y === 0) {
+        callbacks.onTimelineClick(event.x, this.mainFB.width)
+      }
     }
   }
 

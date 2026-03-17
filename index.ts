@@ -68,6 +68,21 @@ async function main() {
       }
       render()
     },
+    onTrackClick: (trackIndex: number) => {
+      if (trackIndex >= 0 && trackIndex < state.tracks.length) {
+        state.selectedTrackIndex = trackIndex
+        render()
+      }
+    },
+    onTimelineClick: (x: number, mainWidth: number) => {
+      if (state.transportState !== "stopped") return
+      // Same formula as ui.ts renderMainArea/renderTimeline
+      const samplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+      const samplesPerCol = samplesPerSubCol * 2
+      const samplePos = state.scrollOffset + x * samplesPerCol
+      state.playheadPosition = Math.max(0, samplePos)
+      render()
+    },
   })
 
   // Enumerate PipeWire devices at startup
