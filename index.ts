@@ -137,9 +137,28 @@ async function main() {
 
     // Update playhead position based on elapsed time
     renderer.requestLive()
-    playheadInterval = setInterval(() => {
+    let loopRestarting = false
+    playheadInterval = setInterval(async () => {
       const elapsed = audioEngine.getElapsedSamples()
       state.playheadPosition = transportStartPosition + elapsed
+
+      // Loop region: when playhead reaches loopEnd, wrap back to loopStart
+      if (state.loopStart !== null && state.loopEnd !== null && !loopRestarting) {
+        if (state.playheadPosition >= state.loopEnd) {
+          loopRestarting = true
+          // Wrap playhead to loop start
+          state.playheadPosition = state.loopStart
+          transportStartPosition = state.loopStart
+          // Kill current playback and restart from loop start
+          audioEngine.stopAllPlayback()
+          state.playheadPosition = state.loopStart
+          await audioEngine.playAll(state)
+          // Reset transport reference so elapsed time tracks from loop start
+          transportStartPosition = state.loopStart
+          loopRestarting = false
+        }
+      }
+
       autoScroll()
       render()
     }, 33) // ~30fps
@@ -588,6 +607,48 @@ async function main() {
         if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
       }
       state.playheadPosition = maxLen
+      render()
+      return
+    }
+
+    // P - Practice loop: 3-step cycle
+    //   1st press: set loop start at playhead
+    //   2nd press: set loop end at playhead (swaps if before start)
+    //   3rd press: clear loop region
+    if (key.name === "p") {
+      if (state.transportState !== "stopped") {
+        // During transport, P clears the loop
+        if (state.loopStart !== null && state.loopEnd !== null) {
+          state.loopStart = null
+          state.loopEnd = null
+          ui.showStatusMessage("Loop cleared")
+        }
+        render()
+        return
+      }
+      if (state.loopStart === null && state.loopEnd === null) {
+        // Step 1: set loop start
+        state.loopStart = state.playheadPosition
+        ui.showStatusMessage("Loop start set — move playhead, press P again for end")
+      } else if (state.loopStart !== null && state.loopEnd === null) {
+        // Step 2: set loop end
+        const a = state.loopStart
+        const b = state.playheadPosition
+        if (a === b) {
+          // Same position — cancel
+          state.loopStart = null
+          ui.showStatusMessage("Loop cancelled (start = end)")
+        } else {
+          state.loopStart = Math.min(a, b)
+          state.loopEnd = Math.max(a, b)
+          ui.showStatusMessage("Loop region set — press P to clear")
+        }
+      } else {
+        // Step 3: clear loop
+        state.loopStart = null
+        state.loopEnd = null
+        ui.showStatusMessage("Loop cleared")
+      }
       render()
       return
     }

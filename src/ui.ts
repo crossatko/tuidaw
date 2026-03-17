@@ -36,6 +36,7 @@ const FG_RED = RGBA.fromHex("#f7768e")
 const FG_YELLOW = RGBA.fromHex("#e0af68")
 const FG_ORANGE = RGBA.fromHex("#ff9e64")
 const PLAYHEAD_COLOR = RGBA.fromHex("#ff9e64")
+const LOOP_COLOR = RGBA.fromHex("#bb9af7") // purple for loop region
 const GRID_COLOR = RGBA.fromHex("#292e42")
 const TRANSPARENT = RGBA.fromValues(0, 0, 0, 0)
 
@@ -332,8 +333,18 @@ export class UIRenderer {
       fb.drawText(" click ", clickX, 1, FG_DIM, BG_TOPBAR)
     }
 
+    // Loop indicator
+    const loopX = clickX + 8
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      fb.drawText(" LOOP ", loopX, 1, RGBA.fromHex("#1a1b26"), LOOP_COLOR)
+    } else if (state.loopStart !== null) {
+      fb.drawText(" loop… ", loopX, 1, LOOP_COLOR, BG_TOPBAR)
+    } else {
+      fb.drawText("       ", loopX, 1, FG_DIM, BG_TOPBAR)
+    }
+
     // Output device indicator
-    const outX = clickX + 8
+    const outX = loopX + 8
     if (state.outputDeviceId != null) {
       const dev = state.availableOutputDevices.find((d) => d.id === state.outputDeviceId)
       const outLabel = dev ? dev.description : `ID:${state.outputDeviceId}`
@@ -558,6 +569,9 @@ export class UIRenderer {
       y += trackH
     }
 
+    // Draw loop region (before playhead so playhead draws on top)
+    this.renderLoopRegion(fb, w, h, state, samplesPerSubCol)
+
     // Draw playhead
     this.renderPlayhead(fb, w, h, state, samplesPerSubCol)
 
@@ -587,20 +601,37 @@ export class UIRenderer {
     const samplesPerBar = samplesPerBeat * 4
     const samplesPerCol = samplesPerSubCol * 2
 
+    // Paint loop region on timeline with purple tint
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      const loopStartCol = Math.floor((state.loopStart - state.scrollOffset) / samplesPerCol)
+      const loopEndCol = Math.floor((state.loopEnd - state.scrollOffset) / samplesPerCol)
+      const colStart = Math.max(0, loopStartCol)
+      const colEnd = Math.min(width, loopEndCol + 1)
+      const loopTimelineBg = RGBA.fromHex("#2d2050")
+      if (colStart < colEnd) {
+        fb.fillRect(colStart, 0, colEnd - colStart, 1, loopTimelineBg)
+      }
+    }
+
     for (let x = 0; x < width; x++) {
       const samplePos = state.scrollOffset + x * samplesPerCol
       const beatNum = Math.floor(samplePos / samplesPerBeat)
       const sampleInBeat = samplePos % samplesPerBeat
+
+      // Determine background for this cell (loop region or normal)
+      const inLoop = state.loopStart !== null && state.loopEnd !== null &&
+        samplePos >= state.loopStart && samplePos < state.loopEnd
+      const cellBg = inLoop ? RGBA.fromHex("#2d2050") : BG_DARKER
 
       // Mark bar boundaries
       if (beatNum % 4 === 0 && sampleInBeat < samplesPerCol) {
         const barNum = Math.floor(beatNum / 4) + 1
         const label = String(barNum)
         if (x + label.length < width) {
-          fb.drawText(label, x, 0, FG_ACCENT, BG_DARKER)
+          fb.drawText(label, x, 0, FG_ACCENT, cellBg)
         }
       } else if (sampleInBeat < samplesPerCol) {
-        fb.setCell(x, 0, "┊", FG_DIM, BG_DARKER)
+        fb.setCell(x, 0, "┊", FG_DIM, cellBg)
       }
     }
   }
@@ -630,6 +661,41 @@ export class UIRenderer {
   }
 
   // =========================================================================
+  // LOOP REGION - Highlighted area between loop start and end markers
+  // =========================================================================
+  private renderLoopRegion(
+    fb: any,
+    width: number,
+    height: number,
+    state: ProjectState,
+    samplesPerSubCol: number,
+  ): void {
+    if (state.loopStart === null) return
+    const samplesPerCol = samplesPerSubCol * 2
+
+    // Loop start marker (always visible when loopStart is set)
+    const startCol = Math.floor((state.loopStart - state.scrollOffset) / samplesPerCol)
+    if (startCol >= 0 && startCol < width) {
+      for (let y = 0; y < height; y++) {
+        fb.setCellWithAlphaBlending(startCol, y, "┃", LOOP_COLOR, TRANSPARENT)
+      }
+      fb.setCell(startCol, 0, "▸", LOOP_COLOR, BG_DARKER)
+    }
+
+    // If no loop end yet, just show the start marker
+    if (state.loopEnd === null) return
+
+    // Loop end marker
+    const endCol = Math.floor((state.loopEnd - state.scrollOffset) / samplesPerCol)
+    if (endCol >= 0 && endCol < width) {
+      for (let y = 0; y < height; y++) {
+        fb.setCellWithAlphaBlending(endCol, y, "┃", LOOP_COLOR, TRANSPARENT)
+      }
+      fb.setCell(endCol, 0, "◂", LOOP_COLOR, BG_DARKER)
+    }
+  }
+
+  // =========================================================================
   // STATUS BAR - Keyboard shortcuts and status info
   // =========================================================================
   private renderStatusBar(state: ProjectState): void {
@@ -652,6 +718,7 @@ export class UIRenderer {
       "S:Solo",
       "[/]:Scrub",
       "</>:Pan",
+      "P:Loop",
       "F5:Save",
       "F6:Open",
       "I:Import",
@@ -717,6 +784,7 @@ export class UIRenderer {
       ["+", "Increase BPM"],
       ["-", "Decrease BPM"],
       ["C", "Toggle metronome click"],
+      ["P", "Practice loop (start/end/clear)"],
       ["V", "Volume up on selected track"],
       ["[ / ]", "Scrub playhead left / right"],
       ["< / >", "Pan left / right"],

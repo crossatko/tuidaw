@@ -437,6 +437,16 @@ export class AudioEngine {
     return startPosition + this.getElapsedSamples()
   }
 
+  // Stop all playback (and click) — but NOT recordings.
+  // Used for loop restart during recording transport.
+  stopAllPlayback(): void {
+    for (const [id, proc] of this.playProcesses) {
+      proc.kill("SIGINT")
+    }
+    this.playProcesses.clear()
+    this.stopClick()
+  }
+
   // Stop all playback
   async stopAll(): Promise<void> {
     this.isPlaying = false
