@@ -201,17 +201,24 @@ export class UIRenderer {
     }
 
     // Sidebar: click to select track
-    this.sidebarFB.onMouseDown = (event: MouseEvent) => {
+    this.sidebarFB.onMouse = (event: MouseEvent) => {
+      if (event.type !== "down") return
       const trackY = event.y - 1
       if (trackY < 0) return
       const trackIndex = Math.floor(trackY / TRACK_ROW_HEIGHT)
       callbacks.onTrackClick(trackIndex)
     }
 
-    // Main area: click on timeline (row 0) to set playhead position
-    this.mainFB.onMouseDown = (event: MouseEvent) => {
+    // Main area: click to set playhead (timeline row 0) or select track (waveform rows)
+    this.mainFB.onMouse = (event: MouseEvent) => {
+      if (event.type !== "down") return
       if (event.y === 0) {
+        // Timeline row — set playhead position
         callbacks.onTimelineClick(event.x, this.mainFB.width)
+      } else {
+        // Waveform area — select track (y=1 is first track row)
+        const trackIndex = Math.floor((event.y - 1) / TRACK_ROW_HEIGHT)
+        callbacks.onTrackClick(trackIndex)
       }
     }
   }
