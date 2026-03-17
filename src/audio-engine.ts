@@ -602,27 +602,35 @@ export class AudioEngine {
     }
 
     if (tracksToMix.length === 1) {
-      // Single track — just apply volume and convert to stereo
+      // Single track — apply volume and pan, convert to stereo
       const vol = tracksToMix[0].track.volume
+      const pan = tracksToMix[0].track.pan
+      // Pan law: equal-power panning
+      // pan=-1 → full left, pan=0 → center, pan=1 → full right
+      const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
+      const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
       cmd.push(
         "-filter_complex",
-        `[0:a]volume=${vol},aformat=sample_rates=${state.sampleRate}:channel_layouts=stereo[out]`,
+        `[0:a]volume=${vol},pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c0,aformat=sample_rates=${state.sampleRate}[out]`,
         "-map", "[out]",
       )
     } else {
-      // Multiple tracks — volume per input, then amix
+      // Multiple tracks — volume + pan per input, then amix
       const filters: string[] = []
       const mixInputs: string[] = []
 
       for (let i = 0; i < tracksToMix.length; i++) {
         const vol = tracksToMix[i].track.volume
+        const pan = tracksToMix[i].track.pan
+        const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
+        const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
         const label = `a${i}`
-        filters.push(`[${i}:a]volume=${vol}[${label}]`)
+        filters.push(`[${i}:a]volume=${vol},pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c0[${label}]`)
         mixInputs.push(`[${label}]`)
       }
 
       filters.push(
-        `${mixInputs.join("")}amix=inputs=${tracksToMix.length}:duration=longest:normalize=0,aformat=sample_rates=${state.sampleRate}:channel_layouts=stereo[out]`,
+        `${mixInputs.join("")}amix=inputs=${tracksToMix.length}:duration=longest:normalize=0,aformat=sample_rates=${state.sampleRate}[out]`,
       )
 
       cmd.push("-filter_complex", filters.join(";"), "-map", "[out]")
