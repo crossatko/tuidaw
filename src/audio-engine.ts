@@ -447,6 +447,69 @@ export class AudioEngine {
     this.stopClick()
   }
 
+  // Pre-prepare WAV files for a loop restart.
+  // Writes all track WAVs starting from loopStart to disk while current
+  // playback is still running. Returns the preparations needed for fast spawn.
+  async prepareLoopRestart(
+    state: ProjectState,
+    loopStart: number,
+  ): Promise<{ tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null }> {
+    const hasSolo = state.tracks.some((t) => t.solo)
+    const preparations: { trackId: string; wavPath: string; volume: number }[] = []
+    const prepPromises: Promise<void>[] = []
+
+    for (const track of state.tracks) {
+      if (track.muted || !track.samples || track.samples.length === 0) continue
+      if (hasSolo && !track.solo) continue
+
+      // Write to a separate temp file so we don't clobber the currently-playing one
+      const tempPath = `/tmp/tuidaw_loop_${track.id}.wav`
+      const offsetSamples = track.samples.subarray(loopStart)
+      if (offsetSamples.length === 0) continue
+
+      const trackVolume = track.volume
+      prepPromises.push(
+        this.writeStereoWav(tempPath, offsetSamples, track.sampleRate, track.pan).then(() => {
+          preparations.push({ trackId: track.id, wavPath: tempPath, volume: trackVolume })
+        }),
+      )
+    }
+
+    let clickWavPath: string | null = null
+    if (state.clickEnabled) {
+      prepPromises.push(
+        this.prepareClickWav(state.bpm, loopStart).then((path) => {
+          clickWavPath = path
+        }),
+      )
+    }
+
+    await Promise.all(prepPromises)
+    return { tracks: preparations, clickWavPath }
+  }
+
+  // Execute a pre-prepared loop restart: kill current playback, spawn new.
+  // This is the fast path — no disk I/O, just process management.
+  executeLoopRestart(
+    preparations: { tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null },
+    targetDeviceId?: number | null,
+  ): void {
+    // Kill all current playback
+    this.stopAllPlayback()
+
+    // Reset transport timing
+    this.markTransportStart()
+
+    // Spawn all new players back-to-back (no awaits)
+    for (const { trackId, wavPath, volume } of preparations.tracks) {
+      this.spawnTrackPlayer(trackId, wavPath, targetDeviceId, volume)
+    }
+
+    if (preparations.clickWavPath) {
+      this.spawnClickPlayer(preparations.clickWavPath, targetDeviceId)
+    }
+  }
+
   // Stop all playback
   async stopAll(): Promise<void> {
     this.isPlaying = false
