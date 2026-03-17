@@ -395,12 +395,12 @@ async function main() {
 
     // Device selector overlay - intercept navigation keys
     if (ui.isDeviceSelectorVisible()) {
-      if (key.name === "up") {
+      if (key.name === "up" || key.name === "k") {
         ui.deviceSelectorUp()
         render()
         return
       }
-      if (key.name === "down") {
+      if (key.name === "down" || key.name === "j") {
         ui.deviceSelectorDown()
         render()
         return
@@ -529,14 +529,14 @@ async function main() {
     }
 
     // Up/Down - Select track
-    if (key.name === "up") {
+    if (key.name === "up" || key.name === "k") {
       if (state.selectedTrackIndex > 0) {
         state.selectedTrackIndex--
         render()
       }
       return
     }
-    if (key.name === "down") {
+    if (key.name === "down" || key.name === "j") {
       if (state.selectedTrackIndex < state.tracks.length - 1) {
         state.selectedTrackIndex++
         render()
@@ -545,13 +545,13 @@ async function main() {
     }
 
     // Left/Right - Scroll
-    if (key.name === "left") {
+    if (key.name === "left" || key.name === "h") {
       const scrollAmount = Math.floor(state.sampleRate * (key.shift ? 5 : 1))
       state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
       render()
       return
     }
-    if (key.name === "right") {
+    if (key.name === "right" || key.name === "l") {
       const scrollAmount = Math.floor(state.sampleRate * (key.shift ? 5 : 1))
       state.scrollOffset += scrollAmount
       render()
