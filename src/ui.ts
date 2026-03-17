@@ -186,9 +186,10 @@ export class UIRenderer {
       const delta = (dir === "up" || dir === "left") ? 1 : -1
 
       // Determine row within track to distinguish volume vs pan zone
-      const trackY = event.y - 1
-      if (trackY < 0) return
-      const rowInTrack = trackY % TRACK_ROW_HEIGHT
+      // event.y is screen-absolute; sidebar starts at y=TOPBAR_HEIGHT
+      const localY = event.y - TOPBAR_HEIGHT
+      if (localY < 0) return
+      const rowInTrack = localY % TRACK_ROW_HEIGHT
 
       // Pan control: row 1, x >= 17 (where pan indicator is drawn)
       if (rowInTrack === 1 && event.x >= 17) {
@@ -203,21 +204,26 @@ export class UIRenderer {
     // Sidebar: click to select track
     this.sidebarFB.onMouse = (event: MouseEvent) => {
       if (event.type !== "down") return
-      const trackY = event.y - 1
-      if (trackY < 0) return
-      const trackIndex = Math.floor(trackY / TRACK_ROW_HEIGHT)
+      // event.y is screen-absolute; sidebar starts at y=TOPBAR_HEIGHT
+      const localY = event.y - TOPBAR_HEIGHT
+      if (localY < 0) return
+      const trackIndex = Math.floor(localY / TRACK_ROW_HEIGHT)
       callbacks.onTrackClick(trackIndex)
     }
 
     // Main area: click to set playhead (timeline row 0) or select track (waveform rows)
     this.mainFB.onMouse = (event: MouseEvent) => {
       if (event.type !== "down") return
-      if (event.y === 0) {
+      // event.x/y are screen-absolute; main area starts at (SIDEBAR_WIDTH, TOPBAR_HEIGHT)
+      const localX = event.x - SIDEBAR_WIDTH
+      const localY = event.y - TOPBAR_HEIGHT
+      if (localX < 0 || localY < 0) return
+      if (localY === 0) {
         // Timeline row — set playhead position
-        callbacks.onTimelineClick(event.x, this.mainFB.width)
+        callbacks.onTimelineClick(localX, this.mainFB.width)
       } else {
-        // Waveform area — select track (y=1 is first track row)
-        const trackIndex = Math.floor((event.y - 1) / TRACK_ROW_HEIGHT)
+        // Waveform area — select track (localY=1 is first track row)
+        const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
         callbacks.onTrackClick(trackIndex)
       }
     }
