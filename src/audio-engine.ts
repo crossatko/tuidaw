@@ -187,6 +187,7 @@ export class AudioEngine {
       process: proc,
       chunks: [] as Buffer[],
       onChunk,
+      samplesReceived: 0,
     }
 
     this.activeRecordings.set(trackId, recording)
@@ -201,12 +202,15 @@ export class AudioEngine {
       process: Subprocess
       chunks: Buffer[]
       onChunk: (samples: Float32Array) => void
+      samplesReceived: number
     },
   ): Promise<void> {
     const stdout = recording.process.stdout
     if (!stdout || typeof stdout === "number") return
 
     const reader = (stdout as ReadableStream<Uint8Array>).getReader()
+    // Fade-in duration: 5ms at 48kHz = 240 samples to eliminate pw-record startup noise
+    const FADE_IN_SAMPLES = Math.floor(SAMPLE_RATE * 0.005)
 
     try {
       while (true) {
@@ -214,10 +218,25 @@ export class AudioEngine {
         if (done) break
 
         const buf = Buffer.from(value)
-        recording.chunks.push(buf)
 
         // Convert s16 PCM to Float32
         const floatSamples = this.pcmS16ToFloat32(buf)
+
+        // Apply fade-in to the first few ms to eliminate startup pop/noise
+        if (recording.samplesReceived < FADE_IN_SAMPLES) {
+          for (let i = 0; i < floatSamples.length && recording.samplesReceived + i < FADE_IN_SAMPLES; i++) {
+            const fadePos = recording.samplesReceived + i
+            const gain = fadePos / FADE_IN_SAMPLES
+            floatSamples[i] *= gain
+            // Also apply fade to the raw PCM buffer so finalized audio matches
+            const pcmVal = buf.readInt16LE(i * BYTES_PER_SAMPLE)
+            buf.writeInt16LE(Math.round(pcmVal * gain), i * BYTES_PER_SAMPLE)
+          }
+        }
+        recording.samplesReceived += floatSamples.length
+
+        recording.chunks.push(buf)
+
         recording.onChunk(floatSamples)
       }
     } catch {
@@ -313,15 +332,36 @@ export class AudioEngine {
     this.spawnTrackPlayer(track.id, wavPath, targetDeviceId, track.volume)
   }
 
-  // Restart a single track's playback with updated volume/pan.
-  // Kills the current pw-play, rewrites the WAV with new pan, respawns with new volume.
-  async restartTrackPlayback(
+  // Set volume on a running track's pw-play process via wpctl (glitch-free).
+  // Falls back to restart if the process isn't found.
+  setTrackVolume(trackId: string, volume: number): void {
+    const proc = this.playProcesses.get(trackId)
+    if (!proc) return
+    const vol = Math.max(0, Math.min(1, volume)).toFixed(3)
+    // wpctl set-volume --pid targets all PipeWire nodes owned by that PID
+    spawn({
+      cmd: ["wpctl", "set-volume", "--pid", String(proc.pid), vol],
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+  }
+
+  // Restart a single track's playback with updated pan.
+  // Pre-writes the new stereo WAV BEFORE killing old pw-play to minimize the gap.
+  async restartTrackForPan(
     track: Track,
     currentSample: number,
     targetDeviceId?: number | null,
   ): Promise<void> {
+    // Phase 1: write new WAV with updated pan (while old pw-play is still running)
+    const wavPath = await this.prepareTrackWav(track, currentSample)
+    if (!wavPath) {
+      this.stopTrackPlayback(track.id)
+      return
+    }
+    // Phase 2: kill old, spawn new immediately
     this.stopTrackPlayback(track.id)
-    await this.playTrack(track, currentSample, targetDeviceId)
+    this.spawnTrackPlayer(track.id, wavPath, targetDeviceId, track.volume)
   }
 
   // Mark the engine as "playing" and record the wall-clock start time.
