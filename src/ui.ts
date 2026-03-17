@@ -212,19 +212,31 @@ export class UIRenderer {
     }
 
     // Main area: click to set playhead (timeline row 0) or select track (waveform rows)
+    // Drag on timeline continuously updates playhead position
+    let draggingTimeline = false
     this.mainFB.onMouse = (event: MouseEvent) => {
-      if (event.type !== "down") return
       // event.x/y are screen-absolute; main area starts at (SIDEBAR_WIDTH, TOPBAR_HEIGHT)
       const localX = event.x - SIDEBAR_WIDTH
       const localY = event.y - TOPBAR_HEIGHT
-      if (localX < 0 || localY < 0) return
-      if (localY === 0) {
-        // Timeline row — set playhead position
-        callbacks.onTimelineClick(localX, this.mainFB.width)
-      } else {
-        // Waveform area — select track (localY=1 is first track row)
-        const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
-        callbacks.onTrackClick(trackIndex)
+
+      if (event.type === "down") {
+        if (localX < 0 || localY < 0) return
+        if (localY === 0) {
+          // Timeline row — set playhead position and start drag tracking
+          draggingTimeline = true
+          callbacks.onTimelineClick(localX, this.mainFB.width)
+        } else {
+          // Waveform area — select track (localY=1 is first track row)
+          draggingTimeline = false
+          const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
+          callbacks.onTrackClick(trackIndex)
+        }
+      } else if (event.type === "drag" && draggingTimeline) {
+        // Continue moving playhead while dragging (even if cursor leaves timeline row)
+        const clampedX = Math.max(0, Math.min(localX, this.mainFB.width - 1))
+        callbacks.onTimelineClick(clampedX, this.mainFB.width)
+      } else if (event.type === "up" || event.type === "drag-end") {
+        draggingTimeline = false
       }
     }
   }
