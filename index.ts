@@ -137,25 +137,51 @@ async function main() {
 
     // Update playhead position based on elapsed time
     renderer.requestLive()
-    let loopRestarting = false
+
+    // Loop pre-preparation: write WAVs from loopStart ahead of time so
+    // the boundary restart is just a fast kill+spawn (no disk I/O).
+    type LoopPrep = { tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null }
+    let loopPrepared: LoopPrep | null = null
+    let loopPreparing = false
+
     playheadInterval = setInterval(async () => {
       const elapsed = audioEngine.getElapsedSamples()
       state.playheadPosition = transportStartPosition + elapsed
 
-      // Loop region: when playhead reaches loopEnd, wrap back to loopStart
-      if (state.loopStart !== null && state.loopEnd !== null && !loopRestarting) {
+      // Loop region handling
+      if (state.loopStart !== null && state.loopEnd !== null) {
+        // Start pre-preparing as soon as we're inside the loop (or approaching it)
+        const insideOrApproaching = state.playheadPosition >= state.loopStart ||
+          (state.loopStart - state.playheadPosition) < state.sampleRate * 2
+        if (insideOrApproaching && !loopPrepared && !loopPreparing) {
+          loopPreparing = true
+          loopPrepared = await audioEngine.prepareLoopRestart(state, state.loopStart)
+          loopPreparing = false
+        }
+
+        // Hit the loop boundary
         if (state.playheadPosition >= state.loopEnd) {
-          loopRestarting = true
-          // Wrap playhead to loop start
-          state.playheadPosition = state.loopStart
-          transportStartPosition = state.loopStart
-          // Kill current playback and restart from loop start
-          audioEngine.stopAllPlayback()
-          state.playheadPosition = state.loopStart
-          await audioEngine.playAll(state)
-          // Reset transport reference so elapsed time tracks from loop start
-          transportStartPosition = state.loopStart
-          loopRestarting = false
+          if (loopPrepared) {
+            // Fast path: pre-prepared WAVs ready
+            const prep = loopPrepared
+            loopPrepared = null
+            state.playheadPosition = state.loopStart
+            transportStartPosition = state.loopStart
+            audioEngine.executeLoopRestart(prep, state.outputDeviceId)
+          } else {
+            // Fallback: prep wasn't ready (shouldn't happen normally)
+            state.playheadPosition = state.loopStart
+            transportStartPosition = state.loopStart
+            audioEngine.stopAllPlayback()
+            await audioEngine.playAll(state)
+            transportStartPosition = state.loopStart
+          }
+        }
+      } else {
+        // Loop was cleared — discard any pre-prepared data
+        if (loopPrepared || loopPreparing) {
+          loopPrepared = null
+          loopPreparing = false
         }
       }
 
