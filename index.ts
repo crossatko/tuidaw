@@ -764,8 +764,24 @@ async function main() {
       return
     }
 
-    // [ - Pan left
+    // [ - Scrub playhead left (1 second, 5 seconds with shift — but shift+[ is { so just 1s)
     if (key.sequence === "[") {
+      if (state.transportState !== "stopped") return
+      state.playheadPosition = Math.max(0, state.playheadPosition - state.sampleRate)
+      render()
+      return
+    }
+
+    // ] - Scrub playhead right
+    if (key.sequence === "]") {
+      if (state.transportState !== "stopped") return
+      state.playheadPosition += state.sampleRate
+      render()
+      return
+    }
+
+    // < (shift+,) - Pan left
+    if (key.sequence === "<") {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
@@ -778,8 +794,8 @@ async function main() {
       return
     }
 
-    // ] - Pan right
-    if (key.sequence === "]") {
+    // > (shift+.) - Pan right
+    if (key.sequence === ">") {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
