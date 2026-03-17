@@ -617,6 +617,7 @@ export class UIRenderer {
       "A:Add Track",
       "M:Mute",
       "S:Solo",
+      "[/]:Pan",
       "F5:Save",
       "F6:Open",
       "I:Import",
@@ -683,6 +684,7 @@ export class UIRenderer {
       ["-", "Decrease BPM"],
       ["C", "Toggle metronome click"],
       ["V", "Volume up on selected track"],
+      ["[ / ]", "Pan left / right"],
       ["F2", "Select input device for track"],
       ["F3", "Select output device (global)"],
       ["I", "Import WAV into selected track"],
@@ -691,6 +693,8 @@ export class UIRenderer {
       ["F6", "Open project (.tuidaw)"],
       ["F1", "Toggle this help"],
       ["Q / Ctrl+C", "Quit"],
+      ["", "Mouse: wheel on waveform=scroll"],
+      ["", "  sidebar vol/pan=adjust"],
     ]
 
     for (let i = 0; i < lines.length && i + 2 < boxH - 1; i++) {
