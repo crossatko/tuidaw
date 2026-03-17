@@ -8,6 +8,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 
 - **Do not print summaries of changes to the user.** Instead, put the summary into the git commit description and commit the changes automatically after each task.
 - Commit messages should have a concise title line and a detailed description body listing what was done.
+- **Always `git push` after committing.** Never leave commits unpushed.
 
 ## Instructions
 
