@@ -739,18 +739,22 @@ async function main() {
       return
     }
 
-    // [ - Scrub playhead left
+    // [ - Scrub playhead left by 1 bar (4 beats)
     if (key.sequence === "[") {
       if (state.transportState !== "stopped") return
-      state.playheadPosition = Math.max(0, state.playheadPosition - state.sampleRate)
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBar = samplesPerBeat * 4
+      state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
       render()
       return
     }
 
-    // ] - Scrub playhead right
+    // ] - Scrub playhead right by 1 bar (4 beats)
     if (key.sequence === "]") {
       if (state.transportState !== "stopped") return
-      state.playheadPosition += state.sampleRate
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBar = samplesPerBeat * 4
+      state.playheadPosition += samplesPerBar
       render()
       return
     }
