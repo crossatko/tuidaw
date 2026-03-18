@@ -10,6 +10,7 @@ let trackCounter = 0
 export function createDefaultState(): ProjectState {
   return {
     bpm: 120,
+    originalBpm: 120,
     clickEnabled: false,
     sampleRate: 48000,
     tracks: [createTrack("Track 1")],

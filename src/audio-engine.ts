@@ -61,6 +61,8 @@ const lib = dlopen(findLibrary(), {
   tuidaw_stop_recording:       { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_get_recording_buffer: { returns: FFIType.ptr, args: [FFIType.i32] },
   tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_set_speed:            { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_get_speed:            { returns: FFIType.f32 },
 })
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
@@ -506,6 +508,18 @@ export class AudioEngine {
     return ""
   }
   spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
+
+  // ── Speed / WSOLA ─────────────────────────────────────────────────────
+
+  // Set playback speed (1.0 = normal). WSOLA time-stretch is used when != 1.0.
+  // Clamped to [0.25, 2.0] in the native engine.
+  setSpeed(speed: number): void {
+    lib.symbols.tuidaw_set_speed(Math.max(0.25, Math.min(2.0, speed)))
+  }
+
+  getSpeed(): number {
+    return lib.symbols.tuidaw_get_speed()
+  }
 
   // ── Stop All ───────────────────────────────────────────────────────────
 
@@ -1005,6 +1019,7 @@ export class AudioEngine {
         version: 1,
         projectName: state.projectName,
         bpm: state.bpm,
+        originalBpm: state.originalBpm,
         clickEnabled: state.clickEnabled,
         sampleRate: state.sampleRate,
         playheadPosition: state.playheadPosition,
@@ -1092,6 +1107,7 @@ export class AudioEngine {
 
       return {
         bpm: desc.bpm,
+        originalBpm: desc.originalBpm ?? desc.bpm,
         clickEnabled: desc.clickEnabled,
         sampleRate: desc.sampleRate,
         tracks,

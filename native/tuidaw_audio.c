@@ -33,7 +33,27 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// ── WSOLA Constants ─────────────────────────────────────────────────────────
+// WSOLA (Waveform Similarity Overlap-Add) for pitch-preserving time stretch.
+// Window ~23ms at 48kHz, 50% overlap, ±search range for best alignment.
+
+#define WSOLA_WINDOW     1024       // analysis window size (samples)
+#define WSOLA_HOP        512        // output hop size (WSOLA_WINDOW / 2)
+#define WSOLA_SEARCH     256        // ±search range for similarity matching
+#define WSOLA_OUTBUF_LEN 2048       // circular output buffer per track
+
 // ── Track State ─────────────────────────────────────────────────────────────
+
+// Per-track WSOLA time-stretch state
+typedef struct {
+    double  input_pos;               // fractional input read position (in source samples)
+    float   window_buf[WSOLA_WINDOW]; // Hann-windowed overlap buffer
+    float   out_buf[WSOLA_OUTBUF_LEN]; // circular output buffer
+    int     out_write;               // write position in out_buf
+    int     out_read;                // read position in out_buf
+    int     out_avail;               // samples available in out_buf
+    int     initialized;             // has been reset for current transport
+} WsolaState;
 
 typedef struct {
     int           active;            // slot in use
@@ -52,6 +72,9 @@ typedef struct {
     int           rec_device_index;  // miniaudio capture device index (-1 = default)
     ma_device     rec_device;        // capture device (active only while recording)
     int           rec_device_active; // is rec_device initialized and started
+
+    // WSOLA time-stretch state
+    WsolaState    wsola;
 } TrackState;
 
 // ── Engine State ────────────────────────────────────────────────────────────
@@ -74,6 +97,9 @@ typedef struct {
     // Loop state
     _Atomic long  loop_start;            // -1 = no loop
     _Atomic long  loop_end;              // -1 = no loop
+
+    // Playback speed (1.0 = normal, 0.5 = half speed, 2.0 = double)
+    _Atomic float playback_speed;
 
     // Output device
     int           output_device_index;   // -1 = default
@@ -116,8 +142,139 @@ static int has_any_solo(void) {
     return 0;
 }
 
+// ── WSOLA Helpers ───────────────────────────────────────────────────────────
+// Pitch-preserving time stretch using Waveform Similarity Overlap-Add.
+// Each track has its own WSOLA state so tracks can be independently stretched.
+
+// Reset WSOLA state for a track (called on transport start or speed change)
+static void wsola_reset(WsolaState* ws, double start_pos) {
+    ws->input_pos = start_pos;
+    ws->out_write = 0;
+    ws->out_read = 0;
+    ws->out_avail = 0;
+    ws->initialized = 1;
+    memset(ws->window_buf, 0, sizeof(ws->window_buf));
+    memset(ws->out_buf, 0, sizeof(ws->out_buf));
+}
+
+// Hann window coefficient for position i in window of size n
+static inline float hann(int i, int n) {
+    return 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(n - 1)));
+}
+
+// Read a sample from the track with bounds checking (returns 0 outside range)
+static inline float safe_read(const float* samples, int len, long pos) {
+    if (pos < 0 || pos >= len) return 0.0f;
+    return samples[pos];
+}
+
+// Find the best alignment offset within ±WSOLA_SEARCH of the target position
+// by maximizing cross-correlation with the previous window tail.
+// Returns the offset that gives the best overlap match.
+static int wsola_find_best_offset(const float* samples, int len,
+                                   long target_pos, const float* prev_tail, int tail_len) {
+    int best_offset = 0;
+    float best_corr = -1e30f;
+
+    // If no previous tail data, just use target position directly
+    if (tail_len <= 0) return 0;
+
+    for (int offset = -WSOLA_SEARCH; offset <= WSOLA_SEARCH; offset++) {
+        long pos = target_pos + offset;
+        float corr = 0.0f;
+        float norm1 = 0.0f;
+        float norm2 = 0.0f;
+
+        // Compare tail of previous window with beginning of candidate window
+        // Use a subset for speed (every 4th sample)
+        for (int i = 0; i < tail_len; i += 4) {
+            float s1 = prev_tail[i];
+            float s2 = safe_read(samples, len, pos + i);
+            corr += s1 * s2;
+            norm1 += s1 * s1;
+            norm2 += s2 * s2;
+        }
+
+        float denom = sqrtf(norm1 * norm2 + 1e-20f);
+        float normalized = corr / denom;
+
+        if (normalized > best_corr) {
+            best_corr = normalized;
+            best_offset = offset;
+        }
+    }
+
+    return best_offset;
+}
+
+// Generate WSOLA output samples for a track. Fills the circular output buffer.
+// speed: playback speed (1.0 = normal, <1 = slower, >1 = faster)
+// The input position advances by speed * WSOLA_HOP per output hop.
+static void wsola_generate(WsolaState* ws, const float* samples, int len, float speed) {
+    // Generate enough output to fill a reasonable amount (at least WSOLA_HOP samples)
+    while (ws->out_avail < WSOLA_OUTBUF_LEN - WSOLA_WINDOW) {
+        long target_input = (long)ws->input_pos;
+
+        // If we're past the end of the audio, output silence
+        if (target_input >= len) {
+            // Write silence to fill buffer
+            for (int i = 0; i < WSOLA_HOP; i++) {
+                ws->out_buf[ws->out_write] = 0.0f;
+                ws->out_write = (ws->out_write + 1) % WSOLA_OUTBUF_LEN;
+                ws->out_avail++;
+            }
+            ws->input_pos += (double)WSOLA_HOP * speed;
+            return;
+        }
+
+        // Find best alignment by cross-correlating with previous window tail
+        // The previous window tail is the second half of window_buf
+        int best_offset = wsola_find_best_offset(
+            samples, len, target_input,
+            ws->window_buf + WSOLA_HOP,  // tail = second half of previous window
+            WSOLA_HOP
+        );
+
+        long aligned_pos = target_input + best_offset;
+
+        // Extract and window the new segment
+        float new_window[WSOLA_WINDOW];
+        for (int i = 0; i < WSOLA_WINDOW; i++) {
+            new_window[i] = safe_read(samples, len, aligned_pos + i) * hann(i, WSOLA_WINDOW);
+        }
+
+        // Overlap-add: first half overlaps with tail of previous window,
+        // second half is the new tail for next iteration
+        for (int i = 0; i < WSOLA_HOP; i++) {
+            // Overlap region: blend previous tail with start of new window
+            float blended = ws->window_buf[WSOLA_HOP + i] + new_window[i];
+            ws->out_buf[ws->out_write] = blended;
+            ws->out_write = (ws->out_write + 1) % WSOLA_OUTBUF_LEN;
+            ws->out_avail++;
+        }
+
+        // Store new window for next iteration's overlap
+        memcpy(ws->window_buf, new_window, sizeof(float) * WSOLA_WINDOW);
+
+        // Advance input position by hop * speed
+        // speed < 1: input advances slower → audio stretches (slower playback)
+        // speed > 1: input advances faster → audio compresses (faster playback)
+        ws->input_pos += (double)WSOLA_HOP * speed;
+    }
+}
+
+// Read one sample from the WSOLA output buffer
+static float wsola_read_sample(WsolaState* ws) {
+    if (ws->out_avail <= 0) return 0.0f;
+    float s = ws->out_buf[ws->out_read];
+    ws->out_read = (ws->out_read + 1) % WSOLA_OUTBUF_LEN;
+    ws->out_avail--;
+    return s;
+}
+
 // ── Playback Callback ───────────────────────────────────────────────────────
 // Called on the audio thread. Mixes all tracks + click into the output buffer.
+// When playback_speed != 1.0, uses WSOLA for pitch-preserving time stretch.
 
 static void playback_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pDevice;
@@ -131,18 +288,43 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     long playhead = atomic_load(&g_engine.playhead_samples);
     long loop_start = atomic_load(&g_engine.loop_start);
     long loop_end = atomic_load(&g_engine.loop_end);
+    float speed = atomic_load(&g_engine.playback_speed);
+
+    // Clamp speed to sane range
+    if (speed < 0.25f) speed = 0.25f;
+    if (speed > 2.0f) speed = 2.0f;
 
     int any_solo = has_any_solo();
 
-    // Click state
+    // Click state — click always plays at the current BPM (already adjusted by JS)
     int click_enabled = atomic_load(&g_engine.click_enabled);
     float bpm = atomic_load(&g_engine.click_bpm);
     int samples_per_beat = (bpm > 0) ? (int)(60.0f / bpm * SAMPLE_RATE) : SAMPLE_RATE;
 
+    int use_wsola = (speed < 0.99f || speed > 1.01f);
+
+    // If using WSOLA, ensure all active tracks have initialized state
+    if (use_wsola) {
+        for (int t = 0; t < MAX_TRACKS; t++) {
+            TrackState* tk = &g_engine.tracks[t];
+            if (!tk->active) continue;
+            if (!tk->wsola.initialized) {
+                wsola_reset(&tk->wsola, (double)playhead);
+            }
+            // Pre-generate WSOLA output for this callback
+            if (tk->samples && tk->samples_len > 0 &&
+                !atomic_load(&tk->muted) &&
+                !(any_solo && !atomic_load(&tk->solo)) &&
+                !atomic_load(&tk->recording)) {
+                wsola_generate(&tk->wsola, tk->samples, tk->samples_len, speed);
+            }
+        }
+    }
+
     for (ma_uint32 frame = 0; frame < frameCount; frame++) {
         long pos = playhead + (long)frame;
 
-        // Loop handling: wrap position
+        // Loop handling: wrap position (for click and non-WSOLA playback)
         if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
             long loop_len = loop_end - loop_start;
             long overshoot = pos - loop_end;
@@ -158,12 +340,19 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             if (!tk->active) continue;
             if (atomic_load(&tk->muted)) continue;
             if (any_solo && !atomic_load(&tk->solo)) continue;
-            if (atomic_load(&tk->recording)) continue;  // recording tracks don't play back their old audio
+            if (atomic_load(&tk->recording)) continue;
             if (!tk->samples || tk->samples_len == 0) continue;
 
-            if (pos < 0 || pos >= tk->samples_len) continue;
+            float sample;
+            if (use_wsola) {
+                // Read from WSOLA output buffer (pitch-preserved time-stretched audio)
+                sample = wsola_read_sample(&tk->wsola);
+            } else {
+                // Normal playback: direct sample read
+                if (pos < 0 || pos >= tk->samples_len) continue;
+                sample = tk->samples[pos];
+            }
 
-            float sample = tk->samples[pos];
             float vol = atomic_load(&tk->volume);
             float pan = atomic_load(&tk->pan);
 
@@ -175,7 +364,7 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome)
+        // Click (metronome) — plays at the adjusted BPM rate, uses logical playhead position
         if (click_enabled && pos >= 0) {
             long beat_pos = pos % samples_per_beat;
             int click_len = (int)(SAMPLE_RATE * 0.02f);  // 20ms click
@@ -198,7 +387,8 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         out[frame * 2 + 1] = right;
     }
 
-    // Advance playhead
+    // Advance playhead — always advances at real-time rate for UI/click sync
+    // The WSOLA input positions handle the time-stretch independently
     long new_playhead = playhead + (long)frameCount;
 
     // Handle loop wrap at the engine level
@@ -206,6 +396,16 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         long loop_len = loop_end - loop_start;
         long overshoot = new_playhead - loop_end;
         new_playhead = loop_start + (overshoot % loop_len);
+
+        // Reset WSOLA states on loop wrap so they re-sync to new position
+        if (use_wsola) {
+            for (int t = 0; t < MAX_TRACKS; t++) {
+                TrackState* tk = &g_engine.tracks[t];
+                if (tk->active && tk->wsola.initialized) {
+                    wsola_reset(&tk->wsola, (double)new_playhead);
+                }
+            }
+        }
     }
 
     atomic_store(&g_engine.playhead_samples, new_playhead);
@@ -245,6 +445,7 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
     atomic_store(&g_engine.click_bpm, 120.0f);
+    atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
 
     ma_context_config ctxConfig = ma_context_config_init();
@@ -482,6 +683,12 @@ EXPORT void tuidaw_set_track_input_device(int id, int device_index) {
 EXPORT void tuidaw_play(long position) {
     g_engine.transport_start_pos = position;
     atomic_store(&g_engine.playhead_samples, position);
+    // Reset WSOLA states so each track re-syncs to the new position
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (g_engine.tracks[i].active) {
+            wsola_reset(&g_engine.tracks[i].wsola, (double)position);
+        }
+    }
     atomic_store(&g_engine.playing, 1);
 }
 
@@ -585,4 +792,19 @@ EXPORT int tuidaw_get_recording_length(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return 0;
     return atomic_load(&tk->rec_write_pos);
+}
+
+// ── Speed / WSOLA control ───────────────────────────────────────────────────
+
+// Set playback speed ratio (1.0 = normal, 0.5 = half speed, 2.0 = double).
+// Clamped to [0.25, 2.0]. WSOLA time-stretch is applied when speed != 1.0.
+EXPORT void tuidaw_set_speed(float speed) {
+    if (speed < 0.25f) speed = 0.25f;
+    if (speed > 2.0f)  speed = 2.0f;
+    atomic_store(&g_engine.playback_speed, speed);
+}
+
+// Get current playback speed.
+EXPORT float tuidaw_get_speed(void) {
+    return atomic_load(&g_engine.playback_speed);
 }

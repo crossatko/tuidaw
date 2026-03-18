@@ -601,22 +601,28 @@ async function main() {
       return
     }
 
-    // + / = - Increase BPM (instant click update in native engine)
+    // + / = - Increase BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "+" || key.sequence === "=") {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
         await audioEngine.startClick(state.bpm)
       }
+      // Update WSOLA playback speed based on ratio to original BPM
+      const speed = state.bpm / state.originalBpm
+      audioEngine.setSpeed(speed)
       render()
       return
     }
 
-    // - - Decrease BPM (instant click update in native engine)
+    // - - Decrease BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "-") {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
         await audioEngine.startClick(state.bpm)
       }
+      // Update WSOLA playback speed based on ratio to original BPM
+      const speed = state.bpm / state.originalBpm
+      audioEngine.setSpeed(speed)
       render()
       return
     }
@@ -682,6 +688,8 @@ async function main() {
             const projectIsEmpty = state.tracks.every((t) => t === track || !t.samples)
             if (projectIsEmpty && result.detectedBPM) {
               state.bpm = result.detectedBPM
+              state.originalBpm = result.detectedBPM
+              audioEngine.setSpeed(1.0) // reset speed since bpm == originalBpm
               audioEngine.startClick(state.bpm) // sync click generator
               ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
             } else {
@@ -719,6 +727,8 @@ async function main() {
           Object.assign(state, loaded)
           // Sync all loaded tracks to the native engine
           audioEngine.syncAllTracks(state)
+          // Restore WSOLA speed from saved bpm/originalBpm ratio
+          audioEngine.setSpeed(state.bpm / state.originalBpm)
           const devs = await audioEngine.enumerateDevices()
           state.availableInputDevices = devs.inputs
           state.availableOutputDevices = devs.outputs

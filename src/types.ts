@@ -29,6 +29,7 @@ export type TransportState = "stopped" | "playing" | "recording"
 
 export interface ProjectState {
   bpm: number
+  originalBpm: number // The "true" BPM of the imported audio (for speed ratio calculation)
   clickEnabled: boolean
   sampleRate: number
   tracks: Track[]
@@ -54,6 +55,7 @@ export interface ProjectDescriptor {
   version: 1
   projectName: string
   bpm: number
+  originalBpm: number
   clickEnabled: boolean
   sampleRate: number
   playheadPosition: number
