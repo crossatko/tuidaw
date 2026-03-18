@@ -4,12 +4,10 @@
 // These tests verify that click pulses have zero cumulative drift, using
 // tuidaw_render() to bypass the audio device for deterministic output.
 //
-// Key property: with the fractional beat-phase computation, each click onset
-// is independently computed as fmod(pos, exact_samples_per_beat). This means:
-// - Zero cumulative drift (each beat boundary is exact)
-// - Inter-onset intervals may be floor(spb) or ceil(spb) (±1 sample jitter)
-//   because the fractional position falls on different sub-sample phases
-// - Every onset is within 1 sample of its ideal position (n * spb_exact)
+// Architecture: the click tone buffer (960 samples of 1kHz sine + 20ms decay)
+// is BPM-independent. Beat timing is computed in the native engine using an
+// output-space frame counter (click_frame_counter) with fmod(counter, spb),
+// where spb = 60/displayed_bpm * 48000. The tone is never pitch-shifted.
 //
 // Uses null audio backend — no sound output.
 
@@ -58,12 +56,13 @@ const lib = dlopen(findLibrary(), {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// Generate a click buffer: one beat of 1kHz sine + 20ms linear decay
-function generateClickBuffer(bpm: number): Float32Array {
-  const samplesPerBeat = Math.round((60 / bpm) * SAMPLE_RATE)
-  const buf = new Float32Array(samplesPerBeat)
-  const clickLen = Math.round(SAMPLE_RATE * 0.02) // 20ms
-  for (let i = 0; i < clickLen && i < samplesPerBeat; i++) {
+// Generate the click TONE: 1kHz sine + 20ms linear decay (BPM-independent).
+// This is just the waveform (960 samples at 48kHz). Beat timing is handled
+// by the native engine via click_displayed_bpm + click_frame_counter.
+function generateClickTone(): Float32Array {
+  const clickLen = Math.round(SAMPLE_RATE * 0.02) // 20ms = 960 samples
+  const buf = new Float32Array(clickLen)
+  for (let i = 0; i < clickLen; i++) {
     const t = i / SAMPLE_RATE
     const envelope = 1.0 - i / clickLen
     buf[i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
@@ -120,9 +119,9 @@ function findClickOnsets(stereo: Float32Array, threshold: number = 0.1): number[
 // Set up click playback at a given BPM and start from position 0.
 // Returns the exact (fractional) samples-per-beat.
 function setupClick(bpm: number): number {
-  const clickBuf = generateClickBuffer(bpm)
-  pinnedBuffers.push(clickBuf)
-  lib.symbols.tuidaw_set_click_samples(ptr(clickBuf), clickBuf.length)
+  const clickTone = generateClickTone()
+  pinnedBuffers.push(clickTone)
+  lib.symbols.tuidaw_set_click_samples(ptr(clickTone), clickTone.length)
   lib.symbols.tuidaw_set_click(1, bpm)
   lib.symbols.tuidaw_set_click_volume(1.0)
   lib.symbols.tuidaw_set_click_pan(0.0)
@@ -283,8 +282,12 @@ describe("Click precision (offline render)", () => {
     lib.symbols.tuidaw_stop()
 
     const onsets = findClickOnsets(output, 0.05)
+    // Click frame counter resets to 0 on play, so clicks start from output
+    // frame 0 regardless of content-space start position. This means the
+    // first click is at output frame 0 (not offset by startPos).
     expect(onsets.length).toBeGreaterThanOrEqual(8)
-    verifyPrecision(onsets, spbExact, "120BPM-nonzero", startPos)
+    // Verify against output-space positions (startPos=0 since counter resets)
+    verifyPrecision(onsets, spbExact, "120BPM-nonzero", 0)
   })
 
   test("155 BPM, 5 minutes of playback — zero cumulative drift", () => {

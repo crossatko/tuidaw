@@ -390,14 +390,13 @@ export class AudioEngine {
     // Set click state — pass originalBpm so beat grid is in content-space.
     // Click timing uses pos % samples_per_beat in the native callback,
     // where pos is the content-space playhead (same coordinate as samples[pos]).
-    lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.originalBpm)
+    lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
     lib.symbols.tuidaw_set_click_volume(state.clickVolume)
     lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
-    // Pre-generate and set click buffer (one beat of 1kHz sine + 20ms decay).
-    // The native engine loops it via its own WsolaState so pitch is preserved
-    // at all WSOLA speeds.
-    this.updateClickBuffer(state.originalBpm, state.sampleRate)
+    // Set click tone buffer (BPM-independent — just the 20ms click tone).
+    // Beat timing is handled in native via click_displayed_bpm.
+    this.updateClickBuffer(state.sampleRate)
 
     // Set loop state — always pass loop region to native engine if it exists.
     // The native callback handles all cases correctly:
@@ -516,7 +515,7 @@ export class AudioEngine {
   // ── Click / Metronome ──────────────────────────────────────────────────
 
   async startClick(bpm: number, _startSample?: number, _targetDeviceId?: number | null): Promise<void> {
-    // bpm here is originalBpm — content-space beat interval
+    // bpm here is the DISPLAYED BPM — used for output-space click timing
     lib.symbols.tuidaw_set_click(1, bpm)
   }
 
@@ -538,13 +537,14 @@ export class AudioEngine {
   }
   spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
 
-  // Generate one beat of 1kHz sine wave with 20ms linear decay at 48kHz.
-  // The native engine loops this buffer at [0, len) at the right WSOLA speed.
-  generateClickBuffer(originalBpm: number, sampleRate: number = 48000): Float32Array {
-    const samplesPerBeat = Math.round((60 / originalBpm) * sampleRate)
-    const buf = new Float32Array(samplesPerBeat)
-    const clickLen = Math.round(sampleRate * 0.02) // 20ms
-    for (let i = 0; i < clickLen && i < samplesPerBeat; i++) {
+  // Generate the click TONE: 1kHz sine wave with 20ms linear decay at 48kHz.
+  // This is just the tone waveform (960 samples at 48kHz), NOT a full beat.
+  // Beat timing is handled in the native engine via click_displayed_bpm +
+  // click_frame_counter, so this buffer is BPM-independent.
+  generateClickBuffer(sampleRate: number = 48000): Float32Array {
+    const clickLen = Math.round(sampleRate * 0.02) // 20ms = 960 samples at 48kHz
+    const buf = new Float32Array(clickLen)
+    for (let i = 0; i < clickLen; i++) {
       const t = i / sampleRate
       const envelope = 1.0 - i / clickLen
       buf[i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
@@ -558,10 +558,11 @@ export class AudioEngine {
     lib.symbols.tuidaw_set_click_samples(ptr(buf), buf.length)
   }
 
-  // Regenerate and set the click buffer for the given state.
-  // Call this whenever originalBpm changes or click is enabled.
-  updateClickBuffer(originalBpm: number, sampleRate: number = 48000): void {
-    const buf = this.generateClickBuffer(originalBpm, sampleRate)
+  // Regenerate and set the click tone buffer.
+  // Call this once (tone is BPM-independent). For BPM changes, just call
+  // startClick(bpm) which updates the displayed BPM in the native engine.
+  updateClickBuffer(_sampleRate: number = 48000): void {
+    const buf = this.generateClickBuffer(_sampleRate)
     this.setClickSamples(buf)
   }
 
