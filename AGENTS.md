@@ -41,6 +41,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 ### Native API surface (all implemented in C, exported as `EXPORT`):
 - `tuidaw_init/deinit` — engine lifecycle
+- `tuidaw_init_null` — engine lifecycle with null (silent) backend for tests
 - `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` — device enumeration
 - `tuidaw_set_output_device`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` — output device
 - `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` — track management
@@ -128,6 +129,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
 - **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
 - **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space but the playhead advances at real-time rate. At 0.5x speed, content takes 2x as long to play, so loop boundaries must be scaled by 1/speed in the native callback to prevent early wrapping. The C callback computes `eff_loop_start/end = loop_start/end / speed` when WSOLA is active.
+- **miniaudio null backend**: `ma_backend_null` runs the audio callback on a timer thread but produces no sound output. Used for tests via `tuidaw_init_null()` to avoid blasting audio through speakers during `bun test`
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -179,6 +181,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 35. **Waveform speed-scaling**: waveform display stretches/compresses to match WSOLA playback duration (samplesPerSubCol and scrollOffset scaled by speed factor)
 36. **Unified TRACK_ROW_HEIGHT=5** for both sidebar and waveform (4 content rows + 1 separator), sidebar has dedicated volume/pan row
 37. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
+38. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
 
 ## File structure
 
@@ -189,14 +192,14 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
 │                              # refreshLivePlayback, shouldTrackPlay,
 │                              # ensurePlayheadVisible, autoScroll. ~843 lines.
-├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit)
+├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit), test (bun test)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
 ├── native/
 │   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~full implementation)
 │   ├── miniaudio.h           # miniaudio single-header library (95,864 lines)
 │   ├── build.sh              # Build script using zig cc
-│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 27 exported symbols)
+│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 28 exported symbols)
 │   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
