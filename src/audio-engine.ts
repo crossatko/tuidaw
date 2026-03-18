@@ -1340,6 +1340,7 @@ export class AudioEngine {
         transportState: "stopped",
         playheadPosition: desc.playheadPosition,
         scrollOffset: desc.scrollOffset,
+        freeScroll: false,
         loopStart: desc.loopStart,
         loopEnd: desc.loopEnd,
         projectName: desc.projectName,
