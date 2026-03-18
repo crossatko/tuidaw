@@ -79,6 +79,7 @@ async function main() {
       state.playheadPosition = Math.max(0, samplePos)
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(state.playheadPosition)
+        syncLoopAfterSeek()
       }
       ensurePlayheadVisible()
       render()
@@ -159,6 +160,22 @@ async function main() {
         state.playheadPosition > state.scrollOffset + visibleSamples) {
       // Center playhead in view
       state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples / 2))
+    }
+  }
+
+  // Helper: sync native loop state after a manual playhead move.
+  // If the playhead is outside the loop region, disable the native loop so
+  // playback continues linearly past loopEnd. If the playhead is moved back
+  // inside the loop, re-enable it. The UI loop markers (state.loopStart/End)
+  // are never changed — only the native engine's enforcement is toggled.
+  function syncLoopAfterSeek() {
+    if (state.loopStart === null || state.loopEnd === null) return
+    if (state.playheadPosition < state.loopStart || state.playheadPosition >= state.loopEnd) {
+      // Outside loop — disable native loop enforcement
+      audioEngine.setLoop(null, null)
+    } else {
+      // Inside loop — re-enable native loop
+      audioEngine.setLoop(state.loopStart, state.loopEnd)
     }
   }
 
@@ -544,6 +561,7 @@ async function main() {
       state.scrollOffset = 0
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(0)
+        syncLoopAfterSeek()
       }
       render()
       return
@@ -558,6 +576,7 @@ async function main() {
       state.playheadPosition = maxLen
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(state.playheadPosition)
+        syncLoopAfterSeek()
       }
       ensurePlayheadVisible()
       render()
@@ -806,6 +825,7 @@ async function main() {
       state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(state.playheadPosition)
+        syncLoopAfterSeek()
       }
       ensurePlayheadVisible()
       render()
@@ -819,6 +839,7 @@ async function main() {
       state.playheadPosition += samplesPerBar
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(state.playheadPosition)
+        syncLoopAfterSeek()
       }
       ensurePlayheadVisible()
       render()
