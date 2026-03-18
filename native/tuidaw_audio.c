@@ -476,13 +476,19 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     // Advance wall-clock click counter (independent of WSOLA speed)
     if (click_enabled) {
         long new_click_pos = click_pos + (long)frameCount;
-        // Handle loop wrapping for click: reset click_pos when loop wraps
-        // to keep click in sync with the beat grid at the loop start
+        // Handle loop wrapping for click: when the playhead wraps back to
+        // loop_start, subtract the loop length from click_pos so the beat
+        // phase remains continuous. This is the only correct approach:
+        // click_pos is a pure wall-clock counter from transport-start, so
+        // its phase relative to the beat grid never changes — we just rewind
+        // it by exactly the loop length, keeping `click_pos % samples_per_beat`
+        // identical to what it would have been without the wrap.
         if (loop_start >= 0 && loop_end > loop_start && new_playhead < playhead) {
-            // Playhead wrapped backward (loop restart) — realign click to loop start
-            // Calculate how many beats from transport start to loop_start
-            long loop_beat_offset = loop_start % samples_per_beat;
-            new_click_pos = loop_beat_offset + (new_playhead - loop_start);
+            // Playhead wrapped backward (loop restart)
+            long loop_len = loop_end - loop_start;
+            new_click_pos -= loop_len;
+            // Clamp to 0 in case of edge cases (loop shorter than one beat, etc.)
+            if (new_click_pos < 0) new_click_pos = 0;
         }
         atomic_store(&g_engine.click_pos, new_click_pos);
     }
@@ -829,10 +835,21 @@ EXPORT void tuidaw_set_playhead(long position) {
 // ── Click / Metronome ───────────────────────────────────────────────────────
 
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
+    float old_bpm = atomic_load(&g_engine.click_bpm);
     atomic_store(&g_engine.click_bpm, bpm);
     atomic_store(&g_engine.click_enabled, enabled);
-    // Reset click counter when BPM changes to avoid mid-beat glitches
-    atomic_store(&g_engine.click_pos, 0);
+    // Only reset/snap click_pos when BPM actually changes, not on enable/disable.
+    // Resetting on a simple enable toggle causes the click to fire immediately
+    // instead of on the next beat boundary, making it sound offbeat.
+    // When BPM changes we snap click_pos to the nearest beat so the first click
+    // after the change lands on a beat rather than at a random phase.
+    if (bpm != old_bpm && bpm > 0) {
+        int new_spb = (int)(60.0f / bpm * SAMPLE_RATE);
+        long cur = atomic_load(&g_engine.click_pos);
+        // Snap to the start of the current beat (floor to beat boundary)
+        long snapped = (cur / new_spb) * new_spb;
+        atomic_store(&g_engine.click_pos, snapped);
+    }
 }
 
 EXPORT void tuidaw_set_click_volume(float volume) {
