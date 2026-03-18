@@ -316,8 +316,8 @@ export class UIRenderer {
     const timeStr = formatTime(state.playheadPosition, state.sampleRate)
     fb.drawText(timeStr, 10, 1, FG_PRIMARY, BG_TOPBAR)
 
-    // Beat position
-    const beatStr = formatBeatPosition(state.playheadPosition, state.sampleRate, state.bpm)
+    // Beat position (content-space beats use originalBpm)
+    const beatStr = formatBeatPosition(state.playheadPosition, state.sampleRate, state.originalBpm)
     fb.drawText(` [${beatStr}]`, 10 + timeStr.length, 1, FG_DIM, BG_TOPBAR)
 
     // BPM
@@ -501,10 +501,10 @@ export class UIRenderer {
     // Calculate zoom: how many samples per braille sub-column
     // Each character is 2 sub-columns wide
     // Default: fit ~10 seconds into the view
-    // When speed != 1.0, scale so waveform visually stretches/compresses
-    const speed = state.bpm / state.originalBpm
+    // All coordinates (playhead, scrollOffset, loopStart/End) are in
+    // content-space (source sample positions), so no speed scaling needed.
     const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (w * 2) * 10))
-    const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
+    const samplesPerSubCol = baseSamplesPerSubCol
 
     // Timeline header (1 row)
     this.renderTimeline(fb, w, state, samplesPerSubCol)
@@ -528,14 +528,13 @@ export class UIRenderer {
 
       // Draw waveform using braille if track has samples
       if (track.samples && track.samples.length > 0 && !track.muted) {
-        // Scale scrollOffset by speed: playhead position is wall-clock time,
-        // but source samples are consumed at rate * speed by WSOLA
-        const sourceOffset = Math.round(state.scrollOffset * speed)
+        // scrollOffset is already in content-space (source sample positions),
+        // so use it directly as the waveform read offset
         const braille = renderBrailleWaveform(
           track.samples,
           w,
           brailleH,
-          sourceOffset,
+          state.scrollOffset,
           samplesPerSubCol,
         )
 
@@ -548,12 +547,11 @@ export class UIRenderer {
         }
       } else if (track.muted && track.samples) {
         // Show dimmed waveform for muted tracks
-        const sourceOffset = Math.round(state.scrollOffset * speed)
         const braille = renderBrailleWaveform(
           track.samples,
           w,
           brailleH,
-          sourceOffset,
+          state.scrollOffset,
           samplesPerSubCol,
         )
 
@@ -602,7 +600,9 @@ export class UIRenderer {
   ): void {
     fb.fillRect(0, 0, width, 1, BG_DARKER)
 
-    const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+    // Beat positions are in content-space, so use originalBpm
+    // (the actual tempo of the source audio)
+    const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
     const samplesPerBar = samplesPerBeat * 4
     const samplesPerCol = samplesPerSubCol * 2
 

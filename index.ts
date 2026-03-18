@@ -44,8 +44,8 @@ async function main() {
   // Set up mouse wheel handlers for scroll, volume, and pan
   ui.setupMouseHandlers({
     onScrollChange: (direction: number) => {
-      // Scroll by 1 beat per wheel tick
-      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      // Scroll by 1 beat per wheel tick (content-space beats use originalBpm)
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
       render()
     },
@@ -72,11 +72,9 @@ async function main() {
       }
     },
     onTimelineClick: (x: number, mainWidth: number) => {
-      // Same formula as ui.ts renderMainArea/renderTimeline (speed-adjusted)
-      const speed = state.bpm / state.originalBpm
+      // Same formula as ui.ts renderMainArea — content-space, no speed scaling
       const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
-      const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
-      const samplesPerCol = samplesPerSubCol * 2
+      const samplesPerCol = baseSamplesPerSubCol * 2
       const samplePos = state.scrollOffset + x * samplesPerCol
       state.playheadPosition = Math.max(0, samplePos)
       if (state.transportState !== "stopped") {
@@ -113,13 +111,12 @@ async function main() {
 
   // ── Transport Controls ──────────────────────────────────────────────────
 
-  // Helper: compute visible sample range (speed-adjusted to match ui.ts rendering)
+  // Helper: compute visible sample range in content-space
+  // Must match ui.ts renderMainArea zoom calculation
   function getVisibleSamples() {
     const mainWidth = renderer.width - 22 // SIDEBAR_WIDTH
-    const speed = state.bpm / state.originalBpm
     const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
-    const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
-    const samplesPerCol = samplesPerSubCol * 2
+    const samplesPerCol = baseSamplesPerSubCol * 2
     return mainWidth * samplesPerCol
   }
 
@@ -501,16 +498,16 @@ async function main() {
       return
     }
 
-    // Left/Right - Scrub by beats (shift: by bars)
+    // Left/Right - Scrub by beats (shift: by bars) — content-space beats
     if (key.name === "left" || key.name === "h") {
-      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
       render()
       return
     }
     if (key.name === "right" || key.name === "l") {
-      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset += scrollAmount
       render()
@@ -780,7 +777,7 @@ async function main() {
 
     // [ - Scrub playhead left by 1 bar (4 beats) — works during playback
     if (key.sequence === "[") {
-      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
       if (state.transportState !== "stopped") {
@@ -793,7 +790,7 @@ async function main() {
 
     // ] - Scrub playhead right by 1 bar (4 beats) — works during playback
     if (key.sequence === "]") {
-      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition += samplesPerBar
       if (state.transportState !== "stopped") {
