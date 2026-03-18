@@ -109,4 +109,5 @@ export const TRACK_COLORS = [
 
 export const SIDEBAR_WIDTH = 22
 export const TOPBAR_HEIGHT = 3
-export const TRACK_ROW_HEIGHT = 4 // rows per track in the main waveform view
+export const TRACK_ROW_HEIGHT = 4 // rows per track in the sidebar
+export const WAVEFORM_ROW_HEIGHT = 5 // rows per track in the main waveform view (braille, +1 for separator)

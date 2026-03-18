@@ -175,6 +175,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
+35. **Waveform speed-scaling**: waveform display stretches/compresses to match WSOLA playback duration (samplesPerSubCol and scrollOffset scaled by speed factor)
+36. **Increased waveform resolution**: WAVEFORM_ROW_HEIGHT=5 in main area (4 braille rows + 1 separator = 16 vertical dots per track), separate from sidebar TRACK_ROW_HEIGHT=4
 
 ## File structure
 
@@ -184,7 +186,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
 │                              # refreshLivePlayback, shouldTrackPlay,
-│                              # ensurePlayheadVisible, autoScroll. ~817 lines.
+│                              # ensurePlayheadVisible, autoScroll. ~831 lines.
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
@@ -198,8 +200,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
 │   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
 │   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
-│   │                          # TRACK_ROW_HEIGHT=4), TRACK_COLORS, BRAILLE_BASE,
-│   │                          # BRAILLE_DOTS. ~110 lines.
+│   │                          # TRACK_ROW_HEIGHT=4, WAVEFORM_ROW_HEIGHT=5),
+│   │                          # TRACK_COLORS, BRAILLE_BASE, BRAILLE_DOTS. ~113 lines.
 │   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
@@ -218,9 +220,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # setupMouseHandlers(callbacks) for scroll/volume/pan.
 │                              # Has Tokyo Night color constants. Renders: top bar, sidebar
 │                              # (track list with M/S/R, volume, pan, level meters, input
-│                              # device labels), main area (braille waveforms, beat grid
-│                              # timeline, playhead), status bar, help overlay, device selector
-│                              # overlay, file picker overlay. ~1098 lines.
+│                              # device labels), main area (braille waveforms + speed-scaled
+│                              # coordinates, beat grid timeline, playhead), status bar,
+│                              # help overlay, device selector overlay, file picker overlay.
+│                              # ~1113 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
 └── node_modules/
     └── @opentui/core/        # OpenTUI framework (v0.1.88)
