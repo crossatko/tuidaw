@@ -668,7 +668,7 @@ async function main() {
     if (key.sequence === "+" || key.sequence === "=") {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.bpm)
+        await audioEngine.startClick(state.originalBpm)
       }
       // On empty project, change the base tempo (no speed change needed)
       if (getProjectDurationSamples(state) === 0) {
@@ -685,7 +685,7 @@ async function main() {
     if (key.sequence === "-") {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.bpm)
+        await audioEngine.startClick(state.originalBpm)
       }
       // On empty project, change the base tempo (no speed change needed)
       if (getProjectDurationSamples(state) === 0) {
@@ -703,7 +703,7 @@ async function main() {
       state.clickEnabled = !state.clickEnabled
       if (state.transportState !== "stopped") {
         if (state.clickEnabled) {
-          await audioEngine.startClick(state.bpm)
+          await audioEngine.startClick(state.originalBpm)
         } else {
           audioEngine.stopClick()
         }
@@ -761,7 +761,7 @@ async function main() {
               state.bpm = result.detectedBPM
               state.originalBpm = result.detectedBPM
               audioEngine.setSpeed(1.0) // reset speed since bpm == originalBpm
-              audioEngine.startClick(state.bpm) // sync click generator
+              audioEngine.startClick(state.originalBpm) // sync click generator
               ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
             } else {
               ui.showStatusMessage(`Imported: ${filePath}`)

@@ -92,10 +92,9 @@ typedef struct {
 
     // Click state
     _Atomic int   click_enabled;
-    _Atomic float click_bpm;
+    _Atomic float click_bpm;             // originalBpm — beat grid in content-space
     _Atomic float click_volume;           // 0.0 - 2.0+ (allows above 100%)
     _Atomic float click_pan;              // -1.0 (L) to 1.0 (R), 0.0 = center
-    _Atomic long  click_pos;              // wall-clock sample counter for click timing (not content-space)
 
     // Loop state
     _Atomic long  loop_start;            // -1 = no loop
@@ -316,13 +315,14 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
     int any_solo = has_any_solo();
 
-    // Click state — click uses its own wall-clock counter (click_pos) so it
-    // plays at the correct BPM regardless of WSOLA speed.
+    // Click state — click timing is derived from the content-space playhead
+    // position (pos), exactly like a normal track reading samples[pos].
+    // This means toggling click_enabled mid-playback is identical to
+    // muting/unmuting a regular track: it starts at the current beat phase.
     int click_enabled = atomic_load(&g_engine.click_enabled);
     float bpm = atomic_load(&g_engine.click_bpm);
     float click_vol = atomic_load(&g_engine.click_volume);
     float click_pan = atomic_load(&g_engine.click_pan);
-    long click_pos = atomic_load(&g_engine.click_pos);
     int samples_per_beat = (bpm > 0) ? (int)(60.0f / bpm * SAMPLE_RATE) : SAMPLE_RATE;
 
     int use_wsola = (speed < 0.99f || speed > 1.01f);
@@ -391,11 +391,11 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome) — uses wall-clock counter (click_pos) instead of
-        // content-space playhead so it plays at correct BPM regardless of WSOLA speed.
+        // Click (metronome) — timing derived from content-space position (pos),
+        // exactly like a normal track reads samples[pos]. Toggling click_enabled
+        // mid-playback behaves identically to muting/unmuting a regular track.
         if (click_enabled) {
-            long cpos = click_pos + (long)frame;
-            long beat_pos = cpos % samples_per_beat;
+            long beat_pos = pos % samples_per_beat;
             int click_len = (int)(SAMPLE_RATE * 0.02f);  // 20ms click
             if (beat_pos < click_len) {
                 float t = (float)beat_pos / SAMPLE_RATE;
@@ -472,26 +472,6 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     }
 
     atomic_store(&g_engine.playhead_samples, new_playhead);
-
-    // Advance wall-clock click counter (independent of WSOLA speed)
-    if (click_enabled) {
-        long new_click_pos = click_pos + (long)frameCount;
-        // Handle loop wrapping for click: when the playhead wraps back to
-        // loop_start, subtract the loop length from click_pos so the beat
-        // phase remains continuous. This is the only correct approach:
-        // click_pos is a pure wall-clock counter from transport-start, so
-        // its phase relative to the beat grid never changes — we just rewind
-        // it by exactly the loop length, keeping `click_pos % samples_per_beat`
-        // identical to what it would have been without the wrap.
-        if (loop_start >= 0 && loop_end > loop_start && new_playhead < playhead) {
-            // Playhead wrapped backward (loop restart)
-            long loop_len = loop_end - loop_start;
-            new_click_pos -= loop_len;
-            // Clamp to 0 in case of edge cases (loop shorter than one beat, etc.)
-            if (new_click_pos < 0) new_click_pos = 0;
-        }
-        atomic_store(&g_engine.click_pos, new_click_pos);
-    }
 }
 
 // ── Capture Callback (per-track recording) ──────────────────────────────────
@@ -530,7 +510,6 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.click_bpm, 120.0f);
     atomic_store(&g_engine.click_volume, 0.5f);
     atomic_store(&g_engine.click_pan, 0.0f);
-    atomic_store(&g_engine.click_pos, 0);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
 
@@ -558,7 +537,6 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.click_bpm, 120.0f);
     atomic_store(&g_engine.click_volume, 0.5f);
     atomic_store(&g_engine.click_pan, 0.0f);
-    atomic_store(&g_engine.click_pos, 0);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.use_null_backend = 1;
@@ -799,7 +777,6 @@ EXPORT void tuidaw_set_track_input_device(int id, int device_index) {
 EXPORT void tuidaw_play(long position) {
     g_engine.transport_start_pos = position;
     atomic_store(&g_engine.playhead_samples, position);
-    atomic_store(&g_engine.click_pos, 0);  // reset wall-clock click counter
     // Reset WSOLA states so each track re-syncs to the new position
     for (int i = 0; i < MAX_TRACKS; i++) {
         if (g_engine.tracks[i].active) {
@@ -823,7 +800,6 @@ EXPORT long tuidaw_get_playhead(void) {
 // Resets WSOLA states so all tracks re-sync to the new position.
 EXPORT void tuidaw_set_playhead(long position) {
     atomic_store(&g_engine.playhead_samples, position);
-    atomic_store(&g_engine.click_pos, 0);  // reset wall-clock click counter on seek
     // Reset WSOLA states so each track re-syncs to the new position
     for (int i = 0; i < MAX_TRACKS; i++) {
         if (g_engine.tracks[i].active) {
@@ -835,21 +811,12 @@ EXPORT void tuidaw_set_playhead(long position) {
 // ── Click / Metronome ───────────────────────────────────────────────────────
 
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
-    float old_bpm = atomic_load(&g_engine.click_bpm);
     atomic_store(&g_engine.click_bpm, bpm);
     atomic_store(&g_engine.click_enabled, enabled);
-    // Only reset/snap click_pos when BPM actually changes, not on enable/disable.
-    // Resetting on a simple enable toggle causes the click to fire immediately
-    // instead of on the next beat boundary, making it sound offbeat.
-    // When BPM changes we snap click_pos to the nearest beat so the first click
-    // after the change lands on a beat rather than at a random phase.
-    if (bpm != old_bpm && bpm > 0) {
-        int new_spb = (int)(60.0f / bpm * SAMPLE_RATE);
-        long cur = atomic_load(&g_engine.click_pos);
-        // Snap to the start of the current beat (floor to beat boundary)
-        long snapped = (cur / new_spb) * new_spb;
-        atomic_store(&g_engine.click_pos, snapped);
-    }
+    // No click_pos to reset — click timing is now derived directly from the
+    // content-space playhead position (pos % samples_per_beat) in the callback,
+    // exactly like a normal track reads samples[pos]. Toggling enabled/disabled
+    // mid-playback is identical to muting/unmuting a regular track.
 }
 
 EXPORT void tuidaw_set_click_volume(float volume) {

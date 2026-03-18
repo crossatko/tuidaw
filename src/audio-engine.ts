@@ -382,8 +382,10 @@ export class AudioEngine {
   async playAll(state: ProjectState): Promise<void> {
     this.syncAllTracks(state)
 
-    // Set click state
-    lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
+    // Set click state — pass originalBpm so beat grid is in content-space.
+    // Click timing uses pos % samples_per_beat in the native callback,
+    // where pos is the content-space playhead (same coordinate as samples[pos]).
+    lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.originalBpm)
     lib.symbols.tuidaw_set_click_volume(state.clickVolume)
     lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
@@ -504,6 +506,7 @@ export class AudioEngine {
   // ── Click / Metronome ──────────────────────────────────────────────────
 
   async startClick(bpm: number, _startSample?: number, _targetDeviceId?: number | null): Promise<void> {
+    // bpm here is originalBpm — content-space beat interval
     lib.symbols.tuidaw_set_click(1, bpm)
   }
 
