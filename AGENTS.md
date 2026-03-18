@@ -102,6 +102,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Automatic BPM detection** on import (two-pass: onset ACF + sample-level refinement)
   - Sets project BPM when project is empty (all tracks have no audio)
   - Range: 60-300 BPM, iterative octave promotion for high tempos
+  - **Octave demotion** for BPM > 200: halves result if a sub-harmonic peak exists with >= 50% strength (catches fast hi-hat/subdivision dominance)
   - Parabolic interpolation for sub-frame accuracy
 
 ### Project file format:
@@ -133,6 +134,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
 - **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
 - **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
+- **BPM octave demotion**: When BPM > 200 and a sub-harmonic peak (2x lag) exists with >= 50% strength, demote to half-BPM. Catches tracks where fast hi-hat/subdivisions dominate the ACF in certain sections (e.g. Q2-Q4 of a track returning 290 instead of 145)
 - **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space and WSOLA's `input_pos` also operates in content-space, so `wsola_generate` wraps `input_pos` at `loop_end` back to `loop_start` directly (no speed scaling needed for loop bounds).
 - **miniaudio null backend**: `ma_backend_null` runs the audio callback on a timer thread but produces no sound output. Used for tests via `tuidaw_init_null()` to avoid blasting audio through speakers during `bun test`
 - **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
@@ -144,7 +146,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
 - **Click WSOLA-based playback**: Click is now generated from a pre-generated JS Float32Array buffer (one beat of 1kHz sine + 20ms decay) passed to native via `tuidaw_set_click_samples`. The native engine loops it through its own `WsolaState click_wsola`, so WSOLA pitch-preservation applies automatically. Replaces old inline click generator.
 - **`tuidaw_set_click_samples(float*, int len)`**: New export. Stores pointer + len, resets click_wsola to current playhead.
-- **Click track is always visible**: CLICK_ROW_HEIGHT=5 (matches TRACK_ROW_HEIGHT), click track row always rendered in sidebar and main area. Uses dim colors when disabled, bright when enabled or selected.
+- **Click track is always visible**: CLICK_ROW_HEIGHT=2 content rows, click track row always rendered in sidebar and main area. Uses dim colors when disabled, bright when enabled or selected. SEPARATOR_HEIGHT controls the gap between track rows (default 1, supports 0 for no separator or 2+ for wider gaps).
 - **`CLICK_TRACK_INDEX = -1`**: Sentinel for click track selected. Up arrow from track 0 navigates to click track. Down arrow from click track navigates to track 0.
 - **Click track navigation**: V key adjusts click volume, `<`/`>` adjust click pan, M key toggles clickEnabled — all when click track is selected (index -1).
 - **Mouse click on click row**: Clicking click track row in sidebar or main area sets `selectedTrackIndex = -1`.
@@ -192,13 +194,13 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
 28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
 29. **WAV import**: chunk-scanning parser, 16/24/32-bit support, stereo downmix, 48kHz resampling
-30. **Automatic BPM detection** on import (two-pass onset ACF + sample-level refinement, 60-300 BPM)
+30. **Automatic BPM detection** on import (two-pass onset ACF + sample-level refinement, 60-300 BPM, octave demotion for hi-hat dominance)
 31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
 35. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
-36. **Unified TRACK_ROW_HEIGHT=5** for both sidebar and waveform (4 content rows + 1 separator), sidebar has dedicated volume/pan row
+36. **Unified TRACK_ROW_HEIGHT=4** for both sidebar and waveform (pure content rows, no separator), sidebar has dedicated volume/pan row
 37. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
 38. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
 39. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
@@ -207,7 +209,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 42. **Click track volume control**: Native `tuidaw_set_click_volume(float)` with atomic float, range 0.0–2.0+ (allows above 100%), applied as amplitude multiplier in audio callback
 43. **Click track pan control**: Native `tuidaw_set_click_pan(float)` with equal-power panning (-1.0 L to 1.0 R), same cosine/sine law as track panning
 44. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
-45. **Click track sidebar row**: Compact 2-row (CLICK_ROW_HEIGHT=2) click track row at top of sidebar when clickEnabled. Shows ♩ icon, "Click" label, volume%, pan indicator, separator.
+45. **Click track sidebar row**: Compact 1-row (CLICK_ROW_HEIGHT=1) click track row at top of sidebar. Shows ♩ icon, volume%, pan indicator. CLICK_COLOR when enabled, FG_DIM when disabled.
 46. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
 47. **Mouse wheel click controls**: Scroll on click row in sidebar adjusts volume (x<13) or pan (x≥13) with ±0.05 per tick
 48. **BPM on empty project**: When no tracks have audio, +/- changes `originalBpm` (base tempo) instead of creating a speed ratio, so speed stays 1.0x
@@ -215,10 +217,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 50. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
 51. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
 52. **Click WSOLA via pre-generated buffer**: Native click engine replaced with WSOLA-based buffer playback. `generateClickBuffer(originalBpm)` generates one beat of 1kHz sine + 20ms decay; passed to native via `tuidaw_set_click_samples`. Pitch-preserving at all speeds. Click buffer regenerated on BPM change and C toggle.
-53. **Click track always visible**: CLICK_ROW_HEIGHT=5 matches TRACK_ROW_HEIGHT. Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
+53. **Click track always visible**: CLICK_ROW_HEIGHT=1 (compact single row). Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
 54. **Click track as first-class navigable track**: `CLICK_TRACK_INDEX = -1` sentinel. Up from track 0 selects click track. Down from click track goes to track 0. V, `<`, `>`, M keys all work on click track when selected.
 55. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
-56. **Click waveform uses `|` chars**: Beat positions shown as `│` vertical bars (not braille `⣿`) spanning all content rows.
+56. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
 
 ## File structure
 
@@ -248,8 +250,9 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
 │   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
 │   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
-│   │                          # TRACK_ROW_HEIGHT=5), TRACK_COLORS, BRAILLE_BASE,
-│   │                          # BRAILLE_DOTS. ~117 lines.
+│   │                          # TRACK_ROW_HEIGHT=4, CLICK_ROW_HEIGHT=2,
+│   │                          # SEPARATOR_HEIGHT=1), TRACK_COLORS, BRAILLE_BASE,
+│   │                          # BRAILLE_DOTS. ~119 lines.
 │   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
@@ -325,14 +328,14 @@ When mute/solo changes during transport, `refreshLivePlayback()` syncs all track
 5. Detect BPM (two-pass: onset autocorrelation + sample-level refinement)
 6. Set project BPM if project is empty
 
-## Sidebar layout per track row (TRACK_ROW_HEIGHT=5)
+## Sidebar layout per track row (TRACK_ROW_HEIGHT=4)
 
 ```
 y+0: [sel] [dot] [name............] [input]
 y+1: [sel]  M  S  R
 y+2: [sel]  V:80%  Pan:C
 y+3: [sel] [level meter / input device / "(empty)"]
-y+4: [separator line ─────────────────────]
+(separator drawn between tracks, SEPARATOR_HEIGHT rows of ─)
 ```
 
 - Selection indicator `▌` at x=0 for rows 0-3 when selected
@@ -342,26 +345,20 @@ y+4: [separator line ───────────────────�
 - Volume `V:xx%` at x=1, row 2
 - Pan `Pan:C`/`Pan:L##`/`Pan:R##` at x=9, row 2
 - Level meter or input device label or "(empty)" at x=1, row 3
-- Separator `─` at row 4
+- Separator drawn AFTER content (SEPARATOR_HEIGHT rows), not part of TRACK_ROW_HEIGHT
 
-## Sidebar click track row (CLICK_ROW_HEIGHT=5, always shown at top)
+## Sidebar click track row (CLICK_ROW_HEIGHT=1, always shown at top)
 
 ```
-y+0: [sel] ♩ Click  ON/off
-y+1: [sel]  C:toggle
-y+2: [sel]  V:50%  Pan:C
-y+3: [sel]  ♩ metronome
-y+4: [separator line ─────────────────────]
+y+0: [sel] ♩ V:xx%  Pan:C
+(separator drawn between click and first track, SEPARATOR_HEIGHT rows of ─)
 ```
 
 - Always visible regardless of clickEnabled
-- Selection indicator `▌` at x=0 for rows 0-3 when `selectedTrackIndex === CLICK_TRACK_INDEX (-1)`
-- ♩ icon at x=1, "Click" label at x=2, ON/off indicator at x=8 (row 0)
-- `C:toggle` hint at x=1 (row 1)
-- Volume `V:xx%` at x=1, Pan indicator at x=9 (row 2)
-- `♩ metronome` label at x=1 (row 3)
-- Separator `─` at row 4
-- Bright CLICK_COLOR when enabled, FG_DIM when disabled
+- Selection indicator `▌` at x=0 when `selectedTrackIndex === CLICK_TRACK_INDEX (-1)`
+- ♩ icon at x=1, volume at x=3, pan at x=9
+- CLICK_COLOR when enabled, FG_DIM when disabled
+- Separator drawn AFTER content (SEPARATOR_HEIGHT rows), not part of CLICK_ROW_HEIGHT
 
 Mouse zones for sidebar scroll:
 - Click row (y < CLICK_ROW_HEIGHT, always): x<9 = click volume, x≥9 = click pan

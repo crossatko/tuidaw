@@ -729,7 +729,22 @@ export class AudioEngine {
       }
     }
 
-    const coarseBPM = (60 * onsetRate) / bestPeak.lag
+    // Octave demotion: if the result is above 200 BPM, check if half-BPM
+    // (double the lag) has a peak with reasonable strength (>= 50%). This
+    // catches cases where fast hi-hat or subdivisions dominate the ACF.
+    let bestBPMCandidate = (60 * onsetRate) / bestPeak.lag
+    if (bestBPMCandidate > 200) {
+      for (const p of peaks) {
+        const ratio = p.lag / bestPeak.lag
+        if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.5) {
+          bestPeak = p
+          bestBPMCandidate = (60 * onsetRate) / bestPeak.lag
+          break
+        }
+      }
+    }
+
+    const coarseBPM = bestBPMCandidate
 
     // ── Pass 2: Fine sample-level refinement ────────────────────────────
     return this.refineBPM(samples, sampleRate, coarseBPM, minBPM, maxBPM)
