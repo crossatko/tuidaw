@@ -56,6 +56,7 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_playhead:         { returns: FFIType.i64 },
   tuidaw_set_playhead:         { returns: FFIType.void, args: [FFIType.i64] },
   tuidaw_set_click:            { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_click_samples:    { returns: FFIType.void, args: [FFIType.ptr, FFIType.i32] },
   tuidaw_set_click_volume:     { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_set_click_pan:        { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_set_loop:             { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
@@ -146,6 +147,9 @@ export class AudioEngine {
   // Track the Float32Array references so they don't get GC'd while native
   // code holds pointers to them.
   private pinnedBuffers: Map<string, Float32Array> = new Map()
+
+  // Pinned buffer for the click track (one beat of 1kHz sine + 20ms decay)
+  private pinnedClickBuffer: Float32Array | null = null
 
   // Track recording state for each track
   private recordingTracks: Set<string> = new Set()
@@ -389,6 +393,11 @@ export class AudioEngine {
     lib.symbols.tuidaw_set_click_volume(state.clickVolume)
     lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
+    // Pre-generate and set click buffer (one beat of 1kHz sine + 20ms decay).
+    // The native engine loops it via its own WsolaState so pitch is preserved
+    // at all WSOLA speeds.
+    this.updateClickBuffer(state.originalBpm, state.sampleRate)
+
     // Set loop state — always pass loop region to native engine if it exists.
     // The native callback handles all cases correctly:
     //   - Playhead before loop: plays linearly until reaching loopEnd, then wraps
@@ -527,6 +536,33 @@ export class AudioEngine {
     return ""
   }
   spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
+
+  // Generate one beat of 1kHz sine wave with 20ms linear decay at 48kHz.
+  // The native engine loops this buffer at [0, len) at the right WSOLA speed.
+  generateClickBuffer(originalBpm: number, sampleRate: number = 48000): Float32Array {
+    const samplesPerBeat = Math.round((60 / originalBpm) * sampleRate)
+    const buf = new Float32Array(samplesPerBeat)
+    const clickLen = Math.round(sampleRate * 0.02) // 20ms
+    for (let i = 0; i < clickLen && i < samplesPerBeat; i++) {
+      const t = i / sampleRate
+      const envelope = 1.0 - i / clickLen
+      buf[i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
+    }
+    return buf
+  }
+
+  // Pin the click buffer and pass its pointer to the native engine.
+  setClickSamples(buf: Float32Array): void {
+    this.pinnedClickBuffer = buf
+    lib.symbols.tuidaw_set_click_samples(ptr(buf), buf.length)
+  }
+
+  // Regenerate and set the click buffer for the given state.
+  // Call this whenever originalBpm changes or click is enabled.
+  updateClickBuffer(originalBpm: number, sampleRate: number = 48000): void {
+    const buf = this.generateClickBuffer(originalBpm, sampleRate)
+    this.setClickSamples(buf)
+  }
 
   // ── Speed / WSOLA ─────────────────────────────────────────────────────
 

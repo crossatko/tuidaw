@@ -142,7 +142,13 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Click loop realignment**: Not needed — `pos` is loop-wrapped in the per-frame loop before the click section reads it, so `pos % samples_per_beat` is automatically correct on every loop iteration with zero drift.
 - **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
 - **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
-- **Click waveform must use originalBpm**: The click braille waveform renders in content-space coordinates (scrollOffset, samplesPerSubCol). The native click fires at wall-clock intervals of `(60/bpm)*sampleRate`, but content-space playhead advances at `speed=bpm/originalBpm` per frame, so clicks land every `(60/originalBpm)*sampleRate` content-space samples. Using `state.bpm` instead of `state.originalBpm` caused spikes to appear at wrong positions at non-1.0x speeds.
+- **Click WSOLA-based playback**: Click is now generated from a pre-generated JS Float32Array buffer (one beat of 1kHz sine + 20ms decay) passed to native via `tuidaw_set_click_samples`. The native engine loops it through its own `WsolaState click_wsola`, so WSOLA pitch-preservation applies automatically. Replaces old inline click generator.
+- **`tuidaw_set_click_samples(float*, int len)`**: New export. Stores pointer + len, resets click_wsola to current playhead.
+- **Click track is always visible**: CLICK_ROW_HEIGHT=5 (matches TRACK_ROW_HEIGHT), click track row always rendered in sidebar and main area. Uses dim colors when disabled, bright when enabled or selected.
+- **`CLICK_TRACK_INDEX = -1`**: Sentinel for click track selected. Up arrow from track 0 navigates to click track. Down arrow from click track navigates to track 0.
+- **Click track navigation**: V key adjusts click volume, `<`/`>` adjust click pan, M key toggles clickEnabled — all when click track is selected (index -1).
+- **Mouse click on click row**: Clicking click track row in sidebar or main area sets `selectedTrackIndex = -1`.
+- **`updateClickBuffer` called on BPM change and C toggle**: Ensures click buffer always has the correct beat period.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -208,6 +214,11 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 49. **Export mixdown with click**: When clickEnabled, generates synthetic click WAV (1kHz/20ms/decay matching native engine) and includes in ffmpeg mixdown with click's volume and pan
 50. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
 51. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
+52. **Click WSOLA via pre-generated buffer**: Native click engine replaced with WSOLA-based buffer playback. `generateClickBuffer(originalBpm)` generates one beat of 1kHz sine + 20ms decay; passed to native via `tuidaw_set_click_samples`. Pitch-preserving at all speeds. Click buffer regenerated on BPM change and C toggle.
+53. **Click track always visible**: CLICK_ROW_HEIGHT=5 matches TRACK_ROW_HEIGHT. Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
+54. **Click track as first-class navigable track**: `CLICK_TRACK_INDEX = -1` sentinel. Up from track 0 selects click track. Down from click track goes to track 0. V, `<`, `>`, M keys all work on click track when selected.
+55. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
+56. **Click waveform uses `|` chars**: Beat positions shown as `│` vertical bars (not braille `⣿`) spanning all content rows.
 
 ## File structure
 
@@ -333,19 +344,26 @@ y+4: [separator line ───────────────────�
 - Level meter or input device label or "(empty)" at x=1, row 3
 - Separator `─` at row 4
 
-## Sidebar click track row (CLICK_ROW_HEIGHT=2, shown at top when clickEnabled)
+## Sidebar click track row (CLICK_ROW_HEIGHT=5, always shown at top)
 
 ```
-y+0: ♩ Click  V:50%  C
-y+1: [separator line ─────────────────────]
+y+0: [sel] ♩ Click  ON/off
+y+1: [sel]  C:toggle
+y+2: [sel]  V:50%  Pan:C
+y+3: [sel]  ♩ metronome
+y+4: [separator line ─────────────────────]
 ```
 
-- ♩ icon at x=0, "Click" label at x=2
-- Volume % at x=8
-- Pan indicator (C/L##/R##) at x=14
-- Separator `─` at row 1
+- Always visible regardless of clickEnabled
+- Selection indicator `▌` at x=0 for rows 0-3 when `selectedTrackIndex === CLICK_TRACK_INDEX (-1)`
+- ♩ icon at x=1, "Click" label at x=2, ON/off indicator at x=8 (row 0)
+- `C:toggle` hint at x=1 (row 1)
+- Volume `V:xx%` at x=1, Pan indicator at x=9 (row 2)
+- `♩ metronome` label at x=1 (row 3)
+- Separator `─` at row 4
+- Bright CLICK_COLOR when enabled, FG_DIM when disabled
 
 Mouse zones for sidebar scroll:
-- Click row (y < CLICK_ROW_HEIGHT when clickEnabled): x<13 = click volume, x>=13 = click pan
+- Click row (y < CLICK_ROW_HEIGHT, always): x<9 = click volume, x≥9 = click pan
 - Row 2, x >= 9 = pan control
 - Everything else = volume control

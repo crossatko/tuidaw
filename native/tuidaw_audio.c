@@ -92,9 +92,16 @@ typedef struct {
 
     // Click state
     _Atomic int   click_enabled;
-    _Atomic float click_bpm;             // originalBpm — beat grid in content-space
     _Atomic float click_volume;           // 0.0 - 2.0+ (allows above 100%)
     _Atomic float click_pan;              // -1.0 (L) to 1.0 (R), 0.0 = center
+
+    // Click pre-generated sample buffer (owned by JS — NOT freed here).
+    // The buffer contains exactly one beat's worth of audio.
+    // The native engine loops it at [0, click_samples_len) through its own
+    // WsolaState so it plays at the correct WSOLA-adjusted pitch and speed.
+    float*        click_samples;          // pointer to JS-owned Float32Array
+    _Atomic int   click_samples_len;      // number of samples in buffer (one beat)
+    WsolaState    click_wsola;            // per-click WSOLA state (like a track)
 
     // Loop state
     _Atomic long  loop_start;            // -1 = no loop
@@ -294,6 +301,12 @@ static float wsola_read_sample(WsolaState* ws) {
 // ── Playback Callback ───────────────────────────────────────────────────────
 // Called on the audio thread. Mixes all tracks + click into the output buffer.
 // When playback_speed != 1.0, uses WSOLA for pitch-preserving time stretch.
+//
+// Click is now a pre-generated buffer (one beat of 1kHz sine + decay) owned
+// by JS. The native engine loops it at [0, click_samples_len) through its own
+// WsolaState — identical to a normal track, so it automatically gets
+// pitch-preserved time-stretch at all speeds. Toggling click_enabled is
+// identical to muting/unmuting a regular track.
 
 static void playback_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pDevice;
@@ -315,15 +328,12 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
     int any_solo = has_any_solo();
 
-    // Click state — click timing is derived from the content-space playhead
-    // position (pos), exactly like a normal track reading samples[pos].
-    // This means toggling click_enabled mid-playback is identical to
-    // muting/unmuting a regular track: it starts at the current beat phase.
+    // Click state
     int click_enabled = atomic_load(&g_engine.click_enabled);
-    float bpm = atomic_load(&g_engine.click_bpm);
     float click_vol = atomic_load(&g_engine.click_volume);
     float click_pan = atomic_load(&g_engine.click_pan);
-    int samples_per_beat = (bpm > 0) ? (int)(60.0f / bpm * SAMPLE_RATE) : SAMPLE_RATE;
+    float* click_samples = g_engine.click_samples;
+    int click_samples_len = atomic_load(&g_engine.click_samples_len);
 
     int use_wsola = (speed < 0.99f || speed > 1.01f);
 
@@ -346,12 +356,23 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
                                speed, loop_start, loop_end);
             }
         }
+
+        // Pre-generate click WSOLA output (loops at [0, click_samples_len))
+        if (click_enabled && click_samples && click_samples_len > 0) {
+            if (!g_engine.click_wsola.initialized) {
+                wsola_reset(&g_engine.click_wsola, (double)playhead);
+            }
+            // Click loops within [0, click_samples_len) — independent of
+            // the user's loop region which applies to the audio tracks.
+            wsola_generate(&g_engine.click_wsola, click_samples, click_samples_len,
+                           speed, 0L, (long)click_samples_len);
+        }
     }
 
     for (ma_uint32 frame = 0; frame < frameCount; frame++) {
         long pos = playhead + (long)frame;
 
-        // Loop handling: wrap position (for click and non-WSOLA playback)
+        // Loop handling: wrap position (for non-WSOLA playback)
         if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
             long loop_len = loop_end - loop_start;
             long overshoot = pos - loop_end;
@@ -391,22 +412,27 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome) — timing derived from content-space position (pos),
-        // exactly like a normal track reads samples[pos]. Toggling click_enabled
-        // mid-playback behaves identically to muting/unmuting a regular track.
-        if (click_enabled) {
-            long beat_pos = pos % samples_per_beat;
-            int click_len = (int)(SAMPLE_RATE * 0.02f);  // 20ms click
-            if (beat_pos < click_len) {
-                float t = (float)beat_pos / SAMPLE_RATE;
-                float envelope = 1.0f - (float)beat_pos / click_len;
-                float click_sample = sinf(2.0f * (float)M_PI * 1000.0f * t) * envelope * click_vol;
-                // Equal-power panning for click
-                float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-                float cl_right = sinf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-                left  += click_sample * cl_left;
-                right += click_sample * cl_right;
+        // Click (metronome) — pre-generated buffer, played via WSOLA.
+        // The buffer is exactly one beat long; it loops at [0, click_samples_len).
+        // At speed 1.0, we read directly from the buffer (wrap at click_samples_len).
+        // At other speeds, WSOLA has pre-filled the click_wsola output buffer above.
+        if (click_enabled && click_samples && click_samples_len > 0) {
+            float click_sample;
+            if (use_wsola) {
+                click_sample = wsola_read_sample(&g_engine.click_wsola);
+            } else {
+                // Direct read with wrapping loop at [0, click_samples_len)
+                long click_pos = pos % (long)click_samples_len;
+                click_sample = click_samples[click_pos];
             }
+
+            click_sample *= click_vol;
+
+            // Equal-power panning for click
+            float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+            float cl_right = sinf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+            left  += click_sample * cl_left;
+            right += click_sample * cl_right;
         }
 
         // Clamp
@@ -507,9 +533,10 @@ EXPORT int tuidaw_init(void) {
     memset(&g_engine, 0, sizeof(g_engine));
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
-    atomic_store(&g_engine.click_bpm, 120.0f);
     atomic_store(&g_engine.click_volume, 0.5f);
     atomic_store(&g_engine.click_pan, 0.0f);
+    atomic_store(&g_engine.click_samples_len, 0);
+    g_engine.click_samples = NULL;
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
 
@@ -534,9 +561,10 @@ EXPORT int tuidaw_init_null(void) {
     memset(&g_engine, 0, sizeof(g_engine));
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
-    atomic_store(&g_engine.click_bpm, 120.0f);
     atomic_store(&g_engine.click_volume, 0.5f);
     atomic_store(&g_engine.click_pan, 0.0f);
+    atomic_store(&g_engine.click_samples_len, 0);
+    g_engine.click_samples = NULL;
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.use_null_backend = 1;
@@ -783,6 +811,8 @@ EXPORT void tuidaw_play(long position) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)position);
         }
     }
+    // Reset click WSOLA state to the new position
+    wsola_reset(&g_engine.click_wsola, (double)position);
     atomic_store(&g_engine.playing, 1);
 }
 
@@ -806,17 +836,30 @@ EXPORT void tuidaw_set_playhead(long position) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)position);
         }
     }
+    // Reset click WSOLA state to the new position
+    wsola_reset(&g_engine.click_wsola, (double)position);
 }
 
 // ── Click / Metronome ───────────────────────────────────────────────────────
 
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
-    atomic_store(&g_engine.click_bpm, bpm);
+    (void)bpm;  // BPM is no longer used here — the click buffer is pre-generated by JS
     atomic_store(&g_engine.click_enabled, enabled);
-    // No click_pos to reset — click timing is now derived directly from the
-    // content-space playhead position (pos % samples_per_beat) in the callback,
-    // exactly like a normal track reads samples[pos]. Toggling enabled/disabled
-    // mid-playback is identical to muting/unmuting a regular track.
+    // Reset click WSOLA state so it re-syncs to the current playhead
+    // when toggling click on/off mid-playback.
+    long current_pos = atomic_load(&g_engine.playhead_samples);
+    wsola_reset(&g_engine.click_wsola, (double)current_pos);
+}
+
+// Set the pre-generated click buffer (owned by JS, NOT freed here).
+// The buffer should contain exactly one beat's worth of audio at 48kHz.
+// Pass NULL/0 to clear the click buffer.
+// Resets click WSOLA state to the current playhead position.
+EXPORT void tuidaw_set_click_samples(float* samples, int len) {
+    g_engine.click_samples = samples;
+    atomic_store(&g_engine.click_samples_len, len);
+    long current_pos = atomic_load(&g_engine.playhead_samples);
+    wsola_reset(&g_engine.click_wsola, (double)current_pos);
 }
 
 EXPORT void tuidaw_set_click_volume(float volume) {
@@ -930,6 +973,8 @@ EXPORT void tuidaw_set_speed(float speed) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)current_pos);
         }
     }
+    // Also reset click WSOLA so it re-syncs to the current playhead
+    wsola_reset(&g_engine.click_wsola, (double)current_pos);
 }
 
 // Get current playback speed.

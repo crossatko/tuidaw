@@ -114,4 +114,5 @@ export const TRACK_COLORS = [
 export const SIDEBAR_WIDTH = 22
 export const TOPBAR_HEIGHT = 3
 export const TRACK_ROW_HEIGHT = 5 // rows per track in both sidebar and waveform (4 content + 1 separator)
-export const CLICK_ROW_HEIGHT = 2 // rows for click track (1 content + 1 separator)
+export const CLICK_ROW_HEIGHT = 5 // rows for click track (matches TRACK_ROW_HEIGHT)
+export const CLICK_TRACK_INDEX = -1 // sentinel: click track selected (selectedTrackIndex === -1)
