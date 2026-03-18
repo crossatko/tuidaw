@@ -389,8 +389,10 @@ export class AudioEngine {
     // Set click state
     lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
 
-    // Set loop state
-    if (state.loopStart !== null && state.loopEnd !== null) {
+    // Set loop state — only enforce loop if playhead is inside the region.
+    // If the user moved the playhead outside the loop, play linearly.
+    if (state.loopStart !== null && state.loopEnd !== null &&
+        state.playheadPosition >= state.loopStart && state.playheadPosition < state.loopEnd) {
       lib.symbols.tuidaw_set_loop(BigInt(state.loopStart), BigInt(state.loopEnd))
     } else {
       lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
