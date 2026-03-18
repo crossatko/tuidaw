@@ -78,6 +78,7 @@ async function main() {
       const samplesPerCol = samplesPerSubCol * 2
       const samplePos = state.scrollOffset + x * samplesPerCol
       state.playheadPosition = Math.max(0, samplePos)
+      ensurePlayheadVisible()
       render()
     },
   })
@@ -108,14 +109,29 @@ async function main() {
 
   // ── Transport Controls ──────────────────────────────────────────────────
 
-  // Helper: compute auto-scroll values
-  function autoScroll() {
+  // Helper: compute visible sample range
+  function getVisibleSamples() {
     const mainWidth = renderer.width - 22 // SIDEBAR_WIDTH
     const samplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
     const samplesPerCol = samplesPerSubCol * 2
-    const visibleSamples = mainWidth * samplesPerCol
+    return mainWidth * samplesPerCol
+  }
+
+  // Helper: auto-scroll during live playback (scrolls forward when playhead nears right edge)
+  function autoScroll() {
+    const visibleSamples = getVisibleSamples()
     if (state.playheadPosition > state.scrollOffset + visibleSamples * 0.8) {
       state.scrollOffset = state.playheadPosition - Math.floor(visibleSamples * 0.2)
+    }
+  }
+
+  // Helper: ensure playhead is visible, recentering view if it's outside the visible area
+  function ensurePlayheadVisible() {
+    const visibleSamples = getVisibleSamples()
+    if (state.playheadPosition < state.scrollOffset ||
+        state.playheadPosition > state.scrollOffset + visibleSamples) {
+      // Center playhead in view
+      state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples / 2))
     }
   }
 
@@ -510,6 +526,7 @@ async function main() {
         if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
       }
       state.playheadPosition = maxLen
+      ensurePlayheadVisible()
       render()
       return
     }
@@ -745,6 +762,7 @@ async function main() {
       const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
+      ensurePlayheadVisible()
       render()
       return
     }
@@ -755,6 +773,7 @@ async function main() {
       const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition += samplesPerBar
+      ensurePlayheadVisible()
       render()
       return
     }
