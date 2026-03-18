@@ -32,7 +32,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 ### Native audio engine architecture:
 - C shared library wraps miniaudio, exports flat C API, called from TypeScript via `bun:ffi` (`dlopen`)
-- The native audio callback handles mixing, pan, volume, click generation, and loop regions sample-accurately — no temp files, no process spawning
+- The native audio callback handles mixing, pan, volume, click generation, loop regions, and WSOLA time-stretch sample-accurately — no temp files, no process spawning
+- **WSOLA time-stretch**: per-track Waveform Similarity Overlap-Add for pitch-preserving speed changes (window=1024, hop=512, search=±256)
 - Recording uses per-track miniaudio capture devices with ring buffers polled from JS via `pollRecordingData()`
 - Pan/volume changes are instant (atomic updates in native engine) — no WAV rewrite or process restart
 - Playhead position is sample-accurate from the audio thread via `tuidaw_get_playhead()`
@@ -47,6 +48,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_set_click(enabled, bpm)` — metronome (generated inline in callback)
 - `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
 - `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
+- `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA time-stretch speed control (0.25x–2.0x)
 
 ### Recording behavior:
 - **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
@@ -172,6 +174,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
+34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
 
 ## File structure
 

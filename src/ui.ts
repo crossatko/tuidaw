@@ -325,6 +325,14 @@ export class UIRenderer {
     fb.drawText("BPM:", bpmX, 1, FG_DIM, BG_TOPBAR)
     fb.drawText(` ${state.bpm} `, bpmX + 4, 1, FG_YELLOW, BG_TOPBAR, TextAttributes.BOLD)
 
+    // Speed indicator (show when speed != 1.0x)
+    const speed = state.bpm / state.originalBpm
+    const speedX = bpmX + 4 + ` ${state.bpm} `.length
+    if (speed < 0.99 || speed > 1.01) {
+      const pct = Math.round(speed * 100)
+      fb.drawText(` ${pct}% `, speedX, 1, RGBA.fromHex("#1a1b26"), RGBA.fromHex("#BB8FCE"))
+    }
+
     // Click indicator
     const clickX = bpmX + 10
     if (state.clickEnabled) {
@@ -781,8 +789,8 @@ export class UIRenderer {
       ["HOME / 0", "Jump to beginning"],
       ["M", "Toggle mute on selected track"],
       ["S", "Toggle solo on selected track"],
-      ["+", "Increase BPM"],
-      ["-", "Decrease BPM"],
+      ["+", "Increase BPM (speed up)"],
+      ["-", "Decrease BPM (slow down)"],
       ["C", "Toggle metronome click"],
       ["P", "Practice loop (start/end/clear)"],
       ["V", "Volume up on selected track"],
