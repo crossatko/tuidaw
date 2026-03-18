@@ -680,8 +680,8 @@ async function main() {
         state.clickEnabled = !state.clickEnabled
         if (state.transportState !== "stopped") {
           if (state.clickEnabled) {
-            audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
-            await audioEngine.startClick(state.originalBpm)
+            audioEngine.updateClickBuffer(state.sampleRate)
+            await audioEngine.startClick(state.bpm)
           } else {
             audioEngine.stopClick()
           }
@@ -723,10 +723,9 @@ async function main() {
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
-      // Always regenerate click buffer when BPM changes (originalBpm may have changed)
-      audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
+      // Update displayed BPM in native click engine (no buffer regen needed — tone is BPM-independent)
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.originalBpm)
+        await audioEngine.startClick(state.bpm)
       }
       render()
       return
@@ -742,10 +741,9 @@ async function main() {
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
-      // Always regenerate click buffer when BPM changes (originalBpm may have changed)
-      audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
+      // Update displayed BPM in native click engine (no buffer regen needed — tone is BPM-independent)
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.originalBpm)
+        await audioEngine.startClick(state.bpm)
       }
       render()
       return
@@ -764,8 +762,8 @@ async function main() {
       state.clickEnabled = !state.clickEnabled
       if (state.transportState !== "stopped") {
         if (state.clickEnabled) {
-          audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
-          await audioEngine.startClick(state.originalBpm)
+          audioEngine.updateClickBuffer(state.sampleRate)
+          await audioEngine.startClick(state.bpm)
         } else {
           audioEngine.stopClick()
         }
@@ -823,7 +821,7 @@ async function main() {
               state.bpm = result.detectedBPM
               state.originalBpm = result.detectedBPM
               audioEngine.setSpeed(1.0) // reset speed since bpm == originalBpm
-              audioEngine.startClick(state.originalBpm) // sync click generator
+              audioEngine.startClick(state.bpm) // sync click generator with displayed BPM
               ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
             } else {
               ui.showStatusMessage(`Imported: ${filePath}`)

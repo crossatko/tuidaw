@@ -96,13 +96,13 @@ typedef struct {
     _Atomic float click_pan;              // -1.0 (L) to 1.0 (R), 0.0 = center
 
     // Click pre-generated sample buffer (owned by JS — NOT freed here).
-    // The buffer contains exactly one beat's worth of audio.
-    // The native engine loops it at [0, click_samples_len) through its own
-    // WsolaState so it plays at the correct WSOLA-adjusted pitch and speed.
-    float*        click_samples;          // pointer to JS-owned Float32Array
-    _Atomic int   click_samples_len;      // number of samples in buffer (one beat)
-    double        click_spb_exact;        // exact fractional samples-per-beat (60.0/bpm*SR)
-    WsolaState    click_wsola;            // per-click WSOLA state (like a track)
+    // The buffer contains just the click TONE (e.g. 960 samples of 1kHz sine
+    // with 20ms decay). Beat TIMING is handled separately via click_frame_counter
+    // and click_displayed_bpm — NO WSOLA, NO pitch shift.
+    float*        click_samples;          // pointer to JS-owned Float32Array (tone only)
+    _Atomic int   click_samples_len;      // number of samples in buffer (tone, not beat)
+    double        click_displayed_bpm;    // displayed/target BPM for click timing (output-space)
+    _Atomic long  click_frame_counter;    // output frame counter for click timing (reset on play/seek)
 
     // Loop state
     _Atomic long  loop_start;            // -1 = no loop
@@ -358,16 +358,8 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             }
         }
 
-        // Pre-generate click WSOLA output (loops at [0, click_samples_len))
-        if (click_enabled && click_samples && click_samples_len > 0) {
-            if (!g_engine.click_wsola.initialized) {
-                wsola_reset(&g_engine.click_wsola, (double)playhead);
-            }
-            // Click loops within [0, click_samples_len) — independent of
-            // the user's loop region which applies to the audio tracks.
-            wsola_generate(&g_engine.click_wsola, click_samples, click_samples_len,
-                           speed, 0L, (long)click_samples_len);
-        }
+        // (Click no longer uses WSOLA — it uses an output-space frame counter
+        // so the tone is never pitch-shifted regardless of playback speed.)
     }
 
     for (ma_uint32 frame = 0; frame < frameCount; frame++) {
@@ -413,28 +405,25 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome) — pre-generated buffer, played via WSOLA.
-        // The buffer is exactly one beat long; it loops at [0, click_samples_len).
-        // At speed 1.0, we use fractional beat-phase computation to avoid
-        // cumulative drift from integer buffer length rounding:
-        //   beat_phase = fmod(pos, exact_samples_per_beat)
-        //   click_idx = (int)beat_phase  (clamped to buffer range)
-        // This ensures every click onset is independently computed from the
-        // absolute position, eliminating drift over long playback.
-        // At other speeds, WSOLA has pre-filled the click_wsola output buffer above.
+        // Click (metronome) — output-space frame counter approach.
+        // The click_samples buffer contains just the click TONE (e.g. 960 samples).
+        // Beat timing is computed from click_displayed_bpm using an output-space
+        // frame counter (click_frame_counter). This counter increments by 1 per
+        // output frame regardless of WSOLA speed, so the click always ticks at
+        // the displayed BPM rate in wall-clock time. The tone is NEVER
+        // pitch-shifted since it's read directly (no WSOLA, no time-stretching).
         if (click_enabled && click_samples && click_samples_len > 0) {
-            float click_sample;
-            if (use_wsola) {
-                click_sample = wsola_read_sample(&g_engine.click_wsola);
-            } else {
-                // Fractional beat-phase computation (drift-free)
-                double spb = g_engine.click_spb_exact;
-                if (spb <= 0.0) spb = (double)click_samples_len; // fallback
-                double beat_phase = fmod((double)pos, spb);
-                if (beat_phase < 0.0) beat_phase += spb;
-                int click_idx = (int)beat_phase;
-                if (click_idx >= click_samples_len) click_idx = click_samples_len - 1;
-                click_sample = click_samples[click_idx];
+            float click_sample = 0.0f;
+            double displayed_bpm = g_engine.click_displayed_bpm;
+            if (displayed_bpm > 0.0) {
+                double spb_output = 60.0 / displayed_bpm * (double)SAMPLE_RATE;
+                long counter = atomic_load(&g_engine.click_frame_counter) + (long)frame;
+                double beat_phase = fmod((double)counter, spb_output);
+                if (beat_phase < 0.0) beat_phase += spb_output;
+                int idx = (int)beat_phase;
+                if (idx < click_samples_len) {
+                    click_sample = click_samples[idx];
+                }
             }
 
             click_sample *= click_vol;
@@ -508,6 +497,13 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         }
     }
 
+    // Advance click output-space frame counter (always increments by frameCount,
+    // regardless of WSOLA speed — this is output/wall-clock time).
+    if (click_enabled) {
+        long old_counter = atomic_load(&g_engine.click_frame_counter);
+        atomic_store(&g_engine.click_frame_counter, old_counter + (long)frameCount);
+    }
+
     atomic_store(&g_engine.playhead_samples, new_playhead);
 }
 
@@ -548,7 +544,8 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.click_pan, 0.0f);
     atomic_store(&g_engine.click_samples_len, 0);
     g_engine.click_samples = NULL;
-    g_engine.click_spb_exact = 0.0;
+    g_engine.click_displayed_bpm = 0.0;
+    atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
 
@@ -577,7 +574,8 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.click_pan, 0.0f);
     atomic_store(&g_engine.click_samples_len, 0);
     g_engine.click_samples = NULL;
-    g_engine.click_spb_exact = 0.0;
+    g_engine.click_displayed_bpm = 0.0;
+    atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.use_null_backend = 1;
@@ -825,7 +823,7 @@ EXPORT void tuidaw_play(long position) {
         }
     }
     // Reset click WSOLA state to the new position
-    wsola_reset(&g_engine.click_wsola, (double)position);
+    atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playing, 1);
 }
 
@@ -849,36 +847,32 @@ EXPORT void tuidaw_set_playhead(long position) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)position);
         }
     }
-    // Reset click WSOLA state to the new position
-    wsola_reset(&g_engine.click_wsola, (double)position);
+    // Reset click frame counter so click re-syncs to new position
+    atomic_store(&g_engine.click_frame_counter, 0L);
 }
 
 // ── Click / Metronome ───────────────────────────────────────────────────────
 
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
     atomic_store(&g_engine.click_enabled, enabled);
-    // Store exact fractional samples-per-beat for drift-free click timing.
+    // Store displayed BPM for output-space click timing.
     // bpm may be 0 (when disabling) — only update if valid.
     if (bpm > 0.0f) {
-        g_engine.click_spb_exact = 60.0 / (double)bpm * (double)SAMPLE_RATE;
+        g_engine.click_displayed_bpm = (double)bpm;
     }
-    // Reset click WSOLA state so it re-syncs to the current playhead
-    // when toggling click on/off mid-playback.
-    long current_pos = atomic_load(&g_engine.playhead_samples);
-    wsola_reset(&g_engine.click_wsola, (double)current_pos);
+    // Reset click frame counter so click re-syncs when toggling on/off.
+    atomic_store(&g_engine.click_frame_counter, 0L);
 }
 
-// Set the pre-generated click buffer (owned by JS, NOT freed here).
-// The buffer should contain exactly one beat's worth of audio at 48kHz.
-// Pass NULL/0 to clear the click buffer.
-// Resets click WSOLA state to the current playhead position.
+// Set the pre-generated click tone buffer (owned by JS, NOT freed here).
+// The buffer contains just the click TONE (e.g. 960 samples of 1kHz sine
+// with 20ms decay). Beat timing is handled by click_displayed_bpm +
+// click_frame_counter. Pass NULL/0 to clear the click buffer.
 // Race-safe: sets length to 0 first, then pointer, then new length.
 EXPORT void tuidaw_set_click_samples(float* samples, int len) {
     atomic_store(&g_engine.click_samples_len, 0);  // disable first (race-safe)
     g_engine.click_samples = samples;
     atomic_store(&g_engine.click_samples_len, len);
-    long current_pos = atomic_load(&g_engine.playhead_samples);
-    wsola_reset(&g_engine.click_wsola, (double)current_pos);
 }
 
 EXPORT void tuidaw_set_click_volume(float volume) {
@@ -992,8 +986,10 @@ EXPORT void tuidaw_set_speed(float speed) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)current_pos);
         }
     }
-    // Also reset click WSOLA so it re-syncs to the current playhead
-    wsola_reset(&g_engine.click_wsola, (double)current_pos);
+    // Also reset click frame counter (speed change means BPM ratio changed,
+    // but click timing uses displayed_bpm directly so just reset for clean start)
+    // Note: don't reset here — the click should keep ticking smoothly across
+    // speed changes. The displayed_bpm is updated by JS when speed changes.
 }
 
 // Get current playback speed.
