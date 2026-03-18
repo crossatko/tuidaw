@@ -180,48 +180,31 @@ export class AudioEngine {
 
     const inputs: AudioDevice[] = []
     const outputs: AudioDevice[] = []
-    const nameBuf = new Uint8Array(256)
-    const namePtr = ptr(nameBuf)
 
-    // Enumerate capture (input) devices
-    // Deduplicate by name — ALSA/PulseAudio/PipeWire backends often report the
-    // same physical device multiple times under different aliases (hw:0,0,
-    // plughw:0,0, default, etc.) all with the same display name.
-    // We keep the first occurrence (which is preferred by miniaudio) and discard
-    // subsequent entries with the same name.
-    const inputCount = lib.symbols.tuidaw_get_device_count(1)
-    const seenInputNames = new Set<string>()
-    for (let i = 0; i < inputCount; i++) {
-      lib.symbols.tuidaw_get_device_name(1, i, namePtr, 256)
-      const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
-      if (seenInputNames.has(name)) continue
-      seenInputNames.add(name)
-      const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
-      inputs.push({
-        id: i,
-        name,
-        description: name,
-        type: "input",
-        isDefault,
-      })
+    // IMPORTANT: Bun FFI ptr() is only reliable for a single call when reusing
+    // the same buffer — subsequent calls with the same namePtr do not reliably
+    // reflect updated bytes in the Uint8Array view. Allocate a fresh buffer (and
+    // thus a fresh ptr()) for each tuidaw_get_device_name call.
+    const readName = (type: number, index: number): string => {
+      const buf = new Uint8Array(256)
+      lib.symbols.tuidaw_get_device_name(type, index, ptr(buf), 256)
+      return new TextDecoder().decode(buf.subarray(0, buf.indexOf(0)))
     }
 
-    // Enumerate playback (output) devices (same deduplication)
+    // Enumerate capture (input) devices
+    const inputCount = lib.symbols.tuidaw_get_device_count(1)
+    for (let i = 0; i < inputCount; i++) {
+      const name = readName(1, i)
+      const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
+      inputs.push({ id: i, name, description: name, type: "input", isDefault })
+    }
+
+    // Enumerate playback (output) devices
     const outputCount = lib.symbols.tuidaw_get_device_count(0)
-    const seenOutputNames = new Set<string>()
     for (let i = 0; i < outputCount; i++) {
-      lib.symbols.tuidaw_get_device_name(0, i, namePtr, 256)
-      const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
-      if (seenOutputNames.has(name)) continue
-      seenOutputNames.add(name)
+      const name = readName(0, i)
       const isDefault = lib.symbols.tuidaw_is_device_default(0, i) !== 0
-      outputs.push({
-        id: i,
-        name,
-        description: name,
-        type: "output",
-        isDefault,
-      })
+      outputs.push({ id: i, name, description: name, type: "output", isDefault })
     }
 
     return { inputs, outputs }
