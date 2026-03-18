@@ -44,9 +44,9 @@ async function main() {
   // Set up mouse wheel handlers for scroll, volume, and pan
   ui.setupMouseHandlers({
     onScrollChange: (direction: number) => {
-      // Scroll ~0.5 seconds per wheel tick
-      const scrollAmount = Math.floor(state.sampleRate * 0.5)
-      state.scrollOffset = Math.max(0, state.scrollOffset + direction * scrollAmount)
+      // Scroll by 1 beat per wheel tick
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
       render()
     },
     onVolumeChange: (delta: number) => {
@@ -479,15 +479,17 @@ async function main() {
       return
     }
 
-    // Left/Right - Scroll
+    // Left/Right - Scrub by beats (shift: by bars)
     if (key.name === "left" || key.name === "h") {
-      const scrollAmount = Math.floor(state.sampleRate * (key.shift ? 5 : 1))
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
       render()
       return
     }
     if (key.name === "right" || key.name === "l") {
-      const scrollAmount = Math.floor(state.sampleRate * (key.shift ? 5 : 1))
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset += scrollAmount
       render()
       return
