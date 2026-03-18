@@ -587,10 +587,14 @@ export class UIRenderer {
       if (clickH > 0) {
         fb.fillRect(0, y, w, clickH, BG)
 
-        // Generate synthetic click beat pattern for braille rendering
-        // Each beat gets a spike, rendered as 1 row of braille
-        if (clickH >= 1) {
-          const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+         // Generate synthetic click beat pattern for braille rendering
+         // Each beat gets a spike, rendered as 1 row of braille
+         // Uses originalBpm because coordinates are in content-space:
+         // the native click fires on wall-clock intervals at (60/bpm)*sampleRate,
+         // but content-space playhead advances at speed=bpm/originalBpm per frame,
+         // so click lands every (60/originalBpm)*sampleRate content-space samples.
+         if (clickH >= 1) {
+           const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
           const samplesPerCol = samplesPerSubCol * 2
 
           for (let x = 0; x < w; x++) {
