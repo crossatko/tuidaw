@@ -38,3 +38,7 @@ recordings/
 
 # native build toolchain (downloaded on demand)
 native/zig-toolchain/
+
+# local test/debug scripts (contain user-specific paths)
+test-bpm.ts
+debug-bpm.ts

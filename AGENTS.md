@@ -10,6 +10,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Commit messages should have a concise title line and a detailed description body listing what was done.
 - **Always `git push` after committing.** Never leave commits unpushed.
 - **Always update AGENTS.md** when significant changes are made (new features, architecture changes, bug fixes, new discoveries). Keep the Accomplished list, File structure, and Discoveries sections current.
+- **Never commit files containing the user's real filesystem paths** (e.g. `/home/kreejzak/...`). Such files (test scripts, debug scripts) must be `.gitignore`d. If a file with real paths was previously tracked, `git rm --cached` it before committing.
 
 ## Instructions
 
@@ -133,8 +134,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Stereo WAV files** need explicit mono downmix (average channels)
 - **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
 - **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
-- **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
-- **BPM octave demotion**: When BPM > 200 and a sub-harmonic peak (2x lag) exists with >= 50% strength, demote to half-BPM. Catches tracks where fast hi-hat/subdivisions dominate the ACF in certain sections (e.g. Q2-Q4 of a track returning 290 instead of 145)
+- **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250). Multi-candidate refinement handles promotion overshoot (e.g. 185 BPM where promotion goes 61→124→230, and 185 is collected as a candidate between pre- and post-promotion values). Sample-level autocorrelation is biased toward lower BPM, so the promoted candidate gets a +0.05 correlation advantage over alternatives.
 - **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space and WSOLA's `input_pos` also operates in content-space, so `wsola_generate` wraps `input_pos` at `loop_end` back to `loop_start` directly (no speed scaling needed for loop bounds).
 - **miniaudio null backend**: `ma_backend_null` runs the audio callback on a timer thread but produces no sound output. Used for tests via `tuidaw_init_null()` to avoid blasting audio through speakers during `bun test`
 - **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
@@ -194,7 +194,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
 28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
 29. **WAV import**: chunk-scanning parser, 16/24/32-bit support, stereo downmix, 48kHz resampling
-30. **Automatic BPM detection** on import (two-pass onset ACF + sample-level refinement, 60-300 BPM, octave demotion for hi-hat dominance)
+30. **Automatic BPM detection** on import (two-pass onset ACF + multi-candidate sample-level refinement, 60-300 BPM, iterative octave promotion with overshoot correction)
 31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
@@ -261,7 +261,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # chunk scanning), resampling (linear interpolation),
 │   │                          # BPM detection (two-pass: onset ACF + sample-level),
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1313 lines.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1415 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
