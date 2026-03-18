@@ -624,36 +624,82 @@ export class AudioEngine {
     await Bun.write(filePath, wavBuffer)
   }
 
-  // Parse a WAV file
+  // Parse a WAV file — handles JUNK/LIST/other chunks before fmt,
+  // stereo files (downmixed to mono), 16-bit and 32-bit float formats.
   parseWav(buf: Buffer): { samples: Float32Array; sampleRate: number } | null {
     if (buf.toString("ascii", 0, 4) !== "RIFF") return null
     if (buf.toString("ascii", 8, 12) !== "WAVE") return null
 
-    const sampleRate = buf.readUInt32LE(24)
-    const bitsPerSample = buf.readUInt16LE(34)
+    // Scan for fmt and data chunks (don't assume fixed offsets — files
+    // may have JUNK, LIST, bext, or other chunks before fmt)
+    let sampleRate = 0
+    let numChannels = 1
+    let bitsPerSample = 16
+    let fmtFound = false
+    let dataBuf: Buffer | null = null
 
     let offset = 12
     while (offset < buf.length - 8) {
       const chunkId = buf.toString("ascii", offset, offset + 4)
       const chunkSize = buf.readUInt32LE(offset + 4)
-      if (chunkId === "data") {
-        const dataStart = offset + 8
-        const dataEnd = dataStart + chunkSize
-        const dataBuf = buf.subarray(dataStart, dataEnd)
 
-        if (bitsPerSample === 16) {
-          return { samples: this.pcmS16ToFloat32(dataBuf), sampleRate }
-        }
-        if (bitsPerSample === 32) {
-          const float32 = new Float32Array(dataBuf.buffer, dataBuf.byteOffset, dataBuf.length / 4)
-          return { samples: new Float32Array(float32), sampleRate }
-        }
-        return null
+      if (chunkId === "fmt ") {
+        numChannels = buf.readUInt16LE(offset + 10)
+        sampleRate = buf.readUInt32LE(offset + 12)
+        bitsPerSample = buf.readUInt16LE(offset + 22)
+        fmtFound = true
+      } else if (chunkId === "data") {
+        const dataStart = offset + 8
+        const dataEnd = Math.min(dataStart + chunkSize, buf.length)
+        dataBuf = buf.subarray(dataStart, dataEnd)
       }
+
       offset += 8 + chunkSize
-      if (chunkSize % 2 !== 0) offset++
+      if (chunkSize % 2 !== 0) offset++ // RIFF chunks are 2-byte aligned
     }
-    return null
+
+    if (!fmtFound || !dataBuf || sampleRate === 0) return null
+
+    // Decode PCM data
+    let rawSamples: Float32Array
+
+    if (bitsPerSample === 16) {
+      rawSamples = this.pcmS16ToFloat32(dataBuf)
+    } else if (bitsPerSample === 32) {
+      rawSamples = new Float32Array(dataBuf.buffer, dataBuf.byteOffset, dataBuf.length / 4)
+      rawSamples = new Float32Array(rawSamples) // copy to own buffer
+    } else if (bitsPerSample === 24) {
+      // 24-bit signed PCM
+      const numSamples = Math.floor(dataBuf.length / 3)
+      rawSamples = new Float32Array(numSamples)
+      for (let i = 0; i < numSamples; i++) {
+        const b0 = dataBuf[i * 3]
+        const b1 = dataBuf[i * 3 + 1]
+        const b2 = dataBuf[i * 3 + 2]
+        // Sign-extend from 24-bit
+        let sample = (b0 | (b1 << 8) | (b2 << 16))
+        if (sample & 0x800000) sample |= ~0xFFFFFF // sign extend
+        rawSamples[i] = sample / 8388608 // 2^23
+      }
+    } else {
+      return null // unsupported format
+    }
+
+    // Downmix to mono if stereo (or more channels)
+    if (numChannels > 1) {
+      const monoLen = Math.floor(rawSamples.length / numChannels)
+      const mono = new Float32Array(monoLen)
+      for (let i = 0; i < monoLen; i++) {
+        let sum = 0
+        for (let ch = 0; ch < numChannels; ch++) {
+          sum += rawSamples[i * numChannels + ch]
+        }
+        mono[i] = sum / numChannels
+      }
+      return { samples: mono, sampleRate }
+    }
+
+    return { samples: rawSamples, sampleRate }
   }
 
   // ── Export Mixdown ─────────────────────────────────────────────────────
