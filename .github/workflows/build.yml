@@ -1,0 +1,92 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-native:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+            lib: libtuidaw_audio.so
+            artifact: libtuidaw_audio-linux-x86_64.so
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+            lib: libtuidaw_audio.so
+            artifact: libtuidaw_audio-linux-aarch64.so
+          - os: macos-latest
+            platform: macos
+            arch: aarch64
+            lib: libtuidaw_audio.dylib
+            artifact: libtuidaw_audio-macos-aarch64.dylib
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+            lib: libtuidaw_audio.dylib
+            artifact: libtuidaw_audio-macos-x86_64.dylib
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Zig 0.14.0
+        run: |
+          ZIG_TARBALL="zig-${{ matrix.platform }}-${{ matrix.arch }}-0.14.0.tar.xz"
+          ZIG_URL="https://ziglang.org/download/0.14.0/$ZIG_TARBALL"
+          curl -fSL -o /tmp/zig.tar.xz "$ZIG_URL"
+          mkdir -p native/zig-toolchain
+          tar xf /tmp/zig.tar.xz -C native/zig-toolchain --strip-components=1
+
+      - name: Build native library
+        run: cd native && bash build.sh release
+
+      - name: Rename artifact
+        run: cp native/${{ matrix.lib }} native/${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native/${{ matrix.artifact }}
+
+  release:
+    needs: build-native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          # Collect all native libraries
+          FILES=""
+          for f in artifacts/*/*; do
+            FILES="$FILES $f"
+          done
+
+          # Update existing release or create new one
+          if gh release view "$TAG" &>/dev/null; then
+            gh release upload "$TAG" $FILES --clobber
+          else
+            gh release create "$TAG" $FILES \
+              --title "$TAG" \
+              --generate-notes
+          fi
