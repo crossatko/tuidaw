@@ -39,6 +39,7 @@ export interface ProjectState {
   transportState: TransportState
   playheadPosition: number // in samples
   scrollOffset: number // horizontal scroll in samples
+  freeScroll: boolean // true = user scrolled away from playhead, disable auto-scroll tracking
   loopStart: number | null
   loopEnd: number | null
   projectName: string

@@ -49,6 +49,10 @@ async function main() {
       // Scroll by 1 beat per wheel tick (content-space beats use originalBpm)
       const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
+      // Enter free-scroll mode during playback so autoScroll doesn't snap back
+      if (state.transportState !== "stopped") {
+        state.freeScroll = true
+      }
       render()
     },
     onVolumeChange: (delta: number) => {
@@ -137,12 +141,28 @@ async function main() {
   }
 
   // Helper: auto-scroll during live playback.
+  // If freeScroll is true, the user has manually scrolled away from the playhead.
+  // In that mode, we don't move the view — but if the playhead naturally enters
+  // the visible area again, we re-engage tracking.
   // If a loop region is active and fits on screen, center the loop region
   // once and keep the view locked — no jumping around.
   // Otherwise, scroll forward when playhead nears the right edge, and
   // recenter when playhead jumps backward (e.g. loop wrap).
   function autoScroll() {
     const visibleSamples = getVisibleSamples()
+
+    if (state.freeScroll) {
+      // Check if the playhead has naturally entered the visible area
+      const playheadVisible = state.playheadPosition >= state.scrollOffset &&
+                              state.playheadPosition <= state.scrollOffset + visibleSamples
+      if (playheadVisible) {
+        // Re-engage tracking
+        state.freeScroll = false
+      } else {
+        // Still free-roaming, don't touch scrollOffset
+        return
+      }
+    }
 
     // If loop fits on screen, center the loop region and stay put
     if (state.loopStart !== null && state.loopEnd !== null) {
@@ -168,8 +188,10 @@ async function main() {
     }
   }
 
-  // Helper: ensure playhead is visible, recentering view if it's outside the visible area
+  // Helper: ensure playhead is visible, recentering view if it's outside the visible area.
+  // Also clears freeScroll since the user explicitly moved the playhead.
   function ensurePlayheadVisible() {
+    state.freeScroll = false
     const visibleSamples = getVisibleSamples()
     if (state.playheadPosition < state.scrollOffset ||
         state.playheadPosition > state.scrollOffset + visibleSamples) {
@@ -371,6 +393,7 @@ async function main() {
       clearInterval(playheadInterval)
       playheadInterval = null
     }
+    state.freeScroll = false
     renderer.dropLive()
     render()
   }
@@ -559,6 +582,9 @@ async function main() {
       const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
+      if (state.transportState !== "stopped") {
+        state.freeScroll = true
+      }
       render()
       return
     }
@@ -566,6 +592,9 @@ async function main() {
       const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset += scrollAmount
+      if (state.transportState !== "stopped") {
+        state.freeScroll = true
+      }
       render()
       return
     }
@@ -574,6 +603,7 @@ async function main() {
     if (key.name === "home" || key.sequence === "0") {
       state.playheadPosition = 0
       state.scrollOffset = 0
+      state.freeScroll = false
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(0)
         syncLoopAfterSeek()

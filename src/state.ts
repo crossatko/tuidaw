@@ -20,6 +20,7 @@ export function createDefaultState(): ProjectState {
     transportState: "stopped",
     playheadPosition: 0,
     scrollOffset: 0,
+    freeScroll: false,
     loopStart: null,
     loopEnd: null,
     projectName: "Untitled",
