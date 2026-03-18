@@ -389,10 +389,13 @@ export class AudioEngine {
     // Set click state
     lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
 
-    // Set loop state — only enforce loop if playhead is inside the region.
-    // If the user moved the playhead outside the loop, play linearly.
+    // Set loop state — always pass loop region to native engine if it exists.
+    // The native callback handles all cases correctly:
+    //   - Playhead before loop: plays linearly until reaching loopEnd, then wraps
+    //   - Playhead inside loop: wraps at loopEnd back to loopStart
+    //   - Playhead after loop (manual seek past region): disabled by syncLoopAfterSeek
     if (state.loopStart !== null && state.loopEnd !== null &&
-        state.playheadPosition >= state.loopStart && state.playheadPosition < state.loopEnd) {
+        state.playheadPosition <= state.loopEnd) {
       lib.symbols.tuidaw_set_loop(BigInt(state.loopStart), BigInt(state.loopEnd))
     } else {
       lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
