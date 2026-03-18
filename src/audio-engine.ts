@@ -524,12 +524,15 @@ export class AudioEngine {
     return filePath
   }
 
-  async loadWavFile(filePath: string): Promise<{ samples: Float32Array; sampleRate: number } | null> {
+  async loadWavFile(filePath: string): Promise<{ samples: Float32Array; sampleRate: number; detectedBPM: number | null } | null> {
     try {
       const file = Bun.file(filePath)
       const buf = Buffer.from(await file.arrayBuffer())
       const result = this.parseWav(buf)
       if (!result) return null
+
+      // Detect BPM before resampling (use original sample rate for accuracy)
+      const detectedBPM = this.detectBPM(result.samples, result.sampleRate)
 
       // Resample to project sample rate if needed (linear interpolation)
       if (result.sampleRate !== SAMPLE_RATE) {
@@ -537,10 +540,110 @@ export class AudioEngine {
         result.sampleRate = SAMPLE_RATE
       }
 
-      return result
+      return { ...result, detectedBPM }
     } catch {
       return null
     }
+  }
+
+  // Detect BPM using onset-based autocorrelation
+  // Returns the most likely BPM in the range [minBPM, maxBPM], or null if detection fails
+  detectBPM(samples: Float32Array, sampleRate: number, minBPM: number = 60, maxBPM: number = 200): number | null {
+    if (samples.length < sampleRate * 4) return null // need at least 4 seconds
+
+    // Use up to 60 seconds from the start for analysis (skip first 0.5s)
+    const skipSamples = Math.floor(sampleRate * 0.5)
+    const analysisLen = Math.min(samples.length - skipSamples, sampleRate * 60)
+    if (analysisLen < sampleRate * 4) return null
+
+    // Step 1: Compute short-time energy in overlapping frames
+    const frameSize = Math.floor(sampleRate * 0.02) // 20ms frames
+    const hopSize = Math.floor(frameSize / 2)        // 50% overlap
+    const numFrames = Math.floor((analysisLen - frameSize) / hopSize) + 1
+    if (numFrames < 2) return null
+
+    const energy = new Float32Array(numFrames)
+    for (let f = 0; f < numFrames; f++) {
+      let sum = 0
+      const start = skipSamples + f * hopSize
+      for (let i = 0; i < frameSize; i++) {
+        const s = samples[start + i]
+        sum += s * s
+      }
+      energy[f] = sum / frameSize
+    }
+
+    // Step 2: Onset strength function (half-wave rectified first derivative)
+    const onset = new Float32Array(numFrames - 1)
+    for (let i = 0; i < onset.length; i++) {
+      onset[i] = Math.max(0, energy[i + 1] - energy[i])
+    }
+
+    // Normalize onset signal
+    let onsetMax = 0
+    for (let i = 0; i < onset.length; i++) {
+      if (onset[i] > onsetMax) onsetMax = onset[i]
+    }
+    if (onsetMax > 0) {
+      for (let i = 0; i < onset.length; i++) {
+        onset[i] /= onsetMax
+      }
+    }
+
+    // Step 3: Autocorrelation of onset signal in the BPM range
+    // Convert BPM range to lag range in onset frames
+    const onsetRate = sampleRate / hopSize // onset frames per second
+    const minLag = Math.floor((60 / maxBPM) * onsetRate)
+    const maxLag = Math.ceil((60 / minBPM) * onsetRate)
+    if (maxLag >= onset.length) return null
+
+    const acf = new Float32Array(maxLag - minLag + 1)
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let sum = 0
+      const n = onset.length - lag
+      for (let i = 0; i < n; i++) {
+        sum += onset[i] * onset[i + lag]
+      }
+      acf[lag - minLag] = sum / n
+    }
+
+    // Step 4: Find the strongest peak, with octave weighting
+    // First pass: find raw peaks
+    const peaks: { lag: number; strength: number }[] = []
+    for (let i = 1; i < acf.length - 1; i++) {
+      if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > 0) {
+        peaks.push({ lag: i + minLag, strength: acf[i] })
+      }
+    }
+
+    if (peaks.length === 0) {
+      // No peaks found, use the maximum
+      let bestIdx = 0
+      for (let i = 1; i < acf.length; i++) {
+        if (acf[i] > acf[bestIdx]) bestIdx = i
+      }
+      if (acf[bestIdx] <= 0) return null
+      const bestLag = bestIdx + minLag
+      return Math.round((60 * onsetRate) / bestLag)
+    }
+
+    // Sort by strength descending
+    peaks.sort((a, b) => b.strength - a.strength)
+
+    // Take the strongest peak, but prefer higher BPM (shorter lag) if a sub-harmonic
+    // is nearly as strong (within 80% of the strongest). This avoids detecting half-time.
+    let bestPeak = peaks[0]
+    for (const p of peaks) {
+      // Check if this peak is roughly double the BPM of bestPeak (half the lag)
+      const ratio = bestPeak.lag / p.lag
+      if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.8) {
+        bestPeak = p // prefer the double-time (higher BPM)
+        break
+      }
+    }
+
+    const bpm = Math.round((60 * onsetRate) / bestPeak.lag)
+    return Math.max(minBPM, Math.min(maxBPM, bpm))
   }
 
   // Resample audio using linear interpolation
