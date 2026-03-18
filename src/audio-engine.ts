@@ -1,18 +1,67 @@
 // ============================================================================
-// tuidaw - Audio Engine (PipeWire-based)
+// tuidaw - Audio Engine (miniaudio-based native library via Bun FFI)
 // ============================================================================
+// Cross-platform audio I/O using a native shared library built with miniaudio.
+// Replaces the previous PipeWire CLI-based approach for:
+//   - Sample-accurate playback and mixing (no process spawn timing hacks)
+//   - Instant pan/volume changes (no WAV rewrite + process restart)
+//   - True cross-platform support (Linux, macOS, Windows)
+//   - Lower latency and no temp file I/O during transport
 
+import { dlopen, FFIType, ptr, toArrayBuffer, toBuffer, type Pointer } from "bun:ffi"
 import { spawn, type Subprocess } from "bun"
 import { existsSync, mkdirSync, rmSync } from "fs"
-import type { Track, ProjectState, PipeWireDevice, ProjectDescriptor, TrackDescriptor } from "./types"
+import type { Track, ProjectState, AudioDevice, ProjectDescriptor, TrackDescriptor } from "./types"
 
 const SAMPLE_RATE = 48000
 const CHANNELS = 1
-const FORMAT = "s16" // signed 16-bit
 const BYTES_PER_SAMPLE = 2
 const RECORDINGS_DIR = "./recordings"
-const LATENCY = "256" // 256 samples @ 48kHz ≈ 5.3ms
-const CLICK_DURATION_SEC = 300 // 5 minutes of pre-generated click track
+
+// ── Load Native Library ─────────────────────────────────────────────────────
+
+function findLibrary(): string {
+  const path = require("path")
+  const candidates = [
+    path.join(__dirname, "..", "native", "libtuidaw_audio.so"),
+    path.join(__dirname, "..", "native", "libtuidaw_audio.dylib"),
+    path.join(__dirname, "..", "native", "tuidaw_audio.dll"),
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  throw new Error("Native audio library not found. Run native/build.sh first.")
+}
+
+const lib = dlopen(findLibrary(), {
+  tuidaw_init:                 { returns: FFIType.i32 },
+  tuidaw_deinit:               { returns: FFIType.void },
+  tuidaw_refresh_devices:      { returns: FFIType.i32 },
+  tuidaw_get_device_count:     { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_get_device_name:      { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32] },
+  tuidaw_is_device_default:    { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32] },
+  tuidaw_set_output_device:    { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_start_playback_device:{ returns: FFIType.i32 },
+  tuidaw_stop_playback_device: { returns: FFIType.void },
+  tuidaw_add_track:            { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_remove_track:         { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_set_track_samples:    { returns: FFIType.void, args: [FFIType.i32, FFIType.ptr, FFIType.i32] },
+  tuidaw_set_track_volume:     { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_track_pan:        { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_track_muted:      { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
+  tuidaw_set_track_solo:       { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
+  tuidaw_set_track_input_device:{ returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
+  tuidaw_play:                 { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_stop:                 { returns: FFIType.void },
+  tuidaw_get_playhead:         { returns: FFIType.i64 },
+  tuidaw_set_playhead:         { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_set_click:            { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_loop:             { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
+  tuidaw_start_recording:      { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_stop_recording:       { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_get_recording_buffer: { returns: FFIType.ptr, args: [FFIType.i32] },
+  tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
+})
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
 // Opens native GTK file dialogs via zenity. Returns chosen path or null.
@@ -62,539 +111,411 @@ async function zenityOpen(title: string, filters?: string[]): Promise<string | n
 
 export { zenitySave, zenityOpen }
 
-export class AudioEngine {
-  // Multi-track recording: one pw-record process per armed track
-  private activeRecordings: Map<string, {
-    process: Subprocess
-    chunks: Buffer[]
-    onChunk: (samples: Float32Array) => void
-  }> = new Map()
+// ── Track ID mapping ────────────────────────────────────────────────────────
+// The native library uses integer IDs. We map string track IDs to ints.
 
-  private playProcesses: Map<string, Subprocess> = new Map()
-  private clickProcess: Subprocess | null = null
-  private playStartTime: number = 0
-  private isPlaying: boolean = false
+let nextNativeId = 1
+const trackIdMap = new Map<string, number>()     // string -> native int
+const reverseIdMap = new Map<number, string>()    // native int -> string
+
+function getNativeId(trackId: string): number {
+  let nid = trackIdMap.get(trackId)
+  if (nid === undefined) {
+    nid = nextNativeId++
+    trackIdMap.set(trackId, nid)
+    reverseIdMap.set(nid, trackId)
+  }
+  return nid
+}
+
+function removeNativeId(trackId: string): void {
+  const nid = trackIdMap.get(trackId)
+  if (nid !== undefined) {
+    trackIdMap.delete(trackId)
+    reverseIdMap.delete(nid)
+  }
+}
+
+// ── AudioEngine ─────────────────────────────────────────────────────────────
+
+export class AudioEngine {
+  // Track the Float32Array references so they don't get GC'd while native
+  // code holds pointers to them.
+  private pinnedBuffers: Map<string, Float32Array> = new Map()
+
+  // Track recording state for each track
+  private recordingTracks: Set<string> = new Set()
+
+  // Track recording start positions (for merging)
+  private recStartPositions: Map<string, number> = new Map()
+
+  // Last known recording length per track (for polling)
+  private lastRecLengths: Map<string, number> = new Map()
 
   constructor() {
     if (!existsSync(RECORDINGS_DIR)) {
       mkdirSync(RECORDINGS_DIR, { recursive: true })
     }
+
+    const result = lib.symbols.tuidaw_init()
+    if (result !== 0) {
+      throw new Error("Failed to initialize native audio engine")
+    }
+
+    // Start the playback device immediately (it sits idle until tuidaw_play)
+    const playResult = lib.symbols.tuidaw_start_playback_device()
+    if (playResult !== 0) {
+      throw new Error("Failed to start playback device")
+    }
   }
 
   // ── Device Enumeration ─────────────────────────────────────────────────
-  // Query PipeWire for available audio sources and sinks using pw-dump (JSON)
-  async enumerateDevices(): Promise<{ inputs: PipeWireDevice[]; outputs: PipeWireDevice[] }> {
-    const inputs: PipeWireDevice[] = []
-    const outputs: PipeWireDevice[] = []
 
-    try {
-      const proc = spawn({
-        cmd: ["pw-dump"],
-        stdout: "pipe",
-        stderr: "pipe",
+  async enumerateDevices(): Promise<{ inputs: AudioDevice[]; outputs: AudioDevice[] }> {
+    lib.symbols.tuidaw_refresh_devices()
+
+    const inputs: AudioDevice[] = []
+    const outputs: AudioDevice[] = []
+    const nameBuf = new Uint8Array(256)
+    const namePtr = ptr(nameBuf)
+
+    // Enumerate capture (input) devices
+    const inputCount = lib.symbols.tuidaw_get_device_count(1)
+    for (let i = 0; i < inputCount; i++) {
+      lib.symbols.tuidaw_get_device_name(1, i, namePtr, 256)
+      const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
+      const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
+      inputs.push({
+        id: i,
+        name,
+        description: name,
+        type: "input",
+        isDefault,
       })
+    }
 
-      const stdout = proc.stdout
-      if (typeof stdout === "number") return { inputs, outputs }
-
-      const reader = (stdout as ReadableStream<Uint8Array>).getReader()
-      const chunks: Uint8Array[] = []
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        chunks.push(value)
-      }
-
-      const totalLen = chunks.reduce((sum, c) => sum + c.length, 0)
-      const combined = new Uint8Array(totalLen)
-      let offset = 0
-      for (const c of chunks) {
-        combined.set(c, offset)
-        offset += c.length
-      }
-
-      const json = new TextDecoder().decode(combined)
-      const objects = JSON.parse(json) as Array<{
-        id: number
-        info?: {
-          props?: Record<string, string>
-        }
-      }>
-
-      for (const obj of objects) {
-        const props = obj.info?.props
-        if (!props) continue
-        const mediaClass = props["media.class"] || ""
-        const nodeName = props["node.name"] || ""
-        const nodeDesc = props["node.description"] || nodeName
-        const nodeNick = props["node.nick"] || ""
-
-        if (mediaClass === "Audio/Source") {
-          inputs.push({
-            id: obj.id,
-            name: nodeName,
-            description: nodeDesc || nodeNick || nodeName,
-            mediaClass,
-          })
-        } else if (mediaClass === "Audio/Sink") {
-          outputs.push({
-            id: obj.id,
-            name: nodeName,
-            description: nodeDesc || nodeNick || nodeName,
-            mediaClass,
-          })
-        }
-      }
-    } catch {
-      // pw-dump not available or failed - return empty lists
+    // Enumerate playback (output) devices
+    const outputCount = lib.symbols.tuidaw_get_device_count(0)
+    for (let i = 0; i < outputCount; i++) {
+      lib.symbols.tuidaw_get_device_name(0, i, namePtr, 256)
+      const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
+      const isDefault = lib.symbols.tuidaw_is_device_default(0, i) !== 0
+      outputs.push({
+        id: i,
+        name,
+        description: name,
+        type: "output",
+        isDefault,
+      })
     }
 
     return { inputs, outputs }
   }
 
-  // Start recording on a single track (can be called multiple times for multi-track)
-  async startRecording(
-    trackId: string,
-    onChunk: (samples: Float32Array) => void,
-    targetDeviceId?: number | null,
-  ): Promise<void> {
-    // If this track is already recording, stop it first
-    if (this.activeRecordings.has(trackId)) {
-      await this.stopTrackRecording(trackId)
+  // ── Track Management (sync native state with JS state) ─────────────────
+
+  // Ensure a track exists in the native engine and sync its current state.
+  syncTrack(track: Track): void {
+    const nid = getNativeId(track.id)
+    lib.symbols.tuidaw_add_track(nid)
+
+    // Sync parameters (these are all instant atomic updates in native code)
+    lib.symbols.tuidaw_set_track_volume(nid, track.volume)
+    lib.symbols.tuidaw_set_track_pan(nid, track.pan)
+    lib.symbols.tuidaw_set_track_muted(nid, track.muted ? 1 : 0)
+    lib.symbols.tuidaw_set_track_solo(nid, track.solo ? 1 : 0)
+
+    // Sync input device
+    const inputIdx = track.inputDeviceId ?? -1
+    lib.symbols.tuidaw_set_track_input_device(nid, inputIdx)
+
+    // Sync sample buffer
+    if (track.samples && track.samples.length > 0) {
+      this.pinnedBuffers.set(track.id, track.samples)
+      lib.symbols.tuidaw_set_track_samples(nid, ptr(track.samples), track.samples.length)
+    } else {
+      this.pinnedBuffers.delete(track.id)
+      lib.symbols.tuidaw_set_track_samples(nid, null as any, 0)
     }
-
-    const cmd = [
-      "pw-record",
-      "--format", FORMAT,
-      "--rate", String(SAMPLE_RATE),
-      "--channels", String(CHANNELS),
-      "--latency", LATENCY,
-    ]
-
-    if (targetDeviceId != null) {
-      cmd.push("--target", String(targetDeviceId))
-    }
-
-    cmd.push("-")
-
-    const proc = spawn({
-      cmd,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-
-    const recording = {
-      process: proc,
-      chunks: [] as Buffer[],
-      onChunk,
-      samplesReceived: 0,
-    }
-
-    this.activeRecordings.set(trackId, recording)
-
-    // Read audio data in chunks from stdout
-    this.readRecordingStream(trackId, recording)
   }
 
-  private async readRecordingStream(
-    trackId: string,
-    recording: {
-      process: Subprocess
-      chunks: Buffer[]
-      onChunk: (samples: Float32Array) => void
-      samplesReceived: number
-    },
-  ): Promise<void> {
-    const stdout = recording.process.stdout
-    if (!stdout || typeof stdout === "number") return
-
-    const reader = (stdout as ReadableStream<Uint8Array>).getReader()
-    // Fade-in duration: 5ms at 48kHz = 240 samples to eliminate pw-record startup noise
-    const FADE_IN_SAMPLES = Math.floor(SAMPLE_RATE * 0.005)
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const buf = Buffer.from(value)
-
-        // Convert s16 PCM to Float32
-        const floatSamples = this.pcmS16ToFloat32(buf)
-
-        // Apply fade-in to the first few ms to eliminate startup pop/noise
-        if (recording.samplesReceived < FADE_IN_SAMPLES) {
-          for (let i = 0; i < floatSamples.length && recording.samplesReceived + i < FADE_IN_SAMPLES; i++) {
-            const fadePos = recording.samplesReceived + i
-            const gain = fadePos / FADE_IN_SAMPLES
-            floatSamples[i] *= gain
-            // Also apply fade to the raw PCM buffer so finalized audio matches
-            const pcmVal = buf.readInt16LE(i * BYTES_PER_SAMPLE)
-            buf.writeInt16LE(Math.round(pcmVal * gain), i * BYTES_PER_SAMPLE)
-          }
-        }
-        recording.samplesReceived += floatSamples.length
-
-        recording.chunks.push(buf)
-
-        recording.onChunk(floatSamples)
-      }
-    } catch {
-      // stream closed
+  // Sync ALL tracks to native engine (call before playAll)
+  syncAllTracks(state: ProjectState): void {
+    for (const track of state.tracks) {
+      this.syncTrack(track)
     }
+  }
+
+  removeTrack(trackId: string): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid !== undefined) {
+      lib.symbols.tuidaw_remove_track(nid)
+    }
+    this.pinnedBuffers.delete(trackId)
+    removeNativeId(trackId)
+  }
+
+  // ── Live Parameter Changes (instant, glitch-free) ──────────────────────
+
+  setTrackVolume(trackId: string, volume: number): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_set_track_volume(nid, Math.max(0, Math.min(1, volume)))
+  }
+
+  setTrackPan(trackId: string, pan: number): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_set_track_pan(nid, Math.max(-1, Math.min(1, pan)))
+  }
+
+  setTrackMuted(trackId: string, muted: boolean): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_set_track_muted(nid, muted ? 1 : 0)
+  }
+
+  setTrackSolo(trackId: string, solo: boolean): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_set_track_solo(nid, solo ? 1 : 0)
+  }
+
+  // Update track samples pointer in native engine (after recording merges new audio)
+  updateTrackSamples(track: Track): void {
+    const nid = trackIdMap.get(track.id)
+    if (nid === undefined) return
+    if (track.samples && track.samples.length > 0) {
+      this.pinnedBuffers.set(track.id, track.samples)
+      lib.symbols.tuidaw_set_track_samples(nid, ptr(track.samples), track.samples.length)
+    } else {
+      this.pinnedBuffers.delete(track.id)
+      lib.symbols.tuidaw_set_track_samples(nid, null as any, 0)
+    }
+  }
+
+  // ── Recording ──────────────────────────────────────────────────────────
+
+  // Start recording on a single track
+  async startRecording(
+    trackId: string,
+    _onChunk: (samples: Float32Array) => void,
+    _targetDeviceId?: number | null,
+  ): Promise<void> {
+    const nid = getNativeId(trackId)
+    const result = lib.symbols.tuidaw_start_recording(nid)
+    if (result !== 0) {
+      throw new Error(`Failed to start recording on track ${trackId}`)
+    }
+    this.recordingTracks.add(trackId)
+    this.lastRecLengths.set(trackId, 0)
+  }
+
+  // Poll for new recording data and invoke the callback with new samples.
+  // Called from the playhead update interval in index.ts.
+  pollRecordingData(trackId: string, onChunk: (samples: Float32Array) => void): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+
+    const currentLen = lib.symbols.tuidaw_get_recording_length(nid)
+    const lastLen = this.lastRecLengths.get(trackId) ?? 0
+
+    if (currentLen <= lastLen) return
+
+    // Get pointer to the recording buffer
+    const bufPtr = lib.symbols.tuidaw_get_recording_buffer(nid) as Pointer
+    if (!bufPtr) return
+
+    // Read only the new samples
+    const newSampleCount = currentLen - lastLen
+    const byteOffset = lastLen * 4  // float32 = 4 bytes
+    const newBytes = toArrayBuffer(bufPtr, byteOffset, newSampleCount * 4)
+    const newSamples = new Float32Array(newBytes)
+
+    this.lastRecLengths.set(trackId, currentLen)
+    onChunk(newSamples)
   }
 
   // Stop recording on a single track and return its full buffer
   async stopTrackRecording(trackId: string): Promise<Float32Array | null> {
-    const recording = this.activeRecordings.get(trackId)
-    if (!recording) return null
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return null
 
-    recording.process.kill("SIGINT")
-    await new Promise((r) => setTimeout(r, 200))
-    this.activeRecordings.delete(trackId)
+    const totalLen = lib.symbols.tuidaw_stop_recording(nid)
+    this.recordingTracks.delete(trackId)
+    this.lastRecLengths.delete(trackId)
 
-    if (recording.chunks.length === 0) return null
+    if (totalLen <= 0) return null
 
-    const totalBuf = Buffer.concat(recording.chunks)
-    return this.pcmS16ToFloat32(totalBuf)
+    // Copy the recording buffer out
+    const bufPtr = lib.symbols.tuidaw_get_recording_buffer(nid) as Pointer
+    if (!bufPtr) return null
+
+    const bytes = toArrayBuffer(bufPtr, 0, totalLen * 4)
+    return new Float32Array(bytes.slice(0))  // copy to own buffer
   }
 
   // Stop ALL active recordings and return map of trackId -> samples
   async stopAllRecordings(): Promise<Map<string, Float32Array>> {
     const results = new Map<string, Float32Array>()
-
-    const trackIds = [...this.activeRecordings.keys()]
+    const trackIds = [...this.recordingTracks]
     for (const trackId of trackIds) {
       const samples = await this.stopTrackRecording(trackId)
       if (samples) {
         results.set(trackId, samples)
       }
     }
-
     return results
   }
 
-  // Check if any recording is currently active
   get isRecording(): boolean {
-    return this.activeRecordings.size > 0
+    return this.recordingTracks.size > 0
   }
 
-  // Prepare a track's temp WAV file for playback (write to disk).
-  // Writes a stereo WAV with pan baked in (equal-power panning law).
-  // Returns the temp path, or null if the track has nothing to play.
-  async prepareTrackWav(
-    track: Track,
-    startSample: number = 0,
-  ): Promise<string | null> {
-    if (!track.samples || track.muted) return null
-    const tempPath = `/tmp/tuidaw_play_${track.id}.wav`
-    const offsetSamples = track.samples.subarray(startSample)
-    if (offsetSamples.length === 0) return null
-    await this.writeStereoWav(tempPath, offsetSamples, track.sampleRate, track.pan)
-    return tempPath
-  }
+  // ── Transport ──────────────────────────────────────────────────────────
 
-  // Spawn pw-play for an already-prepared WAV file.
-  // This is deliberately sync (no awaits) so multiple spawns happen back-to-back.
-  spawnTrackPlayer(
-    trackId: string,
-    wavPath: string,
-    targetDeviceId?: number | null,
-    volume: number = 1,
-  ): void {
-    const cmd = [
-      "pw-play",
-      "--latency", LATENCY,
-      "--volume", String(Math.max(0, Math.min(1, volume)).toFixed(3)),
-    ]
-    if (targetDeviceId != null) {
-      cmd.push("--target", String(targetDeviceId))
-    }
-    cmd.push(wavPath)
-
-    const proc = spawn({
-      cmd,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    this.playProcesses.set(trackId, proc)
-  }
-
-  // Play a track's audio using pw-play (optionally targeting a specific sink).
-  // Convenience wrapper: prepares WAV (with pan) + spawns player (with volume).
-  async playTrack(
-    track: Track,
-    startSample: number = 0,
-    targetDeviceId?: number | null,
-  ): Promise<void> {
-    const wavPath = await this.prepareTrackWav(track, startSample)
-    if (!wavPath) return
-    this.spawnTrackPlayer(track.id, wavPath, targetDeviceId, track.volume)
-  }
-
-  // Set volume on a running track's pw-play process via wpctl (glitch-free).
-  // Falls back to restart if the process isn't found.
-  setTrackVolume(trackId: string, volume: number): void {
-    const proc = this.playProcesses.get(trackId)
-    if (!proc) return
-    const vol = Math.max(0, Math.min(1, volume)).toFixed(3)
-    // wpctl set-volume --pid targets all PipeWire nodes owned by that PID
-    spawn({
-      cmd: ["wpctl", "set-volume", "--pid", String(proc.pid), vol],
-      stdout: "ignore",
-      stderr: "ignore",
-    })
-  }
-
-  // Restart a single track's playback with updated pan.
-  // Pre-writes the new stereo WAV BEFORE killing old pw-play to minimize the gap.
-  async restartTrackForPan(
-    track: Track,
-    currentSample: number,
-    targetDeviceId?: number | null,
-  ): Promise<void> {
-    // Phase 1: write new WAV with updated pan (while old pw-play is still running)
-    const wavPath = await this.prepareTrackWav(track, currentSample)
-    if (!wavPath) {
-      this.stopTrackPlayback(track.id)
-      return
-    }
-    // Phase 2: kill old, spawn new immediately
-    this.stopTrackPlayback(track.id)
-    this.spawnTrackPlayer(track.id, wavPath, targetDeviceId, track.volume)
-  }
-
-  // Mark the engine as "playing" and record the wall-clock start time.
-  // Called at the start of both playback and recording so that
-  // getElapsedSamples() works in either mode.
+  // Mark transport start (used by the native engine)
   markTransportStart(): void {
-    this.isPlaying = true
-    this.playStartTime = Date.now()
+    // No-op in the new engine — tuidaw_play() handles this
   }
 
   // Play all non-muted tracks simultaneously.
-  // Two-phase approach: first write all WAV files to disk (slow I/O),
-  // then spawn all pw-play processes back-to-back (fast) so they start
-  // at nearly the same instant.
+  // In the new engine, this just syncs all tracks and starts the native transport.
   async playAll(state: ProjectState): Promise<void> {
-    // Phase 1: prepare all WAV files in parallel
-    const hasSolo = state.tracks.some((t) => t.solo)
-    const preparations: { trackId: string; wavPath: string; volume: number }[] = []
+    this.syncAllTracks(state)
 
-    const prepPromises: Promise<void>[] = []
-    for (const track of state.tracks) {
-      if (track.muted || !track.samples || track.samples.length === 0) continue
-      if (hasSolo && !track.solo) continue
+    // Set click state
+    lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
 
-      const trackVolume = track.volume
-      prepPromises.push(
-        this.prepareTrackWav(track, state.playheadPosition).then((path) => {
-          if (path) preparations.push({ trackId: track.id, wavPath: path, volume: trackVolume })
-        }),
-      )
+    // Set loop state
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      lib.symbols.tuidaw_set_loop(BigInt(state.loopStart), BigInt(state.loopEnd))
+    } else {
+      lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
     }
 
-    let clickWavPath: string | null = null
-    if (state.clickEnabled) {
-      prepPromises.push(
-        this.prepareClickWav(state.bpm, state.playheadPosition).then((path) => {
-          clickWavPath = path
-        }),
-      )
-    }
+    // Set output device
+    lib.symbols.tuidaw_set_output_device(state.outputDeviceId ?? -1)
 
-    await Promise.all(prepPromises)
-
-    // Phase 2: spawn all processes back-to-back (no awaits between spawns)
-    this.markTransportStart()
-
-    for (const { trackId, wavPath, volume } of preparations) {
-      this.spawnTrackPlayer(trackId, wavPath, state.outputDeviceId, volume)
-    }
-
-    if (clickWavPath) {
-      this.spawnClickPlayer(clickWavPath, state.outputDeviceId)
-    }
+    // Start transport from current playhead position
+    lib.symbols.tuidaw_play(BigInt(state.playheadPosition))
   }
 
-  // Stop playback for a single track (live mute)
-  stopTrackPlayback(trackId: string): void {
-    const proc = this.playProcesses.get(trackId)
-    if (proc) {
-      proc.kill("SIGINT")
-      this.playProcesses.delete(trackId)
-    }
+  // Get elapsed samples since play started — now uses the native engine's
+  // sample-accurate counter instead of wall-clock time.
+  getElapsedSamples(): number {
+    return 0  // Not used in new engine — getPlayhead() is authoritative
   }
 
-  // Check if a track's pw-play process is currently running
-  isTrackPlaying(trackId: string): boolean {
-    return this.playProcesses.has(trackId)
+  // Get current playhead position (sample-accurate from the audio thread)
+  getPlayhead(): number {
+    return Number(lib.symbols.tuidaw_get_playhead())
   }
 
-  // Get the current playback position in samples (from playStartTime)
-  // Used by live mute/solo/punch-in to know where in the timeline we are
-  getCurrentPlaybackPosition(startPosition: number): number {
-    return startPosition + this.getElapsedSamples()
+  // Get current playback position (compatibility with old API)
+  getCurrentPlaybackPosition(_startPosition: number): number {
+    return this.getPlayhead()
   }
 
-  // Stop all playback (and click) — but NOT recordings.
-  // Used for loop restart during recording transport.
+  // Stop all playback (but NOT recordings)
   stopAllPlayback(): void {
-    for (const [id, proc] of this.playProcesses) {
-      proc.kill("SIGINT")
-    }
-    this.playProcesses.clear()
-    this.stopClick()
+    lib.symbols.tuidaw_stop()
   }
 
-  // Pre-prepare WAV files for a loop restart.
-  // Writes all track WAVs starting from loopStart to disk while current
-  // playback is still running. Returns the preparations needed for fast spawn.
+  // Check if a track is currently playing (in the native mixer sense)
+  isTrackPlaying(trackId: string): boolean {
+    // In the native engine, all non-muted/non-recording tracks are "playing"
+    // when the transport is running. This method is now only used for
+    // mute/solo refresh logic.
+    const nid = trackIdMap.get(trackId)
+    return nid !== undefined
+  }
+
+  // Stop playback for a single track (by muting it in the native engine)
+  stopTrackPlayback(trackId: string): void {
+    // In the new engine, we mute the track instead of killing a process
+    this.setTrackMuted(trackId, true)
+  }
+
+  // Play a track (unmute it in the native engine)
+  async playTrack(
+    track: Track,
+    _startSample: number = 0,
+    _targetDeviceId?: number | null,
+  ): Promise<void> {
+    this.syncTrack(track)
+  }
+
+  // These are no longer needed but kept for API compatibility
+  async prepareTrackWav(_track: Track, _startSample?: number): Promise<string | null> {
+    return null  // No temp files needed
+  }
+  spawnTrackPlayer(_trackId: string, _wavPath: string, _targetDeviceId?: number | null, _volume?: number): void {
+    // No-op — mixing is done in the native callback
+  }
+
+  // Restart track for pan change — no longer needed, pan is instant
+  async restartTrackForPan(
+    track: Track,
+    _currentSample: number,
+    _targetDeviceId?: number | null,
+  ): Promise<void> {
+    // Pan changes are now instant (atomic update in native engine)
+    this.setTrackPan(track.id, track.pan)
+  }
+
+  // ── Loop ───────────────────────────────────────────────────────────────
+
+  // Set loop region (handled sample-accurately in native callback)
+  setLoop(start: number | null, end: number | null): void {
+    if (start !== null && end !== null) {
+      lib.symbols.tuidaw_set_loop(BigInt(start), BigInt(end))
+    } else {
+      lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
+    }
+  }
+
+  // Pre-prepare loop restart — no longer needed (loop is handled in native callback)
   async prepareLoopRestart(
-    state: ProjectState,
-    loopStart: number,
+    _state: ProjectState,
+    _loopStart: number,
   ): Promise<{ tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null }> {
-    const hasSolo = state.tracks.some((t) => t.solo)
-    const preparations: { trackId: string; wavPath: string; volume: number }[] = []
-    const prepPromises: Promise<void>[] = []
-
-    for (const track of state.tracks) {
-      if (track.muted || !track.samples || track.samples.length === 0) continue
-      if (hasSolo && !track.solo) continue
-
-      // Write to a separate temp file so we don't clobber the currently-playing one
-      const tempPath = `/tmp/tuidaw_loop_${track.id}.wav`
-      const offsetSamples = track.samples.subarray(loopStart)
-      if (offsetSamples.length === 0) continue
-
-      const trackVolume = track.volume
-      prepPromises.push(
-        this.writeStereoWav(tempPath, offsetSamples, track.sampleRate, track.pan).then(() => {
-          preparations.push({ trackId: track.id, wavPath: tempPath, volume: trackVolume })
-        }),
-      )
-    }
-
-    let clickWavPath: string | null = null
-    if (state.clickEnabled) {
-      prepPromises.push(
-        this.prepareClickWav(state.bpm, loopStart).then((path) => {
-          clickWavPath = path
-        }),
-      )
-    }
-
-    await Promise.all(prepPromises)
-    return { tracks: preparations, clickWavPath }
+    return { tracks: [], clickWavPath: null }
   }
 
-  // Execute a pre-prepared loop restart: kill current playback, spawn new.
-  // This is the fast path — no disk I/O, just process management.
+  // Execute loop restart — no longer needed
   executeLoopRestart(
-    preparations: { tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null },
-    targetDeviceId?: number | null,
+    _preparations: any,
+    _targetDeviceId?: number | null,
   ): void {
-    // Kill all current playback
-    this.stopAllPlayback()
-
-    // Reset transport timing
-    this.markTransportStart()
-
-    // Spawn all new players back-to-back (no awaits)
-    for (const { trackId, wavPath, volume } of preparations.tracks) {
-      this.spawnTrackPlayer(trackId, wavPath, targetDeviceId, volume)
-    }
-
-    if (preparations.clickWavPath) {
-      this.spawnClickPlayer(preparations.clickWavPath, targetDeviceId)
-    }
+    // No-op — loop is handled sample-accurately in the native callback
   }
 
-  // Stop all playback
-  async stopAll(): Promise<void> {
-    this.isPlaying = false
+  // ── Click / Metronome ──────────────────────────────────────────────────
 
-    for (const [id, proc] of this.playProcesses) {
-      proc.kill("SIGINT")
-    }
-    this.playProcesses.clear()
-    this.stopClick()
-  }
-
-  // Prepare the click track WAV file on disk.
-  // Returns the file path.
-  async prepareClickWav(bpm: number, startSample: number = 0): Promise<string> {
-    const intervalSamples = Math.round((60 / bpm) * SAMPLE_RATE)
-    const totalSamples = SAMPLE_RATE * CLICK_DURATION_SEC
-    const clickSamples = new Float32Array(totalSamples)
-
-    // Generate a short sine wave click at 1000Hz (20ms)
-    const clickLen = Math.floor(SAMPLE_RATE * 0.02)
-
-    // Calculate the offset into the first beat: how many samples until
-    // the next beat boundary from the startSample position.
-    const phase = startSample % intervalSamples
-    const firstClickOffset = phase === 0 ? 0 : intervalSamples - phase
-
-    for (let pos = firstClickOffset; pos < totalSamples; pos += intervalSamples) {
-      for (let i = 0; i < clickLen && pos + i < totalSamples; i++) {
-        const t = i / SAMPLE_RATE
-        const envelope = 1.0 - i / clickLen
-        clickSamples[pos + i] = Math.sin(2 * Math.PI * 1000 * t) * envelope * 0.5
-      }
-    }
-
-    const clickPath = "/tmp/tuidaw_click.wav"
-    await this.writeWav(clickPath, clickSamples, SAMPLE_RATE)
-    return clickPath
-  }
-
-  // Spawn the click player for an already-prepared WAV file.
-  spawnClickPlayer(wavPath: string, targetDeviceId?: number | null): void {
-    const cmd = [
-      "pw-play",
-      "--latency", LATENCY,
-    ]
-    if (targetDeviceId != null) {
-      cmd.push("--target", String(targetDeviceId))
-    }
-    cmd.push(wavPath)
-
-    this.clickProcess = spawn({
-      cmd,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-  }
-
-  // Generate and play a metronome click as a single continuous audio stream.
-  // Pre-renders all clicks into one WAV file to avoid per-beat process spawning
-  // and setInterval jitter. This gives sample-accurate click timing.
-  // startSample: the playhead position where playback begins — the click track
-  // is phase-aligned so clicks land on beat boundaries relative to sample 0.
-  async startClick(bpm: number, startSample: number = 0, targetDeviceId?: number | null): Promise<void> {
-    // Stop any existing click first
-    this.stopClick()
-
-    const wavPath = await this.prepareClickWav(bpm, startSample)
-    this.spawnClickPlayer(wavPath, targetDeviceId)
+  async startClick(bpm: number, _startSample?: number, _targetDeviceId?: number | null): Promise<void> {
+    lib.symbols.tuidaw_set_click(1, bpm)
   }
 
   stopClick(): void {
-    if (this.clickProcess) {
-      this.clickProcess.kill("SIGINT")
-      this.clickProcess = null
-    }
+    lib.symbols.tuidaw_set_click(0, 0)
   }
 
-  // Get elapsed samples since play started
-  getElapsedSamples(): number {
-    if (!this.isPlaying) return 0
-    const elapsedMs = Date.now() - this.playStartTime
-    return Math.floor((elapsedMs / 1000) * SAMPLE_RATE)
+  // Click WAV helpers — no longer needed (click is generated in native callback)
+  async prepareClickWav(_bpm: number, _startSample?: number): Promise<string> {
+    return ""
+  }
+  spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
+
+  // ── Stop All ───────────────────────────────────────────────────────────
+
+  async stopAll(): Promise<void> {
+    lib.symbols.tuidaw_stop()
   }
 
-  // Save track samples to WAV file
+  // ── WAV File I/O ───────────────────────────────────────────────────────
+  // These remain in TypeScript since they're not performance-critical
+
   async saveTrackToFile(track: Track): Promise<string | null> {
     if (!track.samples) return null
     const filePath = `${RECORDINGS_DIR}/${track.name.replace(/\s+/g, "_")}_${Date.now()}.wav`
@@ -603,7 +524,6 @@ export class AudioEngine {
     return filePath
   }
 
-  // Load a WAV file into a track
   async loadWavFile(filePath: string): Promise<{ samples: Float32Array; sampleRate: number } | null> {
     try {
       const file = Bun.file(filePath)
@@ -612,17 +532,6 @@ export class AudioEngine {
     } catch {
       return null
     }
-  }
-
-  // Convert signed 16-bit PCM to Float32 (-1.0 to 1.0)
-  private pcmS16ToFloat32(buffer: Buffer): Float32Array {
-    const numSamples = Math.floor(buffer.length / BYTES_PER_SAMPLE)
-    const float32 = new Float32Array(numSamples)
-    for (let i = 0; i < numSamples; i++) {
-      const sample = buffer.readInt16LE(i * BYTES_PER_SAMPLE)
-      float32[i] = sample / 32768
-    }
-    return float32
   }
 
   // Convert Float32 (-1.0 to 1.0) to signed 16-bit PCM
@@ -636,6 +545,17 @@ export class AudioEngine {
     return buffer
   }
 
+  // Convert signed 16-bit PCM to Float32 (-1.0 to 1.0)
+  private pcmS16ToFloat32(buffer: Buffer): Float32Array {
+    const numSamples = Math.floor(buffer.length / BYTES_PER_SAMPLE)
+    const float32 = new Float32Array(numSamples)
+    for (let i = 0; i < numSamples; i++) {
+      const sample = buffer.readInt16LE(i * BYTES_PER_SAMPLE)
+      float32[i] = sample / 32768
+    }
+    return float32
+  }
+
   // Write a WAV file from Float32 samples (mono, s16)
   async writeWav(filePath: string, samples: Float32Array, sampleRate: number): Promise<void> {
     const pcmData = this.float32ToPcmS16(samples)
@@ -646,20 +566,17 @@ export class AudioEngine {
     const dataSize = pcmData.length
 
     const header = Buffer.alloc(44)
-    // RIFF header
     header.write("RIFF", 0)
     header.writeUInt32LE(36 + dataSize, 4)
     header.write("WAVE", 8)
-    // fmt chunk
     header.write("fmt ", 12)
-    header.writeUInt32LE(16, 16) // chunk size
-    header.writeUInt16LE(1, 20) // PCM format
+    header.writeUInt32LE(16, 16)
+    header.writeUInt16LE(1, 20)
     header.writeUInt16LE(numChannels, 22)
     header.writeUInt32LE(sampleRate, 24)
     header.writeUInt32LE(byteRate, 28)
     header.writeUInt16LE(blockAlign, 32)
     header.writeUInt16LE(bitsPerSample, 34)
-    // data chunk
     header.write("data", 36)
     header.writeUInt32LE(dataSize, 40)
 
@@ -668,7 +585,7 @@ export class AudioEngine {
   }
 
   // Write a stereo WAV file from mono Float32 samples with pan applied.
-  // Uses equal-power panning law: pan=-1 → full left, pan=0 → center, pan=1 → full right
+  // Used for export mixdown temp files (ffmpeg still handles the final mix).
   async writeStereoWav(filePath: string, samples: Float32Array, sampleRate: number, pan: number = 0): Promise<void> {
     const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
     const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
@@ -678,7 +595,6 @@ export class AudioEngine {
     const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
     const blockAlign = numChannels * (bitsPerSample / 8)
 
-    // Interleave stereo samples: L, R, L, R, ...
     const pcmData = Buffer.alloc(samples.length * numChannels * BYTES_PER_SAMPLE)
     for (let i = 0; i < samples.length; i++) {
       const s = Math.max(-1, Math.min(1, samples[i]))
@@ -695,7 +611,7 @@ export class AudioEngine {
     header.write("WAVE", 8)
     header.write("fmt ", 12)
     header.writeUInt32LE(16, 16)
-    header.writeUInt16LE(1, 20) // PCM format
+    header.writeUInt16LE(1, 20)
     header.writeUInt16LE(numChannels, 22)
     header.writeUInt32LE(sampleRate, 24)
     header.writeUInt32LE(byteRate, 28)
@@ -716,7 +632,6 @@ export class AudioEngine {
     const sampleRate = buf.readUInt32LE(24)
     const bitsPerSample = buf.readUInt16LE(34)
 
-    // Find data chunk
     let offset = 12
     while (offset < buf.length - 8) {
       const chunkId = buf.toString("ascii", offset, offset + 4)
@@ -729,7 +644,6 @@ export class AudioEngine {
         if (bitsPerSample === 16) {
           return { samples: this.pcmS16ToFloat32(dataBuf), sampleRate }
         }
-        // 32-bit float
         if (bitsPerSample === 32) {
           const float32 = new Float32Array(dataBuf.buffer, dataBuf.byteOffset, dataBuf.length / 4)
           return { samples: new Float32Array(float32), sampleRate }
@@ -737,15 +651,14 @@ export class AudioEngine {
         return null
       }
       offset += 8 + chunkSize
-      if (chunkSize % 2 !== 0) offset++ // padding byte
+      if (chunkSize % 2 !== 0) offset++
     }
     return null
   }
 
   // ── Export Mixdown ─────────────────────────────────────────────────────
-  // Mix all non-muted tracks (respecting solo/volume) into a single stereo
-  // WAV file using ffmpeg. Each track is written to a temp WAV, then ffmpeg
-  // amerge + pan filters produce the final file.
+  // Still uses ffmpeg for the final mix (non-realtime, not performance-critical)
+
   async exportMixdown(state: ProjectState, outputPath: string): Promise<boolean> {
     const tracksToMix: { track: Track; tempPath: string }[] = []
     const hasSolo = state.tracks.some((t) => t.solo)
@@ -762,20 +675,14 @@ export class AudioEngine {
 
     if (tracksToMix.length === 0) return false
 
-    // Build ffmpeg command with amix filter
-    // Each input gets a volume filter, then they're all mixed together
     const cmd: string[] = ["ffmpeg", "-y"]
-
     for (const { tempPath } of tracksToMix) {
       cmd.push("-i", tempPath)
     }
 
     if (tracksToMix.length === 1) {
-      // Single track — apply volume and pan, convert to stereo
       const vol = tracksToMix[0].track.volume
       const pan = tracksToMix[0].track.pan
-      // Pan law: equal-power panning
-      // pan=-1 → full left, pan=0 → center, pan=1 → full right
       const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
       const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
       cmd.push(
@@ -784,7 +691,6 @@ export class AudioEngine {
         "-map", "[out]",
       )
     } else {
-      // Multiple tracks — volume + pan per input, then amix
       const filters: string[] = []
       const mixInputs: string[] = []
 
@@ -811,7 +717,6 @@ export class AudioEngine {
       const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" })
       await proc.exited
 
-      // Clean up temp files
       for (const { tempPath } of tracksToMix) {
         try { rmSync(tempPath) } catch {}
       }
@@ -823,9 +728,7 @@ export class AudioEngine {
   }
 
   // ── Save Project ───────────────────────────────────────────────────────
-  // Creates a .tuidaw file (gzipped tarball) containing:
-  //   project.json   — descriptor with track metadata, BPM, etc.
-  //   tracks/*.wav    — individual track audio files
+
   async saveProject(state: ProjectState, outputPath: string): Promise<boolean> {
     const tmpDir = `/tmp/tuidaw_project_${Date.now()}`
     const tracksDir = `${tmpDir}/tracks`
@@ -833,14 +736,12 @@ export class AudioEngine {
     try {
       mkdirSync(tracksDir, { recursive: true })
 
-      // Build descriptor and write track WAVs
       const trackDescs: TrackDescriptor[] = []
 
       for (const track of state.tracks) {
         let wavFile: string | null = null
 
         if (track.samples && track.samples.length > 0) {
-          // Sanitize name for filesystem
           const safeName = track.id.replace(/[^a-zA-Z0-9_-]/g, "_")
           wavFile = `tracks/${safeName}.wav`
           await this.writeWav(`${tmpDir}/${wavFile}`, track.samples, track.sampleRate)
@@ -881,7 +782,6 @@ export class AudioEngine {
         JSON.stringify(descriptor, null, 2),
       )
 
-      // Create gzipped tarball
       const proc = spawn({
         cmd: ["tar", "czf", outputPath, "-C", tmpDir, "."],
         stdout: "pipe",
@@ -889,7 +789,6 @@ export class AudioEngine {
       })
       await proc.exited
 
-      // Cleanup temp dir
       rmSync(tmpDir, { recursive: true, force: true })
 
       return proc.exitCode === 0
@@ -900,15 +799,13 @@ export class AudioEngine {
   }
 
   // ── Open Project ───────────────────────────────────────────────────────
-  // Extracts a .tuidaw tarball and restores the full project state.
-  // Returns the new ProjectState, or null on failure.
+
   async openProject(filePath: string): Promise<ProjectState | null> {
     const tmpDir = `/tmp/tuidaw_open_${Date.now()}`
 
     try {
       mkdirSync(tmpDir, { recursive: true })
 
-      // Extract tarball
       const proc = spawn({
         cmd: ["tar", "xzf", filePath, "-C", tmpDir],
         stdout: "pipe",
@@ -917,12 +814,10 @@ export class AudioEngine {
       await proc.exited
       if (proc.exitCode !== 0) return null
 
-      // Read descriptor
       const descFile = Bun.file(`${tmpDir}/project.json`)
       const descJson = await descFile.text()
       const desc = JSON.parse(descJson) as ProjectDescriptor
 
-      // Rebuild tracks with audio
       const tracks: Track[] = []
       for (const td of desc.tracks) {
         let samples: Float32Array | null = null
@@ -954,7 +849,6 @@ export class AudioEngine {
         })
       }
 
-      // Cleanup temp dir
       rmSync(tmpDir, { recursive: true, force: true })
 
       return {
@@ -977,5 +871,11 @@ export class AudioEngine {
       try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
       return null
     }
+  }
+
+  // ── Cleanup ────────────────────────────────────────────────────────────
+
+  destroy(): void {
+    lib.symbols.tuidaw_deinit()
   }
 }
