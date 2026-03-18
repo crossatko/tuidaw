@@ -83,7 +83,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Home / 0** = jump to beginning, **End** = jump to end of audio — **works during playback**
 - **Mouse click** on timeline = set playhead to clicked position — **works during playback**
 - **View always recenters** when playhead moves outside the visible area (ensurePlayheadVisible)
-- Timeline beat grid renders based on `samplesPerBeat = (60 / bpm) * sampleRate`
+- Timeline beat grid renders based on `samplesPerBeat = (60 / originalBpm) * sampleRate`
 
 ### Mouse wheel controls:
 - **Main waveform area**: scroll = move view by 1 beat per tick
@@ -128,8 +128,11 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
 - **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
 - **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
-- **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space but the playhead advances at real-time rate. At 0.5x speed, content takes 2x as long to play, so loop boundaries must be scaled by 1/speed in the native callback to prevent early wrapping. The C callback computes `eff_loop_start/end = loop_start/end / speed` when WSOLA is active.
+- **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space and WSOLA's `input_pos` also operates in content-space, so `wsola_generate` wraps `input_pos` at `loop_end` back to `loop_start` directly (no speed scaling needed for loop bounds).
 - **miniaudio null backend**: `ma_backend_null` runs the audio callback on a timer thread but produces no sound output. Used for tests via `tuidaw_init_null()` to avoid blasting audio through speakers during `bun test`
+- **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
+- **`tuidaw_set_speed` must reset WSOLA states**: When speed changes (especially crossing the 1.0 threshold), WSOLA `input_pos` can be stale from whenever WSOLA was last active. Without resetting, switching from 1.0x to 0.5x causes a massive playhead backward jump (e.g. 47616 → 5120) because `input_pos` was still at position 0 from when `tuidaw_play` initially called `wsola_reset`. Fixed by always calling `wsola_reset(current_playhead)` for all active tracks in `tuidaw_set_speed`.
+- **WSOLA initialization vs reset distinction**: `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_speed()` all reset WSOLA states. The callback's `if (!tk->wsola.initialized)` check is a safety net but should rarely trigger since these three functions cover all transitions.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -178,10 +181,12 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
-35. **Waveform speed-scaling**: waveform display stretches/compresses to match WSOLA playback duration (samplesPerSubCol and scrollOffset scaled by speed factor)
+35. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
 36. **Unified TRACK_ROW_HEIGHT=5** for both sidebar and waveform (4 content rows + 1 separator), sidebar has dedicated volume/pan row
 37. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
 38. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
+39. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
+40. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
 
 ## File structure
 
@@ -225,11 +230,14 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # setupMouseHandlers(callbacks) for scroll/volume/pan.
 │                              # Has Tokyo Night color constants. Renders: top bar, sidebar
 │                              # (track list with M/S/R, volume, pan, level meters, input
-│                              # device labels), main area (braille waveforms + speed-scaled
+│                              # device labels), main area (braille waveforms + content-space
 │                              # coordinates, beat grid timeline, playhead), status bar,
 │                              # help overlay, device selector overlay, file picker overlay.
 │                              # ~1103 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
+├── tests/
+│   ├── loop-wsola.test.ts    # 6 tests for loop+WSOLA behavior (all pass)
+│   └── playhead-sync.test.ts # 6 tests for playhead content-space sync (all pass)
 └── node_modules/
     └── @opentui/core/        # OpenTUI framework (v0.1.88)
 ```

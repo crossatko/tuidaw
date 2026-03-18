@@ -407,27 +407,35 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         out[frame * 2 + 1] = right;
     }
 
-    // Advance playhead
-    long new_playhead = playhead + (long)frameCount;
+    // Advance playhead.
+    // All coordinates are in content-space (source sample positions).
+    // When WSOLA is active, the playhead tracks wsola.input_pos which
+    // advances at speed * hop per output hop — so at 0.5x speed, the
+    // playhead advances half as fast through the source material.
+    // When WSOLA is not active, playhead == wall-clock == content-space
+    // (since speed is 1.0).
+    long new_playhead;
 
-    if (loop_start >= 0 && loop_end > loop_start) {
-        if (use_wsola) {
-            // In WSOLA + loop mode, the playhead tracks the WSOLA content
-            // position. WSOLA input_pos wraps at loop boundaries internally
-            // (in content-space), so we derive the playhead from it.
-            // Find the first active non-muted track's WSOLA input_pos.
-            for (int t = 0; t < MAX_TRACKS; t++) {
-                TrackState* tk = &g_engine.tracks[t];
-                if (!tk->active) continue;
-                if (atomic_load(&tk->muted)) continue;
-                if (atomic_load(&tk->recording)) continue;
-                if (!tk->samples || tk->samples_len == 0) continue;
-                if (tk->wsola.initialized) {
-                    new_playhead = (long)tk->wsola.input_pos;
-                    break;
-                }
+    if (use_wsola) {
+        // Derive playhead from WSOLA input_pos (content-space).
+        // This ensures playhead always tracks the actual source position
+        // being read, regardless of speed.
+        new_playhead = playhead + (long)frameCount; // fallback
+        for (int t = 0; t < MAX_TRACKS; t++) {
+            TrackState* tk = &g_engine.tracks[t];
+            if (!tk->active) continue;
+            if (atomic_load(&tk->muted)) continue;
+            if (atomic_load(&tk->recording)) continue;
+            if (!tk->samples || tk->samples_len == 0) continue;
+            if (tk->wsola.initialized) {
+                new_playhead = (long)tk->wsola.input_pos;
+                break;
             }
-            // Ensure playhead stays within loop bounds
+        }
+
+        // Handle loop wrapping (input_pos is already wrapped by wsola_generate,
+        // but clamp to be safe)
+        if (loop_start >= 0 && loop_end > loop_start) {
             if (new_playhead >= loop_end) {
                 long loop_len = loop_end - loop_start;
                 long overshoot = new_playhead - loop_end;
@@ -436,8 +444,13 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             if (new_playhead < loop_start) {
                 new_playhead = loop_start;
             }
-        } else {
-            // Non-WSOLA loop: wrap playhead at content-space loop boundaries
+        }
+    } else {
+        // No WSOLA (speed == 1.0): playhead advances in real-time
+        // which equals content-space when speed is 1.0
+        new_playhead = playhead + (long)frameCount;
+
+        if (loop_start >= 0 && loop_end > loop_start) {
             if (new_playhead >= loop_end) {
                 long loop_len = loop_end - loop_start;
                 long overshoot = new_playhead - loop_end;
@@ -870,10 +883,23 @@ EXPORT int tuidaw_get_recording_length(int id) {
 
 // Set playback speed ratio (1.0 = normal, 0.5 = half speed, 2.0 = double).
 // Clamped to [0.25, 2.0]. WSOLA time-stretch is applied when speed != 1.0.
+// Always resets WSOLA states to the current playhead so that input_pos stays
+// in sync when transitioning between WSOLA/non-WSOLA modes (speed crossing 1.0).
 EXPORT void tuidaw_set_speed(float speed) {
     if (speed < 0.25f) speed = 0.25f;
     if (speed > 2.0f)  speed = 2.0f;
     atomic_store(&g_engine.playback_speed, speed);
+
+    // Reset WSOLA states to current playhead position.
+    // This is critical when switching between WSOLA and non-WSOLA modes:
+    // without this, input_pos would be stale from whenever WSOLA was last
+    // active/initialized, causing a playhead jump.
+    long current_pos = atomic_load(&g_engine.playhead_samples);
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (g_engine.tracks[i].active) {
+            wsola_reset(&g_engine.tracks[i].wsola, (double)current_pos);
+        }
+    }
 }
 
 // Get current playback speed.
