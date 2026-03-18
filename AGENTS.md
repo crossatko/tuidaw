@@ -141,6 +141,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Click loop realignment**: On loop wrap, `click_pos` is realigned to `(loop_start % samples_per_beat) + (new_playhead - loop_start)` to keep click beats aligned with the beat grid at the loop start position.
 - **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
 - **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
+- **Click waveform must use originalBpm**: The click braille waveform renders in content-space coordinates (scrollOffset, samplesPerSubCol). The native click fires at wall-clock intervals of `(60/bpm)*sampleRate`, but content-space playhead advances at `speed=bpm/originalBpm` per frame, so clicks land every `(60/originalBpm)*sampleRate` content-space samples. Using `state.bpm` instead of `state.originalBpm` caused spikes to appear at wrong positions at non-1.0x speeds.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
