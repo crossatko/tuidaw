@@ -609,6 +609,16 @@ export class AudioEngine {
         result.sampleRate = SAMPLE_RATE
       }
 
+      // Find beat offset and trim audio so first beat sits at sample 0.
+      // This aligns the click track with the music's actual beat grid.
+      let beatOffset = 0
+      if (detectedBPM) {
+        beatOffset = this.findBeatOffset(result.samples, result.sampleRate, detectedBPM)
+        if (beatOffset > 0 && beatOffset < result.samples.length) {
+          result.samples = result.samples.slice(beatOffset)
+        }
+      }
+
       return { ...result, detectedBPM }
     } catch {
       return null
@@ -854,6 +864,203 @@ export class AudioEngine {
     }
 
     return Math.max(minBPM, Math.min(maxBPM, Math.round(bestBPM)))
+  }
+
+  // Find the sample offset where the beat grid best aligns with the audio's
+  // rhythmic structure. Returns the number of samples to trim from the start
+  // so that the first beat sits at sample 0.
+  //
+  // Robust approach — handles intros with non-matching percussion, guitar
+  // slides, count-ins, and other non-rhythmic transients:
+  //
+  // 1. Compute onset strength at ~5ms resolution across the full track
+  // 2. Divide audio into overlapping analysis windows (each ~8 bars long)
+  // 3. For each window, sweep phase offsets and score using beat-vs-offbeat
+  //    contrast (not just raw onset strength). This rejects one-off transients
+  //    like guitar slides since they don't repeat periodically.
+  // 4. Weight later windows more heavily (intros often have non-matching
+  //    patterns; the "real" beat is established after the first few bars)
+  // 5. Aggregate scores across all windows — the phase that consistently
+  //    scores highest across multiple windows wins
+  // 6. Refine the coarse winner at sample level using median onset strength
+  //    (robust to outliers) rather than mean
+  findBeatOffset(samples: Float32Array, sampleRate: number, bpm: number): number {
+    const samplesPerBeat = Math.round((60 / bpm) * sampleRate)
+    if (samplesPerBeat <= 0 || samples.length < samplesPerBeat * 4) return 0
+
+    // ── Step 1: Compute onset strength ──────────────────────────────────
+    const frameSize = Math.floor(sampleRate * 0.005) // 5ms frames
+    const hopSize = frameSize
+    const numFrames = Math.floor(samples.length / hopSize) - 1
+    if (numFrames < 2) return 0
+
+    // Short-time energy per frame
+    const energy = new Float32Array(numFrames)
+    for (let f = 0; f < numFrames; f++) {
+      let sum = 0
+      const start = f * hopSize
+      for (let i = 0; i < frameSize; i++) {
+        const s = samples[start + i]
+        sum += s * s
+      }
+      energy[f] = sum / frameSize
+    }
+
+    // Onset strength = half-wave rectified energy derivative
+    const onset = new Float32Array(numFrames - 1)
+    for (let i = 0; i < onset.length; i++) {
+      onset[i] = Math.max(0, energy[i + 1] - energy[i])
+    }
+
+    // ── Step 2: Phase search parameters ─────────────────────────────────
+    const stepsPerBeat = Math.round(samplesPerBeat / hopSize)
+    if (stepsPerBeat <= 0) return 0
+
+    // Window size: ~8 bars (32 beats). Overlap by 50%.
+    const beatsPerWindow = 32
+    const windowFrames = beatsPerWindow * stepsPerBeat
+    const windowHop = Math.floor(windowFrames / 2) // 50% overlap
+    const numWindows = Math.max(1, Math.floor((onset.length - windowFrames) / windowHop) + 1)
+
+    // Accumulate phase scores across all windows
+    const phaseScores = new Float64Array(stepsPerBeat)
+
+    for (let w = 0; w < numWindows; w++) {
+      const winStart = w * windowHop
+      const winEnd = Math.min(winStart + windowFrames, onset.length)
+      const winLen = winEnd - winStart
+      if (winLen < stepsPerBeat * 4) continue
+
+      // Weight: later windows get more weight. First window gets 0.5,
+      // last gets 1.5. Linear ramp. This de-emphasizes intros.
+      const t = numWindows > 1 ? w / (numWindows - 1) : 1
+      const weight = 0.5 + t * 1.0
+
+      // Compute mean onset strength across this window for normalization
+      let winMean = 0
+      for (let i = winStart; i < winEnd; i++) winMean += onset[i]
+      winMean /= winLen
+      if (winMean < 1e-12) continue // silent window, skip
+
+      for (let phase = 0; phase < stepsPerBeat; phase++) {
+        // Collect on-beat onset strengths
+        let onBeatSum = 0
+        let onBeatCount = 0
+        // Collect off-beat onset strengths (midpoints between beats)
+        let offBeatSum = 0
+        let offBeatCount = 0
+
+        const halfStep = Math.floor(stepsPerBeat / 2)
+
+        for (let beatIdx = phase; beatIdx < winLen; beatIdx += stepsPerBeat) {
+          const globalIdx = winStart + beatIdx
+          if (globalIdx >= onset.length) break
+          onBeatSum += onset[globalIdx]
+          onBeatCount++
+
+          // Off-beat = halfway between this beat and the next
+          const offIdx = globalIdx + halfStep
+          if (offIdx < onset.length && offIdx < winEnd) {
+            offBeatSum += onset[offIdx]
+            offBeatCount++
+          }
+        }
+
+        if (onBeatCount < 2) continue
+
+        const onBeatMean = onBeatSum / onBeatCount
+        const offBeatMean = offBeatCount > 0 ? offBeatSum / offBeatCount : 0
+
+        // Score = contrast between on-beat and off-beat onset strength.
+        // High contrast means rhythmic periodicity at this phase.
+        // Normalize by window mean so loud windows don't dominate.
+        // Add a small on-beat term to break ties (prefer phases with
+        // actual onset energy, not just "both sides are zero").
+        const contrast = (onBeatMean - offBeatMean) / (winMean + 1e-12)
+        const magnitude = onBeatMean / (winMean + 1e-12)
+        const score = contrast * 0.7 + magnitude * 0.3
+
+        phaseScores[phase] += score * weight
+      }
+    }
+
+    // ── Step 3: Find the best coarse phase ──────────────────────────────
+    let bestPhase = 0
+    let bestScore = -Infinity
+    for (let phase = 0; phase < stepsPerBeat; phase++) {
+      if (phaseScores[phase] > bestScore) {
+        bestScore = phaseScores[phase]
+        bestPhase = phase
+      }
+    }
+
+    const coarseOffset = bestPhase * hopSize
+
+    // ── Step 4: Refine at sample level using median onset strength ──────
+    // Search ±5ms around the coarse winner. For each candidate offset,
+    // collect onset strengths at all beat positions and use median instead
+    // of mean — this is robust to one-off outliers (guitar slides, etc.)
+    const refineRadius = Math.floor(sampleRate * 0.005) // ±5ms
+    const refineStart = Math.max(0, coarseOffset - refineRadius)
+    const refineEnd = Math.min(samplesPerBeat, coarseOffset + refineRadius)
+
+    // Use the later portion of audio for refinement (skip first 10s or 25%
+    // of audio, whichever is less, to avoid intro artifacts)
+    const skipSamples = Math.min(
+      Math.floor(sampleRate * 10),
+      Math.floor(samples.length * 0.25)
+    )
+    const refineEndSample = Math.min(samples.length - 1, skipSamples + Math.floor(sampleRate * 30))
+
+    let bestFineOffset = coarseOffset
+    let bestFineScore = -Infinity
+
+    // Pre-allocate array for median computation
+    const maxBeats = Math.ceil((refineEndSample - skipSamples) / samplesPerBeat)
+    const beatStrengths = new Float32Array(maxBeats)
+
+    for (let off = refineStart; off < refineEnd; off++) {
+      let count = 0
+      // Find first beat position >= skipSamples aligned with phase 'off'
+      const firstBeat = off + Math.ceil((skipSamples - off) / samplesPerBeat) * samplesPerBeat
+      // Collect onset/transient strength at each beat position
+      for (let pos = firstBeat;
+           pos < refineEndSample - 1 && count < maxBeats;
+           pos += samplesPerBeat) {
+        // Short-window energy spike: sum abs differences in a ~1ms window
+        let spike = 0
+        const windowLen = Math.min(Math.floor(sampleRate * 0.001), 48) // ~1ms
+        for (let j = 0; j < windowLen && pos + j + 1 < samples.length; j++) {
+          spike += Math.abs(samples[pos + j + 1] - samples[pos + j])
+        }
+        beatStrengths[count++] = spike / windowLen
+      }
+
+      if (count < 4) continue
+
+      // Median of beat-position onset strengths (robust to outliers)
+      const sorted = beatStrengths.slice(0, count).sort()
+      const median = count % 2 === 0
+        ? (sorted[count / 2 - 1] + sorted[count / 2]) / 2
+        : sorted[Math.floor(count / 2)]
+
+      // Also compute the inter-quartile mean (average of middle 50%)
+      // for a balance between robustness and sensitivity
+      const q1 = Math.floor(count * 0.25)
+      const q3 = Math.ceil(count * 0.75)
+      let iqm = 0
+      for (let i = q1; i < q3; i++) iqm += sorted[i]
+      iqm /= (q3 - q1) || 1
+
+      const score = median * 0.4 + iqm * 0.6
+
+      if (score > bestFineScore) {
+        bestFineScore = score
+        bestFineOffset = off
+      }
+    }
+
+    return bestFineOffset
   }
 
   // Resample audio using linear interpolation
