@@ -546,19 +546,23 @@ export class AudioEngine {
     }
   }
 
-  // Detect BPM using onset-based autocorrelation
+  // Detect BPM using two-pass approach:
+  //   1. Coarse estimate via onset-based autocorrelation (~2 BPM resolution)
+  //   2. Fine refinement via sample-level autocorrelation (0.1 BPM resolution)
   // Returns the most likely BPM in the range [minBPM, maxBPM], or null if detection fails
   detectBPM(samples: Float32Array, sampleRate: number, minBPM: number = 60, maxBPM: number = 200): number | null {
     if (samples.length < sampleRate * 4) return null // need at least 4 seconds
+
+    // ── Pass 1: Coarse onset-based autocorrelation ──────────────────────
 
     // Use up to 60 seconds from the start for analysis (skip first 0.5s)
     const skipSamples = Math.floor(sampleRate * 0.5)
     const analysisLen = Math.min(samples.length - skipSamples, sampleRate * 60)
     if (analysisLen < sampleRate * 4) return null
 
-    // Step 1: Compute short-time energy in overlapping frames
+    // Compute short-time energy in overlapping frames
     const frameSize = Math.floor(sampleRate * 0.02) // 20ms frames
-    const hopSize = Math.floor(frameSize / 4)        // 75% overlap (~200 fps for better BPM resolution)
+    const hopSize = Math.floor(frameSize / 4)        // 75% overlap (~200 fps)
     const numFrames = Math.floor((analysisLen - frameSize) / hopSize) + 1
     if (numFrames < 2) return null
 
@@ -573,7 +577,7 @@ export class AudioEngine {
       energy[f] = sum / frameSize
     }
 
-    // Step 2: Onset strength function (half-wave rectified first derivative)
+    // Onset strength function (half-wave rectified first derivative)
     const onset = new Float32Array(numFrames - 1)
     for (let i = 0; i < onset.length; i++) {
       onset[i] = Math.max(0, energy[i + 1] - energy[i])
@@ -590,9 +594,8 @@ export class AudioEngine {
       }
     }
 
-    // Step 3: Autocorrelation of onset signal in the BPM range
-    // Convert BPM range to lag range in onset frames
-    const onsetRate = sampleRate / hopSize // onset frames per second
+    // Autocorrelation of onset signal in the BPM range
+    const onsetRate = sampleRate / hopSize
     const minLag = Math.floor((60 / maxBPM) * onsetRate)
     const maxLag = Math.ceil((60 / minBPM) * onsetRate)
     if (maxLag >= onset.length) return null
@@ -607,16 +610,13 @@ export class AudioEngine {
       acf[lag - minLag] = sum / n
     }
 
-    // Parabolic interpolation to find fractional peak position from 3 ACF samples
-    // Returns the fractional offset from the center sample (-0.5 to +0.5)
+    // Find peaks with parabolic interpolation
     const parabolicPeakOffset = (left: number, center: number, right: number): number => {
       const denom = 2 * (2 * center - left - right)
       if (Math.abs(denom) < 1e-10) return 0
       return (left - right) / denom
     }
 
-    // Step 4: Find the strongest peak, with octave weighting
-    // First pass: find raw peaks with parabolic interpolation for sub-lag precision
     const peaks: { lag: number; strength: number }[] = []
     for (let i = 1; i < acf.length - 1; i++) {
       if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > 0) {
@@ -636,26 +636,72 @@ export class AudioEngine {
       if (bestIdx > 0 && bestIdx < acf.length - 1) {
         bestLag += parabolicPeakOffset(acf[bestIdx - 1], acf[bestIdx], acf[bestIdx + 1])
       }
-      return Math.max(minBPM, Math.min(maxBPM, Math.round((60 * onsetRate) / bestLag)))
+      const coarseBPM = (60 * onsetRate) / bestLag
+      return this.refineBPM(samples, sampleRate, coarseBPM, minBPM, maxBPM)
     }
 
     // Sort by strength descending
     peaks.sort((a, b) => b.strength - a.strength)
 
-    // Take the strongest peak, but prefer higher BPM (shorter lag) if a sub-harmonic
-    // is nearly as strong (within 80% of the strongest). This avoids detecting half-time.
+    // Prefer higher BPM if a sub-harmonic is nearly as strong (within 80%)
+    // This avoids detecting half-time
     let bestPeak = peaks[0]
     for (const p of peaks) {
-      // Check if this peak is roughly double the BPM of bestPeak (half the lag)
       const ratio = bestPeak.lag / p.lag
       if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.8) {
-        bestPeak = p // prefer the double-time (higher BPM)
+        bestPeak = p
         break
       }
     }
 
-    const bpm = Math.round((60 * onsetRate) / bestPeak.lag)
-    return Math.max(minBPM, Math.min(maxBPM, bpm))
+    const coarseBPM = (60 * onsetRate) / bestPeak.lag
+
+    // ── Pass 2: Fine sample-level refinement ────────────────────────────
+    return this.refineBPM(samples, sampleRate, coarseBPM, minBPM, maxBPM)
+  }
+
+  // Refine a coarse BPM estimate using sample-level autocorrelation
+  // Searches ±3 BPM in 0.1 BPM steps, picking the lag with highest normalized correlation
+  private refineBPM(samples: Float32Array, sampleRate: number, coarseBPM: number, minBPM: number, maxBPM: number): number {
+    const searchRadius = 3 // ±3 BPM
+    const step = 0.1
+    const refineStart = Math.floor(sampleRate * 1) // skip first 1s
+    const refineLen = Math.min(samples.length - refineStart, sampleRate * 30)
+
+    if (refineLen < sampleRate * 2) {
+      // Not enough audio for refinement, return coarse result
+      return Math.max(minBPM, Math.min(maxBPM, Math.round(coarseBPM)))
+    }
+
+    let bestBPM = coarseBPM
+    let bestCorr = -Infinity
+
+    for (let bpm = coarseBPM - searchRadius; bpm <= coarseBPM + searchRadius; bpm += step) {
+      if (bpm < minBPM || bpm > maxBPM) continue
+      const period = Math.round((sampleRate * 60) / bpm)
+      if (period >= refineLen) continue
+
+      // Normalized autocorrelation at this lag (subsample every 10th for speed)
+      let sum = 0
+      let norm1 = 0
+      let norm2 = 0
+      const n = refineLen - period
+      for (let i = 0; i < n; i += 10) {
+        const s1 = samples[refineStart + i]
+        const s2 = samples[refineStart + i + period]
+        sum += s1 * s2
+        norm1 += s1 * s1
+        norm2 += s2 * s2
+      }
+      const corr = sum / Math.sqrt(norm1 * norm2 + 1e-20)
+
+      if (corr > bestCorr) {
+        bestCorr = corr
+        bestBPM = bpm
+      }
+    }
+
+    return Math.max(minBPM, Math.min(maxBPM, Math.round(bestBPM)))
   }
 
   // Resample audio using linear interpolation
