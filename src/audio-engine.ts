@@ -184,10 +184,18 @@ export class AudioEngine {
     const namePtr = ptr(nameBuf)
 
     // Enumerate capture (input) devices
+    // Deduplicate by name — ALSA/PulseAudio/PipeWire backends often report the
+    // same physical device multiple times under different aliases (hw:0,0,
+    // plughw:0,0, default, etc.) all with the same display name.
+    // We keep the first occurrence (which is preferred by miniaudio) and discard
+    // subsequent entries with the same name.
     const inputCount = lib.symbols.tuidaw_get_device_count(1)
+    const seenInputNames = new Set<string>()
     for (let i = 0; i < inputCount; i++) {
       lib.symbols.tuidaw_get_device_name(1, i, namePtr, 256)
       const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
+      if (seenInputNames.has(name)) continue
+      seenInputNames.add(name)
       const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
       inputs.push({
         id: i,
@@ -198,11 +206,14 @@ export class AudioEngine {
       })
     }
 
-    // Enumerate playback (output) devices
+    // Enumerate playback (output) devices (same deduplication)
     const outputCount = lib.symbols.tuidaw_get_device_count(0)
+    const seenOutputNames = new Set<string>()
     for (let i = 0; i < outputCount; i++) {
       lib.symbols.tuidaw_get_device_name(0, i, namePtr, 256)
       const name = new TextDecoder().decode(nameBuf.subarray(0, nameBuf.indexOf(0)))
+      if (seenOutputNames.has(name)) continue
+      seenOutputNames.add(name)
       const isDefault = lib.symbols.tuidaw_is_device_default(0, i) !== 0
       outputs.push({
         id: i,
