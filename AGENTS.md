@@ -2,18 +2,20 @@
 
 ## Goal
 
-Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and miniaudio (native C library). The app has a left sidebar with tracks, a main window with braille-font waveforms, a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses a cross-platform native library (miniaudio) via Bun FFI instead of PipeWire CLI tools.
+Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and miniaudio (native C library). The app has a left sidebar with tracks, a main window with braille-font waveforms, a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses a cross-platform native library (miniaudio) via Bun FFI — no PipeWire, no CLI audio tools, no process spawning for audio.
 
 ## Workflow preferences
 
 - **Do not print summaries of changes to the user.** Instead, put the summary into the git commit description and commit the changes automatically after each task.
 - Commit messages should have a concise title line and a detailed description body listing what was done.
 - **Always `git push` after committing.** Never leave commits unpushed.
+- **Always update AGENTS.md** when significant changes are made (new features, architecture changes, bug fixes, new discoveries). Keep the Accomplished list, File structure, and Discoveries sections current.
 
 ## Instructions
 
 - Use OpenTUI (`@opentui/core`) for the terminal UI framework - it's a Zig-native TUI core with TypeScript bindings, uses Bun runtime
 - Audio I/O via native C library (`native/libtuidaw_audio.so`) wrapping miniaudio, called from TypeScript via `bun:ffi` (`dlopen`)
+- **No PipeWire, no pw-play/pw-record/pw-dump/wpctl** — all audio goes through the native miniaudio engine
 - Can use `ffmpeg` for export mixdown (non-realtime, not performance-critical)
 - Braille characters (Unicode 0x2800 range, 2x4 dot grid per char) for waveform rendering in FrameBuffer
 - OpenTUI uses an imperative API with `FrameBufferRenderable` for custom drawing (setCell, fillRect, drawText, setCellWithAlphaBlending)
@@ -46,7 +48,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
 - `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
 
-### Recording behavior (user's explicit requirements):
+### Recording behavior:
 - **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
 - **Multiple tracks can be armed simultaneously**, each with different input devices
 - **SPACE starts recording if any tracks are armed**, otherwise just plays
@@ -71,11 +73,30 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **F5** = Save project, **F6** = Open project, **I** = Import WAV, **E** = Export mixdown
 - Ctrl+key shortcuts do NOT work in OpenTUI (intercepted internally)
 
-### Mouse wheel controls (implemented):
-- **Main waveform area**: scroll up/left = scroll timeline left, scroll down/right = scroll timeline right (~0.5s per tick)
+### Timeline and playhead navigation (beat-based):
+- **Left/Right arrows** = scroll view by 1 beat (Shift: 1 bar / 4 beats)
+- **[ / ]** = scrub playhead left/right by 1 bar (4 beats)
+- **Mouse wheel** on main area = scroll view by 1 beat per tick
+- **Home / 0** = jump to beginning, **End** = jump to end of audio
+- **Mouse click** on timeline = set playhead to clicked position
+- **View always recenters** when playhead moves outside the visible area (ensurePlayheadVisible)
+- Timeline beat grid renders based on `samplesPerBeat = (60 / bpm) * sampleRate`
+
+### Mouse wheel controls:
+- **Main waveform area**: scroll = move view by 1 beat per tick
 - **Sidebar volume zone**: scroll on any track row (except pan zone) = adjust volume +/-5% per tick
 - **Sidebar pan zone**: scroll on row 1 at x >= 17 = adjust pan +/-0.05 per tick
 - Pan keyboard shortcuts: `<` = pan left 0.1, `>` = pan right 0.1
+
+### WAV import features:
+- Chunk-scanning parser (handles JUNK, LIST, bext chunks before fmt)
+- Supports 16-bit PCM, 24-bit PCM, 32-bit IEEE float
+- Stereo-to-mono downmix
+- Automatic resampling to 48kHz (linear interpolation) when source sample rate differs
+- **Automatic BPM detection** on import (two-pass: onset ACF + sample-level refinement)
+  - Sets project BPM when project is empty (all tracks have no audio)
+  - Range: 60-300 BPM, iterative octave promotion for high tempos
+  - Parabolic interpolation for sub-frame accuracy
 
 ### Project file format:
 - `.tuidaw` files are gzipped tarballs (`tar czf` / `tar xzf`)
@@ -99,8 +120,13 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - miniaudio.h is 95,864 lines — too large for Zig's `@cImport`, so native code is plain C compiled with `zig cc`
 - Zig is not installed system-wide and `sudo` is not available — downloaded Zig 0.14.0 binary to `native/zig-toolchain/`
 - All 27 exported symbols verified via `nm -D` on the compiled shared library
+- **WAV parser pitfalls**: Real-world WAV files often have JUNK/LIST/bext chunks before `fmt` — must scan by iterating RIFF sub-chunks, not assume fixed byte offsets
+- **Stereo WAV files** need explicit mono downmix (average channels)
+- **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
+- **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
+- **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
 
-### OpenTUI Mouse Event API (implemented):
+### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
 - `onMouseScroll` handler on any Renderable: `(event: MouseEvent) => void`
 - `event.scroll?.direction` is `"up" | "down" | "left" | "right"`, `event.scroll?.delta` is numeric
@@ -133,7 +159,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 18. **Export mixdown** (ffmpeg amix filter with per-track volume + equal-power pan)
 19. **Status messages**: temporary 3-second auto-dismiss
 20. **Help overlay** (F1) with all shortcuts + mouse hints
-21. **Mouse wheel scroll** on main waveform area (horizontal timeline scroll)
+21. **Mouse wheel scroll** on main waveform area (beat-based timeline scroll)
 22. **Mouse wheel volume** on sidebar track rows
 23. **Mouse wheel pan** on sidebar pan zone (row 1, x >= 17)
 24. **Pan display** in sidebar (C/L##/R## format)
@@ -141,6 +167,11 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 26. **Native audio engine** (miniaudio-based C library with 27 exported FFI functions)
 27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
 28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
+29. **WAV import**: chunk-scanning parser, 16/24/32-bit support, stereo downmix, 48kHz resampling
+30. **Automatic BPM detection** on import (two-pass onset ACF + sample-level refinement, 60-300 BPM)
+31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
+32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
+33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 
 ## File structure
 
@@ -149,7 +180,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── AGENTS.md                 # This file - context for future sessions
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
-│                              # refreshLivePlayback, shouldTrackPlay. ~520 lines.
+│                              # refreshLivePlayback, shouldTrackPlay,
+│                              # ensurePlayheadVisible, autoScroll. ~817 lines.
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
@@ -160,16 +192,19 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 27 exported symbols)
 │   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
-│   ├── types.ts              # Types: Track, ProjectState, AudioDevice (was PipeWireDevice),
-│   │                          # TransportState, ProjectDescriptor, TrackDescriptor,
-│   │                          # AudioChunk, constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
-│   │                          # TRACK_ROW_HEIGHT=4), TRACK_COLORS array, BRAILLE_BASE,
-│   │                          # BRAILLE_DOTS. ~109 lines.
-│   ├── audio-engine.ts       # AudioEngine class - uses bun:ffi + dlopen to call native lib.
+│   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
+│   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
+│   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
+│   │                          # TRACK_ROW_HEIGHT=4), TRACK_COLORS, BRAILLE_BASE,
+│   │                          # BRAILLE_DOTS. ~110 lines.
+│   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
-│   │                          # WAV read/write/parse, exportMixdown (ffmpeg), saveProject,
-│   │                          # openProject. Also exports zenitySave()/zenityOpen(). ~880 lines.
+│   │                          # WAV read/write/parse (16/24/32-bit, stereo downmix,
+│   │                          # chunk scanning), resampling (linear interpolation),
+│   │                          # BPM detection (two-pass: onset ACF + sample-level),
+│   │                          # exportMixdown (ffmpeg), saveProject, openProject.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1120 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~127 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
@@ -219,6 +254,17 @@ When mute/solo changes during transport, `refreshLivePlayback()` syncs all track
 
 ### Mouse handler architecture
 `UIRenderer.setupMouseHandlers(callbacks)` is called once after `setup()`, attaching `onMouseScroll` handlers to `mainFB` and `sidebarFB`. The handlers compute which track/zone the cursor is over and invoke the appropriate callback. The callbacks live in `index.ts` and have access to `state` and `render()`.
+
+### Playhead visibility
+`ensurePlayheadVisible()` recenters the scroll offset when the playhead moves outside the visible area (centers playhead in view). Called after all manual playhead movements ([], End, mouse click). During live playback, `autoScroll()` handles forward-scrolling when playhead nears the right edge (80% threshold).
+
+### WAV import pipeline
+1. Parse WAV file (scan RIFF chunks for `fmt` + `data`)
+2. Decode samples (16-bit PCM, 24-bit PCM, or 32-bit float)
+3. Downmix stereo to mono (if needed)
+4. Resample to 48kHz (if source rate differs, using linear interpolation)
+5. Detect BPM (two-pass: onset autocorrelation + sample-level refinement)
+6. Set project BPM if project is empty
 
 ## Sidebar layout per track row (TRACK_ROW_HEIGHT=4)
 
