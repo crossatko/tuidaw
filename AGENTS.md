@@ -53,6 +53,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
 - `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
 - `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA time-stretch speed control (0.25x–2.0x)
+- `tuidaw_render(output, frame_count)` — offline render: calls playback_callback into a user-provided buffer (bypasses audio device, deterministic output for tests)
 
 ### Recording behavior:
 - **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
@@ -82,6 +83,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ### Timeline and playhead navigation (beat-based):
 - **Left/Right arrows** = scroll view by 1 beat (Shift: 1 bar / 4 beats)
 - **[ / ]** = scrub playhead left/right by 1 bar (4 beats) — **works during playback** (seeks native engine + resets WSOLA)
+- **{ / }** = nudge selected track earlier/later by 1/16 beat — trims from start or prepends silence, syncs to native engine instantly
 - **Mouse wheel** on main area = scroll view by 1 beat per tick
 - **Home / 0** = jump to beginning, **End** = jump to end of audio — **works during playback**
 - **Mouse click** on timeline = set playhead to clicked position — **works during playback**
@@ -148,7 +150,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
 - **`tuidaw_set_speed` must reset WSOLA states**: When speed changes (especially crossing the 1.0 threshold), WSOLA `input_pos` can be stale from whenever WSOLA was last active. Without resetting, switching from 1.0x to 0.5x causes a massive playhead backward jump (e.g. 47616 → 5120) because `input_pos` was still at position 0 from when `tuidaw_play` initially called `wsola_reset`. Fixed by always calling `wsola_reset(current_playhead)` for all active tracks in `tuidaw_set_speed`.
 - **WSOLA initialization vs reset distinction**: `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_speed()` all reset WSOLA states. The callback's `if (!tk->wsola.initialized)` check is a safety net but should rarely trigger since these three functions cover all transitions.
-- **Click timing model (final)**: Click timing is derived directly from the content-space playhead position `pos % samples_per_beat` in the audio callback, exactly like a normal track reads `samples[pos]`. No wall-clock counter (`click_pos`) is needed or used. Toggling click mid-playback is identical to muting/unmuting a regular track — it immediately plays at the correct beat phase, no drift, no reset. `tuidaw_set_click` receives `originalBpm` so the beat grid is in content-space. Loop wraps are free since `pos` is already loop-wrapped in the per-frame loop.
+- **Click timing model (final)**: Click timing uses **fractional beat-phase computation**: `fmod((double)pos, exact_samples_per_beat)` where `exact_samples_per_beat = 60.0 / bpm * 48000.0` (a double, not rounded to integer). This eliminates cumulative drift from integer buffer-length rounding. Previously used `pos % click_samples_len` (integer modulus) which accumulated `N * (round(spb) - spb_exact)` samples of drift over N beats (e.g. ~5.7ms after 5 minutes at 155 BPM). Now verified drift-free: 776 beats over 5 minutes with max error 1.97 samples (0.041ms). The `tuidaw_set_click` function stores the exact BPM for this computation. `tuidaw_set_click_samples` is race-safe (sets length to 0 before updating pointer).
 - **Click loop realignment**: Not needed — `pos` is loop-wrapped in the per-frame loop before the click section reads it, so `pos % samples_per_beat` is automatically correct on every loop iteration with zero drift.
 - **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
 - **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
@@ -179,7 +181,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 4. **Track manager** with add/remove/select, mute/solo/arm, volume/pan, color assignment
 5. **Full UI**: top bar (transport/BPM/time/output device indicator), left sidebar (track list with M/S/R controls + level meters + input device labels + volume + pan), main area (braille waveforms + beat grid timeline + playhead), status bar (shortcuts)
 6. **Transport controls**: play, stop, record with live waveform drawing
-7. **All keyboard shortcuts**: SPACE, R, A, D, M, S, C, +/-, arrows, Home/End/0, F1-F3, F5, F6, I, E, V, <, >, [, ], Q
+7. **All keyboard shortcuts**: SPACE, R, A, D, M, S, C, +/-, arrows, Home/End/0, F1-F3, F5, F6, I, E, V, <, >, [, ], {, }, Q
 8. **D key two-step**: first press clears content, second press deletes track
 9. **Audio device selection**: F2 (input per track), F3 (global output), device selector overlay
 10. **Multi-track recording** via native miniaudio capture devices

@@ -66,6 +66,7 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_set_speed:            { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_get_speed:            { returns: FFIType.f32 },
+  tuidaw_render:               { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
 })
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
@@ -574,6 +575,16 @@ export class AudioEngine {
 
   getSpeed(): number {
     return lib.symbols.tuidaw_get_speed()
+  }
+
+  // ── Offline Render ──────────────────────────────────────────────────────
+  // Render audio directly into a buffer by calling playback_callback.
+  // The engine must be in "playing" state (call play() first).
+  // Returns interleaved stereo float buffer (L R L R...).
+  render(frameCount: number): Float32Array {
+    const buf = new Float32Array(frameCount * 2)
+    lib.symbols.tuidaw_render(ptr(buf), frameCount)
+    return buf
   }
 
   // ── Stop All ───────────────────────────────────────────────────────────
