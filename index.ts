@@ -164,17 +164,17 @@ async function main() {
   }
 
   // Helper: sync native loop state after a manual playhead move.
-  // If the playhead is outside the loop region, disable the native loop so
-  // playback continues linearly past loopEnd. If the playhead is moved back
-  // inside the loop, re-enable it. The UI loop markers (state.loopStart/End)
-  // are never changed — only the native engine's enforcement is toggled.
+  // If the playhead is moved past the loop region, disable the native loop
+  // so playback continues linearly. If the playhead is before or inside the
+  // loop, keep the native loop active — the native callback will play linearly
+  // until reaching loopEnd, then wrap back to loopStart.
   function syncLoopAfterSeek() {
     if (state.loopStart === null || state.loopEnd === null) return
-    if (state.playheadPosition < state.loopStart || state.playheadPosition >= state.loopEnd) {
-      // Outside loop — disable native loop enforcement
+    if (state.playheadPosition > state.loopEnd) {
+      // Past the loop — disable native loop enforcement
       audioEngine.setLoop(null, null)
     } else {
-      // Inside loop — re-enable native loop
+      // Before or inside loop — keep native loop active
       audioEngine.setLoop(state.loopStart, state.loopEnd)
     }
   }

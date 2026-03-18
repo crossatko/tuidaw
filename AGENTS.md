@@ -187,6 +187,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 38. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
 39. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
 40. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
+41. **Loop-playhead interaction**: Loop is enforced when playhead is at or before loopEnd; disabled only when manually seeking past the loop. Playback from before the loop enters it naturally. `autoScroll()` centers the loop region on screen when it fits the view. 6 tests verify all scenarios.
 
 ## File structure
 
@@ -237,6 +238,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── recordings/               # Auto-created directory for saved WAV files
 ├── tests/
 │   ├── loop-wsola.test.ts    # 6 tests for loop+WSOLA behavior (all pass)
+│   ├── loop-playhead.test.ts # 6 tests for loop+playhead interaction (all pass)
 │   └── playhead-sync.test.ts # 6 tests for playhead content-space sync (all pass)
 └── node_modules/
     └── @opentui/core/        # OpenTUI framework (v0.1.88)
