@@ -12,7 +12,7 @@ import {
   type MouseEvent,
 } from "@opentui/core"
 import type { ProjectState, Track, AudioDevice } from "./types"
-import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT } from "./types"
+import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT, CLICK_ROW_HEIGHT } from "./types"
 import { renderBrailleWaveform, getPeakLevel, renderLevelMeter } from "./braille"
 import {
   formatTime,
@@ -37,6 +37,7 @@ const FG_YELLOW = RGBA.fromHex("#e0af68")
 const FG_ORANGE = RGBA.fromHex("#ff9e64")
 const PLAYHEAD_COLOR = RGBA.fromHex("#ff9e64")
 const LOOP_COLOR = RGBA.fromHex("#bb9af7") // purple for loop region
+const CLICK_COLOR = RGBA.fromHex("#e0af68") // yellow for click track
 const GRID_COLOR = RGBA.fromHex("#292e42")
 const TRANSPARENT = RGBA.fromValues(0, 0, 0, 0)
 
@@ -51,6 +52,7 @@ export class UIRenderer {
   private mainFB!: FrameBufferRenderable
   private statusBar!: BoxRenderable
   private statusBarFB!: FrameBufferRenderable
+  private currentState: ProjectState | null = null  // updated on each render for mouse handlers
   private helpOverlayVisible = false
   private deviceSelectorVisible = false
   private deviceSelectorMode: "input" | "output" = "input"
@@ -165,6 +167,8 @@ export class UIRenderer {
     onPanChange: (delta: number) => void
     onTrackClick: (trackIndex: number) => void
     onTimelineClick: (x: number, mainWidth: number) => void
+    onClickVolumeChange: (delta: number) => void
+    onClickPanChange: (delta: number) => void
   }): void {
     // Main area: mouse wheel scrolls the timeline horizontally
     this.mainFB.onMouseScroll = (event: MouseEvent) => {
@@ -179,18 +183,37 @@ export class UIRenderer {
     }
 
     // Sidebar: mouse wheel adjusts volume or pan on the SELECTED track
-    // Pan zone: row 2, x >= 9 (where "Pan:" label starts)
+    // Click track row is at the top when click is enabled (CLICK_ROW_HEIGHT rows)
+    // Pan zone: row 2 (within track), x >= 9 (where "Pan:" label starts)
     // Volume zone: everything else in sidebar
     this.sidebarFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
       const dir = event.scroll.direction
       const delta = (dir === "up" || dir === "left") ? 1 : -1
 
-      // Determine row within track to distinguish volume vs pan zone
-      // event.y is screen-absolute; sidebar starts at y=TOPBAR_HEIGHT
+      // localY within the sidebar content area (below header)
       const localY = event.y - TOPBAR_HEIGHT
       if (localY < 0) return
-      const rowInTrack = localY % TRACK_ROW_HEIGHT
+
+      // Subtract header row
+      const contentY = localY - 1
+      if (contentY < 0) return
+
+      // Check if click track is visible and cursor is on it
+      const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
+      if (this.currentState?.clickEnabled && contentY < CLICK_ROW_HEIGHT) {
+        // On click track row — pan zone: x >= 13 (where pan indicator is drawn)
+        if (event.x >= 13) {
+          callbacks.onClickPanChange(delta * 0.05)
+        } else {
+          callbacks.onClickVolumeChange(delta * 0.05)
+        }
+        return
+      }
+
+      // Regular track area
+      const trackContentY = contentY - clickOffset
+      const rowInTrack = trackContentY % TRACK_ROW_HEIGHT
 
       // Pan control: row 2, x >= 9 (where pan indicator is drawn)
       if (rowInTrack === 2 && event.x >= 9) {
@@ -205,10 +228,20 @@ export class UIRenderer {
     // Sidebar: click to select track
     this.sidebarFB.onMouse = (event: MouseEvent) => {
       if (event.type !== "down") return
-      // event.y is screen-absolute; sidebar starts at y=TOPBAR_HEIGHT
       const localY = event.y - TOPBAR_HEIGHT
       if (localY < 0) return
-      const trackIndex = Math.floor(localY / TRACK_ROW_HEIGHT)
+
+      // Subtract header row
+      const contentY = localY - 1
+      if (contentY < 0) return
+
+      // Skip click track row if visible
+      const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
+      if (this.currentState?.clickEnabled && contentY < CLICK_ROW_HEIGHT) {
+        return // Click on click track row — no track selection
+      }
+
+      const trackIndex = Math.floor((contentY - clickOffset) / TRACK_ROW_HEIGHT)
       callbacks.onTrackClick(trackIndex)
     }
 
@@ -227,9 +260,13 @@ export class UIRenderer {
           draggingTimeline = true
           callbacks.onTimelineClick(localX, this.mainFB.width)
         } else {
-          // Waveform area — select track (localY=1 is first track row)
+          // Waveform area — select track
           draggingTimeline = false
-          const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
+          // Account for click track row offset in main area
+          const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
+          const waveformY = localY - 1  // subtract timeline row
+          if (waveformY < clickOffset) return  // Click on click waveform — no track selection
+          const trackIndex = Math.floor((waveformY - clickOffset) / TRACK_ROW_HEIGHT)
           callbacks.onTrackClick(trackIndex)
         }
       } else if (event.type === "drag" && draggingTimeline) {
@@ -261,6 +298,7 @@ export class UIRenderer {
   }
 
   render(state: ProjectState): void {
+    this.currentState = state
     this.renderTopBar(state)
     this.renderSidebar(state)
     this.renderMainArea(state)
@@ -393,8 +431,41 @@ export class UIRenderer {
       fb.setCell(w - 1, y, "│", FG_DIM, BG_SIDEBAR)
     }
 
-    // Track list
+    // Click track row (compact: 1 content row + 1 separator) — shown at top when enabled
     let y = 1
+    if (state.clickEnabled) {
+      const bg = BG_SIDEBAR
+
+      // Content row: icon + "Click" + volume + pan
+      fb.fillRect(0, y, w - 1, 1, bg)
+      fb.setCell(0, y, "♩", CLICK_COLOR, bg)
+      fb.drawText(" Click", 1, y, CLICK_COLOR, bg, TextAttributes.BOLD)
+
+      // Volume (allowing >100%)
+      const volPct = Math.round(state.clickVolume * 100)
+      const volStr = `${volPct}%`
+      fb.drawText(volStr, 8, y, FG_DIM, bg)
+
+      // Pan
+      let panStr: string
+      if (state.clickPan === 0) {
+        panStr = "C"
+      } else if (state.clickPan < 0) {
+        panStr = `L${Math.round(Math.abs(state.clickPan) * 100)}`
+      } else {
+        panStr = `R${Math.round(state.clickPan * 100)}`
+      }
+      fb.drawText(panStr, 13, y, FG_DIM, bg)
+
+      // Separator
+      for (let x = 0; x < w - 1; x++) {
+        fb.setCell(x, y + 1, "─", RGBA.fromHex("#292e42"), bg)
+      }
+
+      y += CLICK_ROW_HEIGHT
+    }
+
+    // Track list
     for (let i = 0; i < state.tracks.length; i++) {
       if (y + TRACK_ROW_HEIGHT > h) break
       const track = state.tracks[i]
@@ -509,8 +580,52 @@ export class UIRenderer {
     // Timeline header (1 row)
     this.renderTimeline(fb, w, state, samplesPerSubCol)
 
-    // Render each track's waveform
+    // Click track waveform row (1 content row + 1 separator) — shown above regular tracks
     let y = 1
+    if (state.clickEnabled) {
+      const clickH = Math.min(CLICK_ROW_HEIGHT, h - y)
+      if (clickH > 0) {
+        fb.fillRect(0, y, w, clickH, BG)
+
+        // Generate synthetic click beat pattern for braille rendering
+        // Each beat gets a spike, rendered as 1 row of braille
+        if (clickH >= 1) {
+          const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+          const samplesPerCol = samplesPerSubCol * 2
+
+          for (let x = 0; x < w; x++) {
+            const samplePos = state.scrollOffset + x * samplesPerCol
+            // Check if this column contains a beat boundary
+            const beatStart = Math.floor(samplePos / samplesPerBeat) * samplesPerBeat
+            const nextBeat = beatStart + samplesPerBeat
+
+            // Check if a beat falls within this column's sample range
+            let hasBeat = false
+            if (beatStart >= samplePos && beatStart < samplePos + samplesPerCol) {
+              hasBeat = true
+            } else if (nextBeat >= samplePos && nextBeat < samplePos + samplesPerCol) {
+              hasBeat = true
+            }
+
+            if (hasBeat) {
+              // Full-height spike at beat position (braille char with all dots set)
+              fb.setCell(x, y, "⣿", CLICK_COLOR, BG)
+            }
+          }
+        }
+
+        // Separator (last row of click area)
+        if (clickH >= 2) {
+          for (let x = 0; x < w; x++) {
+            fb.setCell(x, y + clickH - 1, "─", GRID_COLOR, BG)
+          }
+        }
+
+        y += clickH
+      }
+    }
+
+    // Render each track's waveform
     for (let i = 0; i < state.tracks.length; i++) {
       const trackH = Math.min(TRACK_ROW_HEIGHT, h - y)
       if (trackH <= 0) break

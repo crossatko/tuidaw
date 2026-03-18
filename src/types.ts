@@ -31,6 +31,8 @@ export interface ProjectState {
   bpm: number
   originalBpm: number // The "true" BPM of the imported audio (for speed ratio calculation)
   clickEnabled: boolean
+  clickVolume: number // 0.0 - 2.0 (allows above 100%)
+  clickPan: number // -1.0 (L) to 1.0 (R), 0.0 = center
   sampleRate: number
   tracks: Track[]
   selectedTrackIndex: number
@@ -57,6 +59,8 @@ export interface ProjectDescriptor {
   bpm: number
   originalBpm: number
   clickEnabled: boolean
+  clickVolume: number
+  clickPan: number
   sampleRate: number
   playheadPosition: number
   scrollOffset: number
@@ -110,3 +114,4 @@ export const TRACK_COLORS = [
 export const SIDEBAR_WIDTH = 22
 export const TOPBAR_HEIGHT = 3
 export const TRACK_ROW_HEIGHT = 5 // rows per track in both sidebar and waveform (4 content + 1 separator)
+export const CLICK_ROW_HEIGHT = 2 // rows for click track (1 content + 1 separator)

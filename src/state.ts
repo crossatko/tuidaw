@@ -12,6 +12,8 @@ export function createDefaultState(): ProjectState {
     bpm: 120,
     originalBpm: 120,
     clickEnabled: false,
+    clickVolume: 0.5,
+    clickPan: 0,
     sampleRate: 48000,
     tracks: [createTrack("Track 1")],
     selectedTrackIndex: 0,
