@@ -120,10 +120,15 @@ async function main() {
     return mainWidth * samplesPerCol
   }
 
-  // Helper: auto-scroll during live playback (scrolls forward when playhead nears right edge)
+  // Helper: auto-scroll during live playback
+  // Scrolls forward when playhead nears right edge, and recenters when
+  // playhead jumps backward (e.g. loop region wrapping back to loop start).
   function autoScroll() {
     const visibleSamples = getVisibleSamples()
-    if (state.playheadPosition > state.scrollOffset + visibleSamples * 0.8) {
+    if (state.playheadPosition < state.scrollOffset) {
+      // Playhead is left of view (loop wrap) — recenter
+      state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples * 0.2))
+    } else if (state.playheadPosition > state.scrollOffset + visibleSamples * 0.8) {
       state.scrollOffset = state.playheadPosition - Math.floor(visibleSamples * 0.2)
     }
   }
