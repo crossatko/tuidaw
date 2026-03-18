@@ -550,7 +550,7 @@ export class AudioEngine {
   //   1. Coarse estimate via onset-based autocorrelation (~2 BPM resolution)
   //   2. Fine refinement via sample-level autocorrelation (0.1 BPM resolution)
   // Returns the most likely BPM in the range [minBPM, maxBPM], or null if detection fails
-  detectBPM(samples: Float32Array, sampleRate: number, minBPM: number = 60, maxBPM: number = 200): number | null {
+  detectBPM(samples: Float32Array, sampleRate: number, minBPM: number = 60, maxBPM: number = 300): number | null {
     if (samples.length < sampleRate * 4) return null // need at least 4 seconds
 
     // ── Pass 1: Coarse onset-based autocorrelation ──────────────────────
@@ -643,14 +643,20 @@ export class AudioEngine {
     // Sort by strength descending
     peaks.sort((a, b) => b.strength - a.strength)
 
-    // Prefer higher BPM if a sub-harmonic is nearly as strong (within 80%)
-    // This avoids detecting half-time
+    // Iterative octave promotion: keep promoting to double-time if a harmonic
+    // peak exists with strength >= 80% of current best. This chains through
+    // multiple octaves (e.g. 62.5 → 125 → 250 BPM).
     let bestPeak = peaks[0]
-    for (const p of peaks) {
-      const ratio = bestPeak.lag / p.lag
-      if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.8) {
-        bestPeak = p
-        break
+    let promoted = true
+    while (promoted) {
+      promoted = false
+      for (const p of peaks) {
+        const ratio = bestPeak.lag / p.lag
+        if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.8) {
+          bestPeak = p
+          promoted = true
+          break
+        }
       }
     }
 
