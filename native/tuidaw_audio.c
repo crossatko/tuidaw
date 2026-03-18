@@ -303,6 +303,18 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
     int use_wsola = (speed < 0.99f || speed > 1.01f);
 
+    // When using WSOLA, scale loop boundaries to playhead-space.
+    // The playhead advances at real-time rate (1 sample/frame), but WSOLA reads
+    // content at 'speed' rate. So content region [A, B) spans playhead ticks
+    // [A/speed, B/speed). We scale the boundaries so the playhead has enough
+    // room to cover the entire stretched content before wrapping.
+    long eff_loop_start = loop_start;
+    long eff_loop_end   = loop_end;
+    if (use_wsola && loop_start >= 0 && loop_end > loop_start) {
+        eff_loop_start = (long)((double)loop_start / (double)speed);
+        eff_loop_end   = (long)((double)loop_end   / (double)speed);
+    }
+
     // If using WSOLA, ensure all active tracks have initialized state
     if (use_wsola) {
         for (int t = 0; t < MAX_TRACKS; t++) {
@@ -325,10 +337,10 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         long pos = playhead + (long)frame;
 
         // Loop handling: wrap position (for click and non-WSOLA playback)
-        if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
-            long loop_len = loop_end - loop_start;
-            long overshoot = pos - loop_end;
-            pos = loop_start + (overshoot % loop_len);
+        if (eff_loop_start >= 0 && eff_loop_end > eff_loop_start && pos >= eff_loop_end) {
+            long loop_len = eff_loop_end - eff_loop_start;
+            long overshoot = pos - eff_loop_end;
+            pos = eff_loop_start + (overshoot % loop_len);
         }
 
         float left = 0.0f;
@@ -391,18 +403,21 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     // The WSOLA input positions handle the time-stretch independently
     long new_playhead = playhead + (long)frameCount;
 
-    // Handle loop wrap at the engine level
-    if (loop_start >= 0 && loop_end > loop_start && new_playhead >= loop_end) {
-        long loop_len = loop_end - loop_start;
-        long overshoot = new_playhead - loop_end;
-        new_playhead = loop_start + (overshoot % loop_len);
+    // Handle loop wrap at the engine level (using effective/scaled boundaries)
+    if (eff_loop_start >= 0 && eff_loop_end > eff_loop_start && new_playhead >= eff_loop_end) {
+        long loop_len = eff_loop_end - eff_loop_start;
+        long overshoot = new_playhead - eff_loop_end;
+        new_playhead = eff_loop_start + (overshoot % loop_len);
 
-        // Reset WSOLA states on loop wrap so they re-sync to new position
+        // Reset WSOLA states on loop wrap so they re-sync to content start
         if (use_wsola) {
+            // WSOLA input_pos is in content-space: convert playhead-space
+            // position back to content position (multiply by speed)
+            double content_pos = (double)new_playhead * (double)speed;
             for (int t = 0; t < MAX_TRACKS; t++) {
                 TrackState* tk = &g_engine.tracks[t];
                 if (tk->active && tk->wsola.initialized) {
-                    wsola_reset(&tk->wsola, (double)new_playhead);
+                    wsola_reset(&tk->wsola, content_pos);
                 }
             }
         }

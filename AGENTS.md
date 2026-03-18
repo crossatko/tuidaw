@@ -127,6 +127,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
 - **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
 - **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250)
+- **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space but the playhead advances at real-time rate. At 0.5x speed, content takes 2x as long to play, so loop boundaries must be scaled by 1/speed in the native callback to prevent early wrapping. The C callback computes `eff_loop_start/end = loop_start/end / speed` when WSOLA is active.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
