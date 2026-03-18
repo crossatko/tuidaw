@@ -25,5 +25,11 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "exclude": [
+    "test-bpm.ts",
+    "debug-bpm.ts",
+    "analyze-clicks.ts",
+    "analyze-live-click.ts"
+  ]
 }

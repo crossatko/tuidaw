@@ -926,6 +926,51 @@ async function main() {
       return
     }
 
+    // { (shift+[) - Nudge selected track earlier by 1/16 beat (trim from start)
+    if (key.sequence === "{") {
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        ui.showStatusMessage("Cannot nudge click track")
+        render()
+        return
+      }
+      const track = getSelectedTrack(state)
+      if (track && track.samples && track.samples.length > 0) {
+        const samplesPerBeat = (60 / state.originalBpm) * state.sampleRate
+        const nudgeAmount = Math.round(samplesPerBeat / 16) // 1/16 beat
+        if (track.samples.length > nudgeAmount) {
+          track.samples = track.samples.slice(nudgeAmount)
+          audioEngine.updateTrackSamples(track)
+          const ms = (nudgeAmount / state.sampleRate * 1000).toFixed(1)
+          ui.showStatusMessage(`Nudged "${track.name}" earlier by 1/16 beat (${ms}ms)`)
+          render()
+        }
+      }
+      return
+    }
+
+    // } (shift+]) - Nudge selected track later by 1/16 beat (prepend silence)
+    if (key.sequence === "}") {
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        ui.showStatusMessage("Cannot nudge click track")
+        render()
+        return
+      }
+      const track = getSelectedTrack(state)
+      if (track && track.samples && track.samples.length > 0) {
+        const samplesPerBeat = (60 / state.originalBpm) * state.sampleRate
+        const nudgeAmount = Math.round(samplesPerBeat / 16) // 1/16 beat
+        const newSamples = new Float32Array(track.samples.length + nudgeAmount)
+        // First nudgeAmount samples are 0 (silence), then copy original
+        newSamples.set(track.samples, nudgeAmount)
+        track.samples = newSamples
+        audioEngine.updateTrackSamples(track)
+        const ms = (nudgeAmount / state.sampleRate * 1000).toFixed(1)
+        ui.showStatusMessage(`Nudged "${track.name}" later by 1/16 beat (${ms}ms)`)
+        render()
+      }
+      return
+    }
+
     // < (shift+,) - Pan left (instant in native engine)
     // When click track is selected: pan click left
     if (key.sequence === "<") {

@@ -42,3 +42,5 @@ native/zig-toolchain/
 # local test/debug scripts (contain user-specific paths)
 test-bpm.ts
 debug-bpm.ts
+analyze-clicks.ts
+analyze-live-click.ts
