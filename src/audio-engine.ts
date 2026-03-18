@@ -1611,6 +1611,7 @@ export class AudioEngine {
       return {
         bpm: desc.bpm,
         originalBpm: desc.originalBpm ?? desc.bpm,
+        bpmLocked: false,
         clickEnabled: desc.clickEnabled,
         clickVolume: desc.clickVolume ?? 0.5,
         clickPan: desc.clickPan ?? 0,

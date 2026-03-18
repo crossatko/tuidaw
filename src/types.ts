@@ -30,6 +30,7 @@ export type TransportState = "stopped" | "playing" | "recording"
 export interface ProjectState {
   bpm: number
   originalBpm: number // The "true" BPM of the imported audio (for speed ratio calculation)
+  bpmLocked: boolean // When true, +/- changes originalBpm too (no speed change, just relabels tempo)
   clickEnabled: boolean
   clickVolume: number // 0.0 - 2.0 (allows above 100%)
   clickPan: number // -1.0 (L) to 1.0 (R), 0.0 = center

@@ -11,6 +11,7 @@ export function createDefaultState(): ProjectState {
   return {
     bpm: 120,
     originalBpm: 120,
+    bpmLocked: false,
     clickEnabled: false,
     clickVolume: 0.5,
     clickPan: 0,

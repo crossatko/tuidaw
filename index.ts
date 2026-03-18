@@ -716,8 +716,8 @@ async function main() {
     // + / = - Increase BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "+" || key.sequence === "=") {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
-      // On empty project, change the base tempo (no speed change needed)
-      if (getProjectDurationSamples(state) === 0) {
+      // In locked mode or empty project, change base tempo too (no speed change)
+      if (state.bpmLocked || getProjectDurationSamples(state) === 0) {
         state.originalBpm = state.bpm
       }
       // Update WSOLA playback speed based on ratio to original BPM
@@ -735,8 +735,8 @@ async function main() {
     // - - Decrease BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "-") {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
-      // On empty project, change the base tempo (no speed change needed)
-      if (getProjectDurationSamples(state) === 0) {
+      // In locked mode or empty project, change base tempo too (no speed change)
+      if (state.bpmLocked || getProjectDurationSamples(state) === 0) {
         state.originalBpm = state.bpm
       }
       // Update WSOLA playback speed based on ratio to original BPM
@@ -747,6 +747,14 @@ async function main() {
       if (state.transportState !== "stopped" && state.clickEnabled) {
         await audioEngine.startClick(state.originalBpm)
       }
+      render()
+      return
+    }
+
+    // B - Toggle BPM lock (when locked, +/- changes base tempo without speed change)
+    if (key.name === "b") {
+      state.bpmLocked = !state.bpmLocked
+      ui.showStatusMessage(state.bpmLocked ? "BPM locked — +/- changes tempo label only" : "BPM unlocked — +/- changes playback speed")
       render()
       return
     }
