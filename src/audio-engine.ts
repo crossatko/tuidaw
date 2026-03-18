@@ -414,6 +414,11 @@ export class AudioEngine {
     return Number(lib.symbols.tuidaw_get_playhead())
   }
 
+  // Set playhead position (works during playback — resets WSOLA states in native engine)
+  setPlayhead(position: number): void {
+    lib.symbols.tuidaw_set_playhead(BigInt(position))
+  }
+
   // Get current playback position (compatibility with old API)
   getCurrentPlaybackPosition(_startPosition: number): number {
     return this.getPlayhead()

@@ -72,7 +72,6 @@ async function main() {
       }
     },
     onTimelineClick: (x: number, mainWidth: number) => {
-      if (state.transportState !== "stopped") return
       // Same formula as ui.ts renderMainArea/renderTimeline (speed-adjusted)
       const speed = state.bpm / state.originalBpm
       const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
@@ -80,6 +79,9 @@ async function main() {
       const samplesPerCol = samplesPerSubCol * 2
       const samplePos = state.scrollOffset + x * samplesPerCol
       state.playheadPosition = Math.max(0, samplePos)
+      if (state.transportState !== "stopped") {
+        audioEngine.setPlayhead(state.playheadPosition)
+      }
       ensurePlayheadVisible()
       render()
     },
@@ -519,6 +521,9 @@ async function main() {
     if (key.name === "home" || key.sequence === "0") {
       state.playheadPosition = 0
       state.scrollOffset = 0
+      if (state.transportState !== "stopped") {
+        audioEngine.setPlayhead(0)
+      }
       render()
       return
     }
@@ -530,6 +535,9 @@ async function main() {
         if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
       }
       state.playheadPosition = maxLen
+      if (state.transportState !== "stopped") {
+        audioEngine.setPlayhead(state.playheadPosition)
+      }
       ensurePlayheadVisible()
       render()
       return
@@ -770,23 +778,27 @@ async function main() {
       return
     }
 
-    // [ - Scrub playhead left by 1 bar (4 beats)
+    // [ - Scrub playhead left by 1 bar (4 beats) — works during playback
     if (key.sequence === "[") {
-      if (state.transportState !== "stopped") return
       const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
+      if (state.transportState !== "stopped") {
+        audioEngine.setPlayhead(state.playheadPosition)
+      }
       ensurePlayheadVisible()
       render()
       return
     }
 
-    // ] - Scrub playhead right by 1 bar (4 beats)
+    // ] - Scrub playhead right by 1 bar (4 beats) — works during playback
     if (key.sequence === "]") {
-      if (state.transportState !== "stopped") return
       const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition += samplesPerBar
+      if (state.transportState !== "stopped") {
+        audioEngine.setPlayhead(state.playheadPosition)
+      }
       ensurePlayheadVisible()
       render()
       return
