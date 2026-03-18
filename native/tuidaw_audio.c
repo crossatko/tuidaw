@@ -103,6 +103,7 @@ typedef struct {
 
     // Output device
     int           output_device_index;   // -1 = default
+    int           use_null_backend;      // force null (silent) backend for tests
 
     // Device info cache
     ma_device_info* playback_infos;
@@ -210,12 +211,28 @@ static int wsola_find_best_offset(const float* samples, int len,
 // Generate WSOLA output samples for a track. Fills the circular output buffer.
 // speed: playback speed (1.0 = normal, <1 = slower, >1 = faster)
 // The input position advances by speed * WSOLA_HOP per output hop.
-static void wsola_generate(WsolaState* ws, const float* samples, int len, float speed) {
+// When loop boundaries are provided (loop_start >= 0), input_pos wraps at
+// loop_end back to loop_start so the WSOLA reader stays within the loop region.
+static void wsola_generate(WsolaState* ws, const float* samples, int len,
+                           float speed, long loop_start, long loop_end) {
+    int has_loop = (loop_start >= 0 && loop_end > loop_start);
+
     // Generate enough output to fill a reasonable amount (at least WSOLA_HOP samples)
     while (ws->out_avail < WSOLA_OUTBUF_LEN - WSOLA_WINDOW) {
         long target_input = (long)ws->input_pos;
 
-        // If we're past the end of the audio, output silence
+        // Wrap input_pos at loop boundary (content-space)
+        if (has_loop && target_input >= loop_end) {
+            long loop_len = loop_end - loop_start;
+            long overshoot = target_input - loop_end;
+            ws->input_pos = (double)(loop_start + (overshoot % loop_len));
+            target_input = (long)ws->input_pos;
+            // Clear overlap buffer on loop wrap to avoid cross-correlation
+            // artifacts between end and start of loop
+            memset(ws->window_buf, 0, sizeof(ws->window_buf));
+        }
+
+        // If we're past the end of the audio (no loop), output silence
         if (target_input >= len) {
             // Write silence to fill buffer
             for (int i = 0; i < WSOLA_HOP; i++) {
@@ -303,18 +320,6 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
     int use_wsola = (speed < 0.99f || speed > 1.01f);
 
-    // When using WSOLA, scale loop boundaries to playhead-space.
-    // The playhead advances at real-time rate (1 sample/frame), but WSOLA reads
-    // content at 'speed' rate. So content region [A, B) spans playhead ticks
-    // [A/speed, B/speed). We scale the boundaries so the playhead has enough
-    // room to cover the entire stretched content before wrapping.
-    long eff_loop_start = loop_start;
-    long eff_loop_end   = loop_end;
-    if (use_wsola && loop_start >= 0 && loop_end > loop_start) {
-        eff_loop_start = (long)((double)loop_start / (double)speed);
-        eff_loop_end   = (long)((double)loop_end   / (double)speed);
-    }
-
     // If using WSOLA, ensure all active tracks have initialized state
     if (use_wsola) {
         for (int t = 0; t < MAX_TRACKS; t++) {
@@ -324,11 +329,14 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
                 wsola_reset(&tk->wsola, (double)playhead);
             }
             // Pre-generate WSOLA output for this callback
+            // Loop boundaries are passed in content-space so wsola_generate
+            // wraps input_pos at loop_end back to loop_start.
             if (tk->samples && tk->samples_len > 0 &&
                 !atomic_load(&tk->muted) &&
                 !(any_solo && !atomic_load(&tk->solo)) &&
                 !atomic_load(&tk->recording)) {
-                wsola_generate(&tk->wsola, tk->samples, tk->samples_len, speed);
+                wsola_generate(&tk->wsola, tk->samples, tk->samples_len,
+                               speed, loop_start, loop_end);
             }
         }
     }
@@ -337,10 +345,10 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         long pos = playhead + (long)frame;
 
         // Loop handling: wrap position (for click and non-WSOLA playback)
-        if (eff_loop_start >= 0 && eff_loop_end > eff_loop_start && pos >= eff_loop_end) {
-            long loop_len = eff_loop_end - eff_loop_start;
-            long overshoot = pos - eff_loop_end;
-            pos = eff_loop_start + (overshoot % loop_len);
+        if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
+            long loop_len = loop_end - loop_start;
+            long overshoot = pos - loop_end;
+            pos = loop_start + (overshoot % loop_len);
         }
 
         float left = 0.0f;
@@ -399,26 +407,41 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         out[frame * 2 + 1] = right;
     }
 
-    // Advance playhead — always advances at real-time rate for UI/click sync
-    // The WSOLA input positions handle the time-stretch independently
+    // Advance playhead
     long new_playhead = playhead + (long)frameCount;
 
-    // Handle loop wrap at the engine level (using effective/scaled boundaries)
-    if (eff_loop_start >= 0 && eff_loop_end > eff_loop_start && new_playhead >= eff_loop_end) {
-        long loop_len = eff_loop_end - eff_loop_start;
-        long overshoot = new_playhead - eff_loop_end;
-        new_playhead = eff_loop_start + (overshoot % loop_len);
-
-        // Reset WSOLA states on loop wrap so they re-sync to content start
+    if (loop_start >= 0 && loop_end > loop_start) {
         if (use_wsola) {
-            // WSOLA input_pos is in content-space: convert playhead-space
-            // position back to content position (multiply by speed)
-            double content_pos = (double)new_playhead * (double)speed;
+            // In WSOLA + loop mode, the playhead tracks the WSOLA content
+            // position. WSOLA input_pos wraps at loop boundaries internally
+            // (in content-space), so we derive the playhead from it.
+            // Find the first active non-muted track's WSOLA input_pos.
             for (int t = 0; t < MAX_TRACKS; t++) {
                 TrackState* tk = &g_engine.tracks[t];
-                if (tk->active && tk->wsola.initialized) {
-                    wsola_reset(&tk->wsola, content_pos);
+                if (!tk->active) continue;
+                if (atomic_load(&tk->muted)) continue;
+                if (atomic_load(&tk->recording)) continue;
+                if (!tk->samples || tk->samples_len == 0) continue;
+                if (tk->wsola.initialized) {
+                    new_playhead = (long)tk->wsola.input_pos;
+                    break;
                 }
+            }
+            // Ensure playhead stays within loop bounds
+            if (new_playhead >= loop_end) {
+                long loop_len = loop_end - loop_start;
+                long overshoot = new_playhead - loop_end;
+                new_playhead = loop_start + (overshoot % loop_len);
+            }
+            if (new_playhead < loop_start) {
+                new_playhead = loop_start;
+            }
+        } else {
+            // Non-WSOLA loop: wrap playhead at content-space loop boundaries
+            if (new_playhead >= loop_end) {
+                long loop_len = loop_end - loop_start;
+                long overshoot = new_playhead - loop_end;
+                new_playhead = loop_start + (overshoot % loop_len);
             }
         }
     }
@@ -469,6 +492,33 @@ EXPORT int tuidaw_init(void) {
     }
 
     // Enumerate devices
+    ma_context_get_devices(&g_engine.context,
+        &g_engine.playback_infos, &g_engine.playback_count,
+        &g_engine.capture_infos, &g_engine.capture_count);
+
+    return 0;
+}
+
+// Initialize the audio engine with the null (silent) backend.
+// Identical to tuidaw_init() but forces ma_backend_null so no audio is played.
+// The playback callback still runs on a timer thread, so playhead/WSOLA work normally.
+// Intended for automated tests.
+EXPORT int tuidaw_init_null(void) {
+    memset(&g_engine, 0, sizeof(g_engine));
+    atomic_store(&g_engine.loop_start, -1);
+    atomic_store(&g_engine.loop_end, -1);
+    atomic_store(&g_engine.click_bpm, 120.0f);
+    atomic_store(&g_engine.playback_speed, 1.0f);
+    g_engine.output_device_index = -1;
+    g_engine.use_null_backend = 1;
+
+    ma_backend backends[] = { ma_backend_null };
+    ma_context_config ctxConfig = ma_context_config_init();
+    if (ma_context_init(backends, 1, &ctxConfig, &g_engine.context) != MA_SUCCESS) {
+        return -1;
+    }
+
+    // Enumerate devices (will return null backend virtual devices)
     ma_context_get_devices(&g_engine.context,
         &g_engine.playback_infos, &g_engine.playback_count,
         &g_engine.capture_infos, &g_engine.capture_count);
