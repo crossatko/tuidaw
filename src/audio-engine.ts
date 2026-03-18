@@ -729,25 +729,78 @@ export class AudioEngine {
       }
     }
 
-    // Octave demotion: if the result is above 200 BPM, check if half-BPM
-    // (double the lag) has a peak with reasonable strength (>= 50%). This
-    // catches cases where fast hi-hat or subdivisions dominate the ACF.
-    let bestBPMCandidate = (60 * onsetRate) / bestPeak.lag
-    if (bestBPMCandidate > 200) {
-      for (const p of peaks) {
-        const ratio = p.lag / bestPeak.lag
-        if (ratio > 1.8 && ratio < 2.2 && p.strength > bestPeak.strength * 0.5) {
-          bestPeak = p
-          bestBPMCandidate = (60 * onsetRate) / bestPeak.lag
-          break
-        }
+    // Collect candidate BPMs: the promoted best peak + any strong ACF peaks
+    // that might be the true tempo. Only consider peaks at BPM values BETWEEN
+    // the pre-promotion and post-promotion BPM, since the promoted result may
+    // have overshot (e.g. 124→230 when real is 185).
+    const promotedBPM = (60 * onsetRate) / bestPeak.lag
+    const prePromotionBPM = (60 * onsetRate) / peaks[0].lag
+    const candidates: number[] = [promotedBPM]
+    const strengthThreshold = peaks[0].strength * 0.9
+    for (const p of peaks) {
+      const bpm = (60 * onsetRate) / p.lag
+      if (p.strength >= strengthThreshold && bpm > prePromotionBPM && bpm < promotedBPM) {
+        const isDuplicate = candidates.some(c => Math.abs(c - bpm) < 5)
+        if (!isDuplicate) candidates.push(bpm)
       }
     }
 
-    const coarseBPM = bestBPMCandidate
-
     // ── Pass 2: Fine sample-level refinement ────────────────────────────
-    return this.refineBPM(samples, sampleRate, coarseBPM, minBPM, maxBPM)
+    // Refine each candidate and pick the one with the best correlation
+    return this.refineBPMMulti(samples, sampleRate, candidates, minBPM, maxBPM)
+  }
+
+  // Refine multiple BPM candidates and return the one with the best correlation.
+  // When candidates are in an octave relationship, apply a bias toward the higher
+  // BPM since sample-level autocorrelation is inherently higher at lower frequencies
+  // (longer periods have more self-similarity).
+  private refineBPMMulti(samples: Float32Array, sampleRate: number, candidates: number[], minBPM: number, maxBPM: number): number {
+    const searchRadius = 3 // ±3 BPM per candidate
+    const step = 0.1
+    const refineStart = Math.floor(sampleRate * 1) // skip first 1s
+    const refineLen = Math.min(samples.length - refineStart, sampleRate * 30)
+
+    if (refineLen < sampleRate * 2) {
+      return Math.max(minBPM, Math.min(maxBPM, Math.round(candidates[0])))
+    }
+
+    // Refine each candidate independently
+    const refined: { bpm: number; corr: number }[] = []
+    for (const coarseBPM of candidates) {
+      let bestBPM = coarseBPM
+      let bestCorr = -Infinity
+      for (let bpm = coarseBPM - searchRadius; bpm <= coarseBPM + searchRadius; bpm += step) {
+        if (bpm < minBPM || bpm > maxBPM) continue
+        const period = Math.round((sampleRate * 60) / bpm)
+        if (period >= refineLen) continue
+
+        let sum = 0, norm1 = 0, norm2 = 0
+        const n = refineLen - period
+        for (let i = 0; i < n; i += 10) {
+          const s1 = samples[refineStart + i]
+          const s2 = samples[refineStart + i + period]
+          sum += s1 * s2
+          norm1 += s1 * s1
+          norm2 += s2 * s2
+        }
+        const corr = sum / Math.sqrt(norm1 * norm2 + 1e-20)
+        if (corr > bestCorr) { bestCorr = corr; bestBPM = bpm }
+      }
+      refined.push({ bpm: bestBPM, corr: bestCorr })
+    }
+
+    // Pick the winner: prefer the promoted (first) candidate unless another
+    // candidate has significantly higher correlation (> 5% absolute improvement).
+    // This counteracts the inherent bias of sample-level autocorrelation toward
+    // lower BPM (longer periods = more self-similarity).
+    let winner = refined[0]
+    for (let i = 1; i < refined.length; i++) {
+      if (refined[i].corr > winner.corr + 0.05) {
+        winner = refined[i]
+      }
+    }
+
+    return Math.max(minBPM, Math.min(maxBPM, Math.round(winner.bpm)))
   }
 
   // Refine a coarse BPM estimate using sample-level autocorrelation
