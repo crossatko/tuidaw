@@ -733,13 +733,22 @@ export class AudioEngine {
     // that might be the true tempo. Only consider peaks at BPM values BETWEEN
     // the pre-promotion and post-promotion BPM, since the promoted result may
     // have overshot (e.g. 124→230 when real is 185).
+    // Exclude candidates that are simple harmonic ratios (3:2, 4:3, 5:3, etc.)
+    // of the promoted BPM — those are sub-harmonics, not overshoot corrections.
     const promotedBPM = (60 * onsetRate) / bestPeak.lag
     const prePromotionBPM = (60 * onsetRate) / peaks[0].lag
     const candidates: number[] = [promotedBPM]
     const strengthThreshold = peaks[0].strength * 0.9
+    // Exclude candidates that are 3:2 sub-harmonics of the promoted BPM,
+    // as these are rhythmic subdivisions, not real tempo alternatives.
+    const harmonicRatios = [3/2]
     for (const p of peaks) {
       const bpm = (60 * onsetRate) / p.lag
       if (p.strength >= strengthThreshold && bpm > prePromotionBPM && bpm < promotedBPM) {
+        // Skip if this BPM is a simple harmonic sub-division of the promoted BPM
+        const ratio = promotedBPM / bpm
+        const isHarmonic = harmonicRatios.some(hr => Math.abs(ratio - hr) < 0.1)
+        if (isHarmonic) continue
         const isDuplicate = candidates.some(c => Math.abs(c - bpm) < 5)
         if (!isDuplicate) candidates.push(bpm)
       }
