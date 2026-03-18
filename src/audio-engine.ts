@@ -528,10 +528,36 @@ export class AudioEngine {
     try {
       const file = Bun.file(filePath)
       const buf = Buffer.from(await file.arrayBuffer())
-      return this.parseWav(buf)
+      const result = this.parseWav(buf)
+      if (!result) return null
+
+      // Resample to project sample rate if needed (linear interpolation)
+      if (result.sampleRate !== SAMPLE_RATE) {
+        result.samples = this.resample(result.samples, result.sampleRate, SAMPLE_RATE)
+        result.sampleRate = SAMPLE_RATE
+      }
+
+      return result
     } catch {
       return null
     }
+  }
+
+  // Resample audio using linear interpolation
+  private resample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+    if (fromRate === toRate) return samples
+    const ratio = fromRate / toRate
+    const outLen = Math.ceil(samples.length / ratio)
+    const out = new Float32Array(outLen)
+    for (let i = 0; i < outLen; i++) {
+      const srcPos = i * ratio
+      const idx = Math.floor(srcPos)
+      const frac = srcPos - idx
+      const s0 = samples[idx] ?? 0
+      const s1 = samples[Math.min(idx + 1, samples.length - 1)] ?? 0
+      out[i] = s0 + frac * (s1 - s0)
+    }
+    return out
   }
 
   // Convert Float32 (-1.0 to 1.0) to signed 16-bit PCM
