@@ -120,11 +120,30 @@ async function main() {
     return mainWidth * samplesPerCol
   }
 
-  // Helper: auto-scroll during live playback
-  // Scrolls forward when playhead nears right edge, and recenters when
-  // playhead jumps backward (e.g. loop region wrapping back to loop start).
+  // Helper: auto-scroll during live playback.
+  // If a loop region is active and fits on screen, center the loop region
+  // once and keep the view locked — no jumping around.
+  // Otherwise, scroll forward when playhead nears the right edge, and
+  // recenter when playhead jumps backward (e.g. loop wrap).
   function autoScroll() {
     const visibleSamples = getVisibleSamples()
+
+    // If loop fits on screen, center the loop region and stay put
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      const loopLen = state.loopEnd - state.loopStart
+      if (loopLen <= visibleSamples) {
+        const loopCenter = state.loopStart + loopLen / 2
+        const idealOffset = Math.max(0, Math.floor(loopCenter - visibleSamples / 2))
+        // Only reposition if the loop isn't already fully visible
+        if (state.loopStart < state.scrollOffset ||
+            state.loopEnd > state.scrollOffset + visibleSamples) {
+          state.scrollOffset = idealOffset
+        }
+        return
+      }
+    }
+
+    // No loop or loop is wider than the view — normal auto-scroll
     if (state.playheadPosition < state.scrollOffset) {
       // Playhead is left of view (loop wrap) — recenter
       state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples * 0.2))
