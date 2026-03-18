@@ -558,7 +558,7 @@ export class AudioEngine {
 
     // Step 1: Compute short-time energy in overlapping frames
     const frameSize = Math.floor(sampleRate * 0.02) // 20ms frames
-    const hopSize = Math.floor(frameSize / 2)        // 50% overlap
+    const hopSize = Math.floor(frameSize / 4)        // 75% overlap (~200 fps for better BPM resolution)
     const numFrames = Math.floor((analysisLen - frameSize) / hopSize) + 1
     if (numFrames < 2) return null
 
@@ -607,24 +607,36 @@ export class AudioEngine {
       acf[lag - minLag] = sum / n
     }
 
+    // Parabolic interpolation to find fractional peak position from 3 ACF samples
+    // Returns the fractional offset from the center sample (-0.5 to +0.5)
+    const parabolicPeakOffset = (left: number, center: number, right: number): number => {
+      const denom = 2 * (2 * center - left - right)
+      if (Math.abs(denom) < 1e-10) return 0
+      return (left - right) / denom
+    }
+
     // Step 4: Find the strongest peak, with octave weighting
-    // First pass: find raw peaks
+    // First pass: find raw peaks with parabolic interpolation for sub-lag precision
     const peaks: { lag: number; strength: number }[] = []
     for (let i = 1; i < acf.length - 1; i++) {
       if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > 0) {
-        peaks.push({ lag: i + minLag, strength: acf[i] })
+        const offset = parabolicPeakOffset(acf[i - 1], acf[i], acf[i + 1])
+        peaks.push({ lag: i + minLag + offset, strength: acf[i] })
       }
     }
 
     if (peaks.length === 0) {
-      // No peaks found, use the maximum
+      // No peaks found, use the maximum with interpolation
       let bestIdx = 0
       for (let i = 1; i < acf.length; i++) {
         if (acf[i] > acf[bestIdx]) bestIdx = i
       }
       if (acf[bestIdx] <= 0) return null
-      const bestLag = bestIdx + minLag
-      return Math.round((60 * onsetRate) / bestLag)
+      let bestLag = bestIdx + minLag
+      if (bestIdx > 0 && bestIdx < acf.length - 1) {
+        bestLag += parabolicPeakOffset(acf[bestIdx - 1], acf[bestIdx], acf[bestIdx + 1])
+      }
+      return Math.max(minBPM, Math.min(maxBPM, Math.round((60 * onsetRate) / bestLag)))
     }
 
     // Sort by strength descending
