@@ -35,3 +35,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # recordings
 recordings/
+
+# native build toolchain and vendored headers
+native/zig-toolchain/
+native/miniaudio.h

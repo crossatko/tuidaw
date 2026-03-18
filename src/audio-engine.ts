@@ -56,6 +56,8 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_playhead:         { returns: FFIType.i64 },
   tuidaw_set_playhead:         { returns: FFIType.void, args: [FFIType.i64] },
   tuidaw_set_click:            { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_click_volume:     { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_set_click_pan:        { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_set_loop:             { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
   tuidaw_start_recording:      { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_stop_recording:       { returns: FFIType.i32, args: [FFIType.i32] },
@@ -388,6 +390,8 @@ export class AudioEngine {
 
     // Set click state
     lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
+    lib.symbols.tuidaw_set_click_volume(state.clickVolume)
+    lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
     // Set loop state — always pass loop region to native engine if it exists.
     // The native callback handles all cases correctly:
@@ -511,6 +515,14 @@ export class AudioEngine {
 
   stopClick(): void {
     lib.symbols.tuidaw_set_click(0, 0)
+  }
+
+  setClickVolume(volume: number): void {
+    lib.symbols.tuidaw_set_click_volume(Math.max(0, Math.min(2.0, volume)))
+  }
+
+  setClickPan(pan: number): void {
+    lib.symbols.tuidaw_set_click_pan(Math.max(-1, Math.min(1, pan)))
   }
 
   // Click WAV helpers — no longer needed (click is generated in native callback)
@@ -936,6 +948,58 @@ export class AudioEngine {
       tracksToMix.push({ track, tempPath })
     }
 
+    // Generate click track WAV if click is enabled
+    let clickTempPath: string | null = null
+    if (state.clickEnabled) {
+      // Determine total duration from the longest track (or at least 1 beat if no tracks)
+      let totalSamples = 0
+      for (const track of state.tracks) {
+        if (track.samples && track.samples.length > totalSamples) {
+          totalSamples = track.samples.length
+        }
+      }
+      if (totalSamples === 0) {
+        // At least 4 bars of click
+        const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+        totalSamples = samplesPerBeat * 16
+      }
+
+      // Generate click waveform: 1kHz sine with 20ms linear decay at each beat
+      const clickSamples = new Float32Array(totalSamples)
+      const samplesPerBeat = Math.round((60 / state.bpm) * state.sampleRate)
+      const clickLen = Math.round(state.sampleRate * 0.02) // 20ms
+
+      for (let pos = 0; pos < totalSamples; pos++) {
+        const beatPos = pos % samplesPerBeat
+        if (beatPos < clickLen) {
+          const t = beatPos / state.sampleRate
+          const envelope = 1.0 - beatPos / clickLen
+          clickSamples[pos] = Math.sin(2 * Math.PI * 1000 * t) * envelope
+        }
+      }
+
+      clickTempPath = `/tmp/tuidaw_mix_click.wav`
+      await this.writeWav(clickTempPath, clickSamples, state.sampleRate)
+      // Treat click as a pseudo-track with its own volume and pan
+      tracksToMix.push({
+        track: {
+          id: "__click__",
+          name: "Click",
+          color: "#e0af68",
+          muted: false,
+          solo: false,
+          armed: false,
+          volume: state.clickVolume,
+          pan: state.clickPan,
+          samples: clickSamples,
+          sampleRate: state.sampleRate,
+          filePath: null,
+          inputDeviceId: null,
+        },
+        tempPath: clickTempPath,
+      })
+    }
+
     if (tracksToMix.length === 0) return false
 
     const cmd: string[] = ["ffmpeg", "-y"]
@@ -1031,6 +1095,8 @@ export class AudioEngine {
         bpm: state.bpm,
         originalBpm: state.originalBpm,
         clickEnabled: state.clickEnabled,
+        clickVolume: state.clickVolume,
+        clickPan: state.clickPan,
         sampleRate: state.sampleRate,
         playheadPosition: state.playheadPosition,
         scrollOffset: state.scrollOffset,
@@ -1119,6 +1185,8 @@ export class AudioEngine {
         bpm: desc.bpm,
         originalBpm: desc.originalBpm ?? desc.bpm,
         clickEnabled: desc.clickEnabled,
+        clickVolume: desc.clickVolume ?? 0.5,
+        clickPan: desc.clickPan ?? 0,
         sampleRate: desc.sampleRate,
         tracks,
         selectedTrackIndex: desc.selectedTrackIndex,

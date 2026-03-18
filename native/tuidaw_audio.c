@@ -93,6 +93,9 @@ typedef struct {
     // Click state
     _Atomic int   click_enabled;
     _Atomic float click_bpm;
+    _Atomic float click_volume;           // 0.0 - 2.0+ (allows above 100%)
+    _Atomic float click_pan;              // -1.0 (L) to 1.0 (R), 0.0 = center
+    _Atomic long  click_pos;              // wall-clock sample counter for click timing (not content-space)
 
     // Loop state
     _Atomic long  loop_start;            // -1 = no loop
@@ -313,9 +316,13 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
     int any_solo = has_any_solo();
 
-    // Click state — click always plays at the current BPM (already adjusted by JS)
+    // Click state — click uses its own wall-clock counter (click_pos) so it
+    // plays at the correct BPM regardless of WSOLA speed.
     int click_enabled = atomic_load(&g_engine.click_enabled);
     float bpm = atomic_load(&g_engine.click_bpm);
+    float click_vol = atomic_load(&g_engine.click_volume);
+    float click_pan = atomic_load(&g_engine.click_pan);
+    long click_pos = atomic_load(&g_engine.click_pos);
     int samples_per_beat = (bpm > 0) ? (int)(60.0f / bpm * SAMPLE_RATE) : SAMPLE_RATE;
 
     int use_wsola = (speed < 0.99f || speed > 1.01f);
@@ -384,16 +391,21 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome) — plays at the adjusted BPM rate, uses logical playhead position
-        if (click_enabled && pos >= 0) {
-            long beat_pos = pos % samples_per_beat;
+        // Click (metronome) — uses wall-clock counter (click_pos) instead of
+        // content-space playhead so it plays at correct BPM regardless of WSOLA speed.
+        if (click_enabled) {
+            long cpos = click_pos + (long)frame;
+            long beat_pos = cpos % samples_per_beat;
             int click_len = (int)(SAMPLE_RATE * 0.02f);  // 20ms click
             if (beat_pos < click_len) {
                 float t = (float)beat_pos / SAMPLE_RATE;
                 float envelope = 1.0f - (float)beat_pos / click_len;
-                float click_sample = sinf(2.0f * (float)M_PI * 1000.0f * t) * envelope * 0.5f;
-                left  += click_sample;
-                right += click_sample;
+                float click_sample = sinf(2.0f * (float)M_PI * 1000.0f * t) * envelope * click_vol;
+                // Equal-power panning for click
+                float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                float cl_right = sinf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                left  += click_sample * cl_left;
+                right += click_sample * cl_right;
             }
         }
 
@@ -460,6 +472,20 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     }
 
     atomic_store(&g_engine.playhead_samples, new_playhead);
+
+    // Advance wall-clock click counter (independent of WSOLA speed)
+    if (click_enabled) {
+        long new_click_pos = click_pos + (long)frameCount;
+        // Handle loop wrapping for click: reset click_pos when loop wraps
+        // to keep click in sync with the beat grid at the loop start
+        if (loop_start >= 0 && loop_end > loop_start && new_playhead < playhead) {
+            // Playhead wrapped backward (loop restart) — realign click to loop start
+            // Calculate how many beats from transport start to loop_start
+            long loop_beat_offset = loop_start % samples_per_beat;
+            new_click_pos = loop_beat_offset + (new_playhead - loop_start);
+        }
+        atomic_store(&g_engine.click_pos, new_click_pos);
+    }
 }
 
 // ── Capture Callback (per-track recording) ──────────────────────────────────
@@ -496,6 +522,9 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
     atomic_store(&g_engine.click_bpm, 120.0f);
+    atomic_store(&g_engine.click_volume, 0.5f);
+    atomic_store(&g_engine.click_pan, 0.0f);
+    atomic_store(&g_engine.click_pos, 0);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
 
@@ -521,6 +550,9 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
     atomic_store(&g_engine.click_bpm, 120.0f);
+    atomic_store(&g_engine.click_volume, 0.5f);
+    atomic_store(&g_engine.click_pan, 0.0f);
+    atomic_store(&g_engine.click_pos, 0);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.use_null_backend = 1;
@@ -761,6 +793,7 @@ EXPORT void tuidaw_set_track_input_device(int id, int device_index) {
 EXPORT void tuidaw_play(long position) {
     g_engine.transport_start_pos = position;
     atomic_store(&g_engine.playhead_samples, position);
+    atomic_store(&g_engine.click_pos, 0);  // reset wall-clock click counter
     // Reset WSOLA states so each track re-syncs to the new position
     for (int i = 0; i < MAX_TRACKS; i++) {
         if (g_engine.tracks[i].active) {
@@ -784,6 +817,7 @@ EXPORT long tuidaw_get_playhead(void) {
 // Resets WSOLA states so all tracks re-sync to the new position.
 EXPORT void tuidaw_set_playhead(long position) {
     atomic_store(&g_engine.playhead_samples, position);
+    atomic_store(&g_engine.click_pos, 0);  // reset wall-clock click counter on seek
     // Reset WSOLA states so each track re-syncs to the new position
     for (int i = 0; i < MAX_TRACKS; i++) {
         if (g_engine.tracks[i].active) {
@@ -797,6 +831,18 @@ EXPORT void tuidaw_set_playhead(long position) {
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
     atomic_store(&g_engine.click_bpm, bpm);
     atomic_store(&g_engine.click_enabled, enabled);
+    // Reset click counter when BPM changes to avoid mid-beat glitches
+    atomic_store(&g_engine.click_pos, 0);
+}
+
+EXPORT void tuidaw_set_click_volume(float volume) {
+    atomic_store(&g_engine.click_volume, volume);
+}
+
+EXPORT void tuidaw_set_click_pan(float pan) {
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan > 1.0f) pan = 1.0f;
+    atomic_store(&g_engine.click_pan, pan);
 }
 
 // ── Loop Region ─────────────────────────────────────────────────────────────

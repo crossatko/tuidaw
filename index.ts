@@ -24,6 +24,7 @@ import {
   createTrack,
   getSelectedTrack,
   getArmedTracks,
+  getProjectDurationSamples,
 } from "./src/state"
 import type { ProjectState, Track } from "./src/types"
 
@@ -82,6 +83,16 @@ async function main() {
         syncLoopAfterSeek()
       }
       ensurePlayheadVisible()
+      render()
+    },
+    onClickVolumeChange: (delta: number) => {
+      state.clickVolume = Math.max(0, Math.min(2, Math.round((state.clickVolume + delta) * 100) / 100))
+      audioEngine.setClickVolume(state.clickVolume)
+      render()
+    },
+    onClickPanChange: (delta: number) => {
+      state.clickPan = Math.max(-1, Math.min(1, Math.round((state.clickPan + delta) * 100) / 100))
+      audioEngine.setClickPan(state.clickPan)
       render()
     },
   })
@@ -659,6 +670,10 @@ async function main() {
       if (state.transportState !== "stopped" && state.clickEnabled) {
         await audioEngine.startClick(state.bpm)
       }
+      // On empty project, change the base tempo (no speed change needed)
+      if (getProjectDurationSamples(state) === 0) {
+        state.originalBpm = state.bpm
+      }
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
@@ -671,6 +686,10 @@ async function main() {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
         await audioEngine.startClick(state.bpm)
+      }
+      // On empty project, change the base tempo (no speed change needed)
+      if (getProjectDurationSamples(state) === 0) {
+        state.originalBpm = state.bpm
       }
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm

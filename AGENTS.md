@@ -47,6 +47,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` — track management
 - `tuidaw_play(position)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` — transport
 - `tuidaw_set_click(enabled, bpm)` — metronome (generated inline in callback)
+- `tuidaw_set_click_volume(volume)` — click volume (0.0–2.0+, allows above 100%)
+- `tuidaw_set_click_pan(pan)` — click panning (-1.0 L to 1.0 R)
 - `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
 - `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
 - `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA time-stretch speed control (0.25x–2.0x)
@@ -89,6 +91,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Main waveform area**: scroll = move view by 1 beat per tick
 - **Sidebar volume zone**: scroll on any track row (except pan zone) = adjust volume +/-5% per tick
 - **Sidebar pan zone**: scroll on row 1 at x >= 17 = adjust pan +/-0.05 per tick
+- **Sidebar click row**: scroll adjusts click volume (x<13) or click pan (x≥13) +/-0.05 per tick
 - Pan keyboard shortcuts: `<` = pan left 0.1, `>` = pan right 0.1
 
 ### WAV import features:
@@ -109,6 +112,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Uses ffmpeg with `volume` and `pan` filters per track (equal-power panning law)
 - Single track: volume + pan + aformat
 - Multiple tracks: volume + pan per input, then amix with normalize=0, aformat
+- When clickEnabled: generates synthetic click WAV (1kHz sine, 20ms decay, 48kHz) and includes as additional ffmpeg input with click's volume and pan
 - Output: pcm_s16le WAV, stereo
 
 ## Discoveries
@@ -122,7 +126,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **`Bun.write()` returns a Promise** -- must be awaited
 - miniaudio.h is 95,864 lines — too large for Zig's `@cImport`, so native code is plain C compiled with `zig cc`
 - Zig is not installed system-wide and `sudo` is not available — downloaded Zig 0.14.0 binary to `native/zig-toolchain/`
-- All 27 exported symbols verified via `nm -D` on the compiled shared library
+- All 32 exported symbols verified via `nm -D` on the compiled shared library
 - **WAV parser pitfalls**: Real-world WAV files often have JUNK/LIST/bext chunks before `fmt` — must scan by iterating RIFF sub-chunks, not assume fixed byte offsets
 - **Stereo WAV files** need explicit mono downmix (average channels)
 - **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
@@ -133,6 +137,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
 - **`tuidaw_set_speed` must reset WSOLA states**: When speed changes (especially crossing the 1.0 threshold), WSOLA `input_pos` can be stale from whenever WSOLA was last active. Without resetting, switching from 1.0x to 0.5x causes a massive playhead backward jump (e.g. 47616 → 5120) because `input_pos` was still at position 0 from when `tuidaw_play` initially called `wsola_reset`. Fixed by always calling `wsola_reset(current_playhead)` for all active tracks in `tuidaw_set_speed`.
 - **WSOLA initialization vs reset distinction**: `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_speed()` all reset WSOLA states. The callback's `if (!tk->wsola.initialized)` check is a safety net but should rarely trigger since these three functions cover all transitions.
+- **Click distortion at non-1.0x speeds**: Click was using content-space playhead for beat timing, but WSOLA advances the playhead at `speed * hop` rate through content-space. Fix: dedicated `click_pos` wall-clock counter that advances at 1 frame per output frame regardless of WSOLA speed. Reset on play/seek/BPM-change, realigned on loop wrap.
+- **Click loop realignment**: On loop wrap, `click_pos` is realigned to `(loop_start % samples_per_beat) + (new_playhead - loop_start)` to keep click beats aligned with the beat grid at the loop start position.
+- **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
+- **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -172,7 +180,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 23. **Mouse wheel pan** on sidebar pan zone (row 1, x >= 17)
 24. **Pan display** in sidebar (C/L##/R## format)
 25. **Pan keyboard shortcuts** (< and >)
-26. **Native audio engine** (miniaudio-based C library with 27 exported FFI functions)
+26. **Native audio engine** (miniaudio-based C library with 32 exported FFI functions)
 27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
 28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
 29. **WAV import**: chunk-scanning parser, 16/24/32-bit support, stereo downmix, 48kHz resampling
@@ -188,6 +196,16 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 39. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
 40. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
 41. **Loop-playhead interaction**: Loop is enforced when playhead is at or before loopEnd; disabled only when manually seeking past the loop. Playback from before the loop enters it naturally. `autoScroll()` centers the loop region on screen when it fits the view. 6 tests verify all scenarios.
+42. **Click track volume control**: Native `tuidaw_set_click_volume(float)` with atomic float, range 0.0–2.0+ (allows above 100%), applied as amplitude multiplier in audio callback
+43. **Click track pan control**: Native `tuidaw_set_click_pan(float)` with equal-power panning (-1.0 L to 1.0 R), same cosine/sine law as track panning
+44. **Click wall-clock counter**: `click_pos` atomic counter advances at 1 frame per output frame (wall-clock time), independent of WSOLA speed. Fixes click distortion at non-1.0x speeds. Reset on play/seek/BPM-change, realigned on loop wrap.
+45. **Click track sidebar row**: Compact 2-row (CLICK_ROW_HEIGHT=2) click track row at top of sidebar when clickEnabled. Shows ♩ icon, "Click" label, volume%, pan indicator, separator.
+46. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
+47. **Mouse wheel click controls**: Scroll on click row in sidebar adjusts volume (x<13) or pan (x≥13) with ±0.05 per tick
+48. **BPM on empty project**: When no tracks have audio, +/- changes `originalBpm` (base tempo) instead of creating a speed ratio, so speed stays 1.0x
+49. **Export mixdown with click**: When clickEnabled, generates synthetic click WAV (1kHz/20ms/decay matching native engine) and includes in ffmpeg mixdown with click's volume and pan
+50. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
+51. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
 
 ## File structure
 
@@ -197,22 +215,22 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
 │                              # refreshLivePlayback, shouldTrackPlay,
-│                              # ensurePlayheadVisible, autoScroll. ~843 lines.
+│                              # ensurePlayheadVisible, autoScroll. ~904 lines.
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit), test (bun test)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
 ├── native/
-│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~full implementation)
+│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~954 lines)
 │   ├── miniaudio.h           # miniaudio single-header library (95,864 lines)
 │   ├── build.sh              # Build script using zig cc
-│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 28 exported symbols)
+│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 32 exported symbols)
 │   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
 │   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
 │   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
 │   │                          # TRACK_ROW_HEIGHT=5), TRACK_COLORS, BRAILLE_BASE,
-│   │                          # BRAILLE_DOTS. ~111 lines.
+│   │                          # BRAILLE_DOTS. ~117 lines.
 │   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
@@ -220,21 +238,22 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # chunk scanning), resampling (linear interpolation),
 │   │                          # BPM detection (two-pass: onset ACF + sample-level),
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1141 lines.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1214 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
 │   │                          # getSelectedTrack, getArmedTrack, getArmedTracks, formatTime,
 │   │                          # formatBeatPosition, getProjectDurationSamples,
-│   │                          # getProjectDurationSeconds. ~94 lines.
+│   │                          # getProjectDurationSeconds. ~97 lines.
 │   └── ui.ts                 # UIRenderer class - all OpenTUI rendering + mouse handlers.
 │                              # setupMouseHandlers(callbacks) for scroll/volume/pan.
 │                              # Has Tokyo Night color constants. Renders: top bar, sidebar
 │                              # (track list with M/S/R, volume, pan, level meters, input
-│                              # device labels), main area (braille waveforms + content-space
-│                              # coordinates, beat grid timeline, playhead), status bar,
-│                              # help overlay, device selector overlay, file picker overlay.
-│                              # ~1103 lines.
+│                              # device labels, click track row), main area (braille waveforms
+│                              # + click braille beat pattern + content-space coordinates,
+│                              # beat grid timeline, playhead), status bar, help overlay,
+│                              # device selector overlay, file picker overlay.
+│                              # ~1218 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
 ├── tests/
 │   ├── loop-wsola.test.ts    # 6 tests for loop+WSOLA behavior (all pass)
@@ -306,6 +325,19 @@ y+4: [separator line ───────────────────�
 - Level meter or input device label or "(empty)" at x=1, row 3
 - Separator `─` at row 4
 
+## Sidebar click track row (CLICK_ROW_HEIGHT=2, shown at top when clickEnabled)
+
+```
+y+0: ♩ Click  V:50%  C
+y+1: [separator line ─────────────────────]
+```
+
+- ♩ icon at x=0, "Click" label at x=2
+- Volume % at x=8
+- Pan indicator (C/L##/R##) at x=14
+- Separator `─` at row 1
+
 Mouse zones for sidebar scroll:
+- Click row (y < CLICK_ROW_HEIGHT when clickEnabled): x<13 = click volume, x>=13 = click pan
 - Row 2, x >= 9 = pan control
 - Everything else = volume control
