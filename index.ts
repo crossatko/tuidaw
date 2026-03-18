@@ -658,7 +658,16 @@ async function main() {
             track.samples = result.samples
             track.sampleRate = result.sampleRate
             audioEngine.updateTrackSamples(track)
-            ui.showStatusMessage(`Imported: ${filePath}`)
+
+            // Auto-detect BPM when importing to an empty project (no tracks have audio)
+            const projectIsEmpty = state.tracks.every((t) => t === track || !t.samples)
+            if (projectIsEmpty && result.detectedBPM) {
+              state.bpm = result.detectedBPM
+              audioEngine.startClick(state.bpm) // sync click generator
+              ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
+            } else {
+              ui.showStatusMessage(`Imported: ${filePath}`)
+            }
           } else {
             ui.showStatusMessage("Failed to import WAV!")
           }
