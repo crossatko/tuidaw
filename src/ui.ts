@@ -12,7 +12,7 @@ import {
   type MouseEvent,
 } from "@opentui/core"
 import type { ProjectState, Track, AudioDevice } from "./types"
-import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT, WAVEFORM_ROW_HEIGHT } from "./types"
+import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT } from "./types"
 import { renderBrailleWaveform, getPeakLevel, renderLevelMeter } from "./braille"
 import {
   formatTime,
@@ -179,7 +179,7 @@ export class UIRenderer {
     }
 
     // Sidebar: mouse wheel adjusts volume or pan on the SELECTED track
-    // Pan zone: row 1 of any track row, x >= 17
+    // Pan zone: row 2, x >= 9 (where "Pan:" label starts)
     // Volume zone: everything else in sidebar
     this.sidebarFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
@@ -192,8 +192,8 @@ export class UIRenderer {
       if (localY < 0) return
       const rowInTrack = localY % TRACK_ROW_HEIGHT
 
-      // Pan control: row 1, x >= 17 (where pan indicator is drawn)
-      if (rowInTrack === 1 && event.x >= 17) {
+      // Pan control: row 2, x >= 9 (where pan indicator is drawn)
+      if (rowInTrack === 2 && event.x >= 9) {
         callbacks.onPanChange(delta * 0.05)
         return
       }
@@ -229,7 +229,7 @@ export class UIRenderer {
         } else {
           // Waveform area — select track (localY=1 is first track row)
           draggingTimeline = false
-          const trackIndex = Math.floor((localY - 1) / WAVEFORM_ROW_HEIGHT)
+          const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
           callbacks.onTrackClick(trackIndex)
         }
       } else if (event.type === "drag" && draggingTimeline) {
@@ -404,19 +404,19 @@ export class UIRenderer {
       // Background
       const bg = track.armed ? BG_ARMED : isSelected ? BG_SELECTED : BG_SIDEBAR
 
-      // Track row background
-      for (let row = 0; row < TRACK_ROW_HEIGHT; row++) {
+      // Track row background (content rows only, not separator)
+      for (let row = 0; row < TRACK_ROW_HEIGHT - 1; row++) {
         fb.fillRect(0, y + row, w - 1, 1, bg)
       }
 
       // Selection indicator
       if (isSelected) {
-        fb.setCell(0, y, "▌", trackColor, bg)
-        fb.setCell(0, y + 1, "▌", trackColor, bg)
-        fb.setCell(0, y + 2, "▌", trackColor, bg)
+        for (let row = 0; row < TRACK_ROW_HEIGHT - 1; row++) {
+          fb.setCell(0, y + row, "▌", trackColor, bg)
+        }
       }
 
-      // Color dot and name
+      // Row 0: Color dot and name
       fb.setCell(1, y, "●", trackColor, bg)
       const name = track.name.length > w - 5 ? track.name.substring(0, w - 5) : track.name
       fb.drawText(` ${name}`, 2, y, FG_PRIMARY, bg)
@@ -432,7 +432,7 @@ export class UIRenderer {
         }
       }
 
-      // Mute / Solo / Arm buttons
+      // Row 1: Mute / Solo / Arm buttons
       const muteColor = track.muted ? FG_RED : FG_DIM
       const soloColor = track.solo ? FG_YELLOW : FG_DIM
       const armColor = track.armed ? FG_RED : FG_DIM
@@ -441,11 +441,10 @@ export class UIRenderer {
       fb.drawText(" S", 4, y + 1, soloColor, bg, track.solo ? TextAttributes.BOLD : 0)
       fb.drawText(" R", 7, y + 1, armColor, bg, track.armed ? TextAttributes.BOLD : 0)
 
-      // Volume bar
+      // Row 2: Volume + Pan
       const volStr = `V:${Math.round(track.volume * 100)}%`
-      fb.drawText(volStr, 11, y + 1, FG_DIM, bg)
+      fb.drawText(volStr, 1, y + 2, FG_DIM, bg)
 
-      // Pan indicator
       let panStr: string
       if (track.pan === 0) {
         panStr = "C"
@@ -454,15 +453,15 @@ export class UIRenderer {
       } else {
         panStr = `R${Math.round(track.pan * 100)}`
       }
-      fb.drawText(panStr, 17, y + 1, FG_DIM, bg)
+      fb.drawText(`Pan:${panStr}`, 9, y + 2, FG_DIM, bg)
 
-      // Level meter (if track has audio) or input device indicator
+      // Row 3: Level meter (if track has audio) or input device indicator
       if (track.inputDeviceId != null && !(track.samples && track.samples.length > 0)) {
         // Show input device when track is empty
         const dev = state.availableInputDevices.find((d) => d.id === track.inputDeviceId)
         const devLabel = dev ? dev.description : `ID:${track.inputDeviceId}`
         const truncated = devLabel.length > w - 4 ? devLabel.substring(0, w - 7) + "..." : devLabel
-        fb.drawText(truncated, 1, y + 2, FG_DIM, bg)
+        fb.drawText(truncated, 1, y + 3, FG_DIM, bg)
       } else if (track.samples && track.samples.length > 0) {
         const level = getPeakLevel(
           track.samples,
@@ -470,12 +469,12 @@ export class UIRenderer {
           Math.floor(state.sampleRate * 0.05),
         )
         const meterStr = renderLevelMeter(level, w - 3)
-        fb.drawText(meterStr, 1, y + 2, trackColor, bg)
+        fb.drawText(meterStr, 1, y + 3, trackColor, bg)
       } else {
-        fb.drawText("(empty)", 1, y + 2, FG_DIM, bg)
+        fb.drawText("(empty)", 1, y + 3, FG_DIM, bg)
       }
 
-      // Separator
+      // Row 4: Separator
       for (let x = 0; x < w - 1; x++) {
         fb.setCell(x, y + TRACK_ROW_HEIGHT - 1, "─", RGBA.fromHex("#292e42"), bg)
       }
@@ -513,17 +512,19 @@ export class UIRenderer {
     // Render each track's waveform
     let y = 1
     for (let i = 0; i < state.tracks.length; i++) {
-      const trackH = Math.min(WAVEFORM_ROW_HEIGHT, h - y)
+      const trackH = Math.min(TRACK_ROW_HEIGHT, h - y)
       if (trackH <= 0) break
 
       const track = state.tracks[i]
       const isSelected = i === state.selectedTrackIndex
       const trackColor = RGBA.fromHex(track.color)
-      const dimTrackColor = RGBA.fromHex(track.color + "88")
 
       // Track background
       const trackBg = isSelected ? BG_SELECTED : BG
       fb.fillRect(0, y, w, trackH, trackBg)
+
+      // Braille waveform uses trackH-1 rows (last row is separator)
+      const brailleH = Math.max(1, trackH - 1)
 
       // Draw waveform using braille if track has samples
       if (track.samples && track.samples.length > 0 && !track.muted) {
@@ -533,12 +534,12 @@ export class UIRenderer {
         const braille = renderBrailleWaveform(
           track.samples,
           w,
-          trackH,
+          brailleH,
           sourceOffset,
           samplesPerSubCol,
         )
 
-        for (let row = 0; row < braille.length && row < trackH; row++) {
+        for (let row = 0; row < braille.length && row < brailleH; row++) {
           for (let col = 0; col < braille[row].length && col < w; col++) {
             if (braille[row][col] !== String.fromCodePoint(0x2800)) {
               fb.setCell(col, y + row, braille[row][col], trackColor, trackBg)
@@ -551,12 +552,12 @@ export class UIRenderer {
         const braille = renderBrailleWaveform(
           track.samples,
           w,
-          trackH,
+          brailleH,
           sourceOffset,
           samplesPerSubCol,
         )
 
-        for (let row = 0; row < braille.length && row < trackH; row++) {
+        for (let row = 0; row < braille.length && row < brailleH; row++) {
           for (let col = 0; col < braille[row].length && col < w; col++) {
             if (braille[row][col] !== String.fromCodePoint(0x2800)) {
               fb.setCell(col, y + row, braille[row][col], FG_DIM, trackBg)
@@ -565,20 +566,9 @@ export class UIRenderer {
         }
       }
 
-      // Center line for the track
-      const centerRow = y + Math.floor(trackH / 2)
-      if (centerRow < y + trackH) {
-        for (let x = 0; x < w; x++) {
-          // Only draw center line where there's no waveform data
-          fb.setCellWithAlphaBlending(x, centerRow, "·", FG_DIM, TRANSPARENT)
-        }
-      }
-
-      // Track separator
-      if (y + trackH < h) {
-        for (let x = 0; x < w; x++) {
-          fb.setCell(x, y + trackH - 1, "─", GRID_COLOR, trackBg)
-        }
+      // Track separator (last row of track area)
+      for (let x = 0; x < w; x++) {
+        fb.setCell(x, y + trackH - 1, "─", GRID_COLOR, trackBg)
       }
 
       y += trackH

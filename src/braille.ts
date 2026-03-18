@@ -9,6 +9,8 @@ import { BRAILLE_BASE, BRAILLE_DOTS } from "./types"
 
 /**
  * Render a waveform segment as an array of braille characters.
+ * Uses bottom-up envelope display: absolute amplitude fills from bottom to top.
+ * All vertical dots show useful loudness information (no mirroring).
  *
  * @param samples - Float32 audio samples (-1..1)
  * @param width - Number of braille characters wide
@@ -26,7 +28,6 @@ export function renderBrailleWaveform(
 ): string[][] {
   // Total vertical resolution in dots
   const totalDotsY = height * 4
-  const midY = totalDotsY / 2
 
   // Initialize grid of braille code points
   const grid: number[][] = []
@@ -40,7 +41,7 @@ export function renderBrailleWaveform(
       const sampleStart = offset + (col * 2 + subCol) * samplesPerColumn
       if (sampleStart >= samples.length) continue
 
-      // Get peak amplitude for this sub-column
+      // Get peak absolute amplitude for this sub-column
       let peak = 0
       const end = Math.min(sampleStart + samplesPerColumn, samples.length)
       for (let i = sampleStart; i < end; i++) {
@@ -48,28 +49,13 @@ export function renderBrailleWaveform(
         if (abs > peak) peak = abs
       }
 
-      // Also get the actual signed sample for waveform direction
-      let avg = 0
-      let count = 0
-      for (let i = sampleStart; i < end; i++) {
-        avg += samples[i]
-        count++
-      }
-      avg = count > 0 ? avg / count : 0
+      // Map amplitude to dot count from bottom up
+      // peak=0 → no dots, peak=1 → all dots filled from bottom
+      const filledDots = Math.min(totalDotsY, Math.round(peak * totalDotsY))
 
-      // Map amplitude to dot positions around center
-      // The waveform extends both up and down from center
-      const extent = Math.floor(peak * midY)
-
-      // Determine the range of dots to fill
-      const dotTop = Math.max(0, Math.floor(midY - extent))
-      const dotBottom = Math.min(totalDotsY - 1, Math.floor(midY + extent))
-
-      // If it's a very quiet signal, still show the center line
-      const startDot = peak < 0.01 ? Math.floor(midY) : dotTop
-      const endDot = peak < 0.01 ? Math.floor(midY) : dotBottom
-
-      for (let dot = startDot; dot <= endDot; dot++) {
+      // Fill dots from bottom (totalDotsY-1) upward
+      for (let d = 0; d < filledDots; d++) {
+        const dot = totalDotsY - 1 - d  // bottom-up
         const row = Math.floor(dot / 4)
         const dotInRow = dot % 4
         if (row >= 0 && row < height) {

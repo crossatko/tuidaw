@@ -143,7 +143,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 1. **Project initialized** with Bun + `@opentui/core`
 2. **Full project structure** with 5 source files + index.ts + native C library
-3. **Braille waveform renderer** (2x4 dot grid mapping amplitude to vertical dot positions)
+3. **Braille waveform renderer** (2x4 dot grid, bottom-up envelope display — absolute amplitude fills from bottom, no mirroring)
 4. **Track manager** with add/remove/select, mute/solo/arm, volume/pan, color assignment
 5. **Full UI**: top bar (transport/BPM/time/output device indicator), left sidebar (track list with M/S/R controls + level meters + input device labels + volume + pan), main area (braille waveforms + beat grid timeline + playhead), status bar (shortcuts)
 6. **Transport controls**: play, stop, record with live waveform drawing
@@ -176,7 +176,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
 35. **Waveform speed-scaling**: waveform display stretches/compresses to match WSOLA playback duration (samplesPerSubCol and scrollOffset scaled by speed factor)
-36. **Increased waveform resolution**: WAVEFORM_ROW_HEIGHT=5 in main area (4 braille rows + 1 separator = 16 vertical dots per track), separate from sidebar TRACK_ROW_HEIGHT=4
+36. **Unified TRACK_ROW_HEIGHT=5** for both sidebar and waveform (4 content rows + 1 separator), sidebar has dedicated volume/pan row
 
 ## File structure
 
@@ -200,8 +200,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
 │   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
 │   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
-│   │                          # TRACK_ROW_HEIGHT=4, WAVEFORM_ROW_HEIGHT=5),
-│   │                          # TRACK_COLORS, BRAILLE_BASE, BRAILLE_DOTS. ~113 lines.
+│   │                          # TRACK_ROW_HEIGHT=5), TRACK_COLORS, BRAILLE_BASE,
+│   │                          # BRAILLE_DOTS. ~111 lines.
 │   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
@@ -211,7 +211,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
 │   │                          # Also exports zenitySave()/zenityOpen(). ~1120 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
-│   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~127 lines.
+│   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
 │   │                          # getSelectedTrack, getArmedTrack, getArmedTracks, formatTime,
 │   │                          # formatBeatPosition, getProjectDurationSamples,
@@ -223,7 +223,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # device labels), main area (braille waveforms + speed-scaled
 │                              # coordinates, beat grid timeline, playhead), status bar,
 │                              # help overlay, device selector overlay, file picker overlay.
-│                              # ~1113 lines.
+│                              # ~1103 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
 └── node_modules/
     └── @opentui/core/        # OpenTUI framework (v0.1.88)
@@ -272,24 +272,25 @@ When mute/solo changes during transport, `refreshLivePlayback()` syncs all track
 5. Detect BPM (two-pass: onset autocorrelation + sample-level refinement)
 6. Set project BPM if project is empty
 
-## Sidebar layout per track row (TRACK_ROW_HEIGHT=4)
+## Sidebar layout per track row (TRACK_ROW_HEIGHT=5)
 
 ```
 y+0: [sel] [dot] [name............] [input]
-y+1: [sel]  M  S  R  V:80%  C       <- volume at x=11, pan at x=17
-y+2: [sel] [level meter / input device / "(empty)"]
-y+3: [separator line ─────────────────────]
+y+1: [sel]  M  S  R
+y+2: [sel]  V:80%  Pan:C
+y+3: [sel] [level meter / input device / "(empty)"]
+y+4: [separator line ─────────────────────]
 ```
 
-- Selection indicator `▌` at x=0 for rows 0-2 when selected
+- Selection indicator `▌` at x=0 for rows 0-3 when selected
 - Color dot `●` at x=1, row 0
 - Track name starts at x=3, row 0
 - M/S/R buttons at x=1/4/7, row 1
-- Volume `V:xx%` at x=11, row 1
-- Pan `C`/`L##`/`R##` at x=17, row 1
-- Level meter or input device label or "(empty)" at x=1, row 2
-- Separator `─` at row 3
+- Volume `V:xx%` at x=1, row 2
+- Pan `Pan:C`/`Pan:L##`/`Pan:R##` at x=9, row 2
+- Level meter or input device label or "(empty)" at x=1, row 3
+- Separator `─` at row 4
 
 Mouse zones for sidebar scroll:
-- Row 1, x >= 17 = pan control
+- Row 2, x >= 9 = pan control
 - Everything else = volume control
