@@ -2,11 +2,12 @@
 // tuidaw - Types & Interfaces
 // ============================================================================
 
-export interface PipeWireDevice {
-  id: number         // PipeWire object ID (used with --target)
+export interface AudioDevice {
+  id: number         // Device index in miniaudio enumeration
   name: string       // Human-readable name
-  description: string // node.description or node.nick
-  mediaClass: string // "Audio/Source" or "Audio/Sink"
+  description: string // Display name
+  type: "input" | "output" // Capture or playback device
+  isDefault: boolean // Whether this is the system default device
 }
 
 export interface Track {
@@ -21,7 +22,7 @@ export interface Track {
   samples: Float32Array | null // raw PCM samples (mono, 48kHz)
   sampleRate: number
   filePath: string | null
-  inputDeviceId: number | null // PipeWire source ID for recording (null = default)
+  inputDeviceId: number | null // Input device index for recording (null = default)
 }
 
 export type TransportState = "stopped" | "playing" | "recording"
@@ -38,9 +39,9 @@ export interface ProjectState {
   loopStart: number | null
   loopEnd: number | null
   projectName: string
-  outputDeviceId: number | null // Global PipeWire sink ID for playback (null = default)
-  availableInputDevices: PipeWireDevice[]
-  availableOutputDevices: PipeWireDevice[]
+  outputDeviceId: number | null // Global output device index for playback (null = default)
+  availableInputDevices: AudioDevice[]
+  availableOutputDevices: AudioDevice[]
 }
 
 export interface AudioChunk {

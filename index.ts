@@ -1,10 +1,10 @@
 // ============================================================================
-// tuidaw - Terminal DAW powered by OpenTUI + PipeWire
+// tuidaw - Terminal DAW powered by OpenTUI + miniaudio
 // ============================================================================
 // A full-featured Digital Audio Workstation in your terminal.
 //
 // Features:
-//   - Multi-track recording via PipeWire
+//   - Multi-track recording via miniaudio native library
 //   - Braille-character waveform display
 //   - Playhead with beat grid
 //   - BPM control with metronome click
@@ -12,7 +12,7 @@
 //   - Mute / Solo / Arm per track
 //   - WAV import/export
 //
-// Requirements: Arch Linux, PipeWire, Bun
+// Requirements: Bun, native/libtuidaw_audio.so (built via native/build.sh)
 // Usage: bun run index.ts
 // ============================================================================
 
@@ -49,23 +49,20 @@ async function main() {
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * scrollAmount)
       render()
     },
-    onVolumeChange: async (delta: number) => {
+    onVolumeChange: (delta: number) => {
       const track = getSelectedTrack(state)
       if (!track) return
       track.volume = Math.max(0, Math.min(1, track.volume + delta))
-      if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-        audioEngine.setTrackVolume(track.id, track.volume)
-      }
+      // Instant volume change in native engine — no restart needed
+      audioEngine.setTrackVolume(track.id, track.volume)
       render()
     },
-    onPanChange: async (delta: number) => {
+    onPanChange: (delta: number) => {
       const track = getSelectedTrack(state)
       if (!track) return
       track.pan = Math.max(-1, Math.min(1, Math.round((track.pan + delta) * 100) / 100))
-      if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-        const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-        await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
-      }
+      // Instant pan change in native engine — no restart needed
+      audioEngine.setTrackPan(track.id, track.pan)
       render()
     },
     onTrackClick: (trackIndex: number) => {
@@ -85,16 +82,10 @@ async function main() {
     },
   })
 
-  // Enumerate PipeWire devices at startup
+  // Enumerate audio devices at startup
   const devices = await audioEngine.enumerateDevices()
   state.availableInputDevices = devices.inputs
   state.availableOutputDevices = devices.outputs
-
-  // Per-track live recording buffers (trackId -> chunks)
-  const liveRecordingBuffers: Map<string, Float32Array[]> = new Map()
-
-  // The playhead position when transport started (play or record)
-  let transportStartPosition = 0
 
   // Per-track: the playhead position when that track's recording began (for punch-in)
   const trackRecordStartPositions: Map<string, number> = new Map()
@@ -128,150 +119,92 @@ async function main() {
     }
   }
 
-  // Play (no armed tracks) – just plays back existing audio
+  // Play (no armed tracks) – just plays back existing audio via native engine
   async function play() {
     state.transportState = "playing"
-    transportStartPosition = state.playheadPosition
 
+    // Sync all tracks and start native transport from current playhead
     await audioEngine.playAll(state)
 
-    // Update playhead position based on elapsed time
     renderer.requestLive()
 
-    // Loop pre-preparation: write WAVs from loopStart ahead of time so
-    // the boundary restart is just a fast kill+spawn (no disk I/O).
-    type LoopPrep = { tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null }
-    let loopPrepared: LoopPrep | null = null
-    let loopPreparing = false
+    // Playhead update interval — reads sample-accurate position from native engine
+    playheadInterval = setInterval(() => {
+      state.playheadPosition = audioEngine.getPlayhead()
 
-    playheadInterval = setInterval(async () => {
-      const elapsed = audioEngine.getElapsedSamples()
-      state.playheadPosition = transportStartPosition + elapsed
-
-      // Loop region handling
-      if (state.loopStart !== null && state.loopEnd !== null) {
-        // Start pre-preparing as soon as we're inside the loop (or approaching it)
-        const insideOrApproaching = state.playheadPosition >= state.loopStart ||
-          (state.loopStart - state.playheadPosition) < state.sampleRate * 2
-        if (insideOrApproaching && !loopPrepared && !loopPreparing) {
-          loopPreparing = true
-          loopPrepared = await audioEngine.prepareLoopRestart(state, state.loopStart)
-          loopPreparing = false
-        }
-
-        // Hit the loop boundary
-        if (state.playheadPosition >= state.loopEnd) {
-          if (loopPrepared) {
-            // Fast path: pre-prepared WAVs ready
-            const prep = loopPrepared
-            loopPrepared = null
-            state.playheadPosition = state.loopStart
-            transportStartPosition = state.loopStart
-            audioEngine.executeLoopRestart(prep, state.outputDeviceId)
-          } else {
-            // Fallback: prep wasn't ready (shouldn't happen normally)
-            state.playheadPosition = state.loopStart
-            transportStartPosition = state.loopStart
-            audioEngine.stopAllPlayback()
-            await audioEngine.playAll(state)
-            transportStartPosition = state.loopStart
-          }
-        }
-      } else {
-        // Loop was cleared — discard any pre-prepared data
-        if (loopPrepared || loopPreparing) {
-          loopPrepared = null
-          loopPreparing = false
-        }
-      }
+      // Loop region handling is done natively in the audio callback,
+      // but we need to read back the looped position for UI updates.
 
       autoScroll()
       render()
     }, 33) // ~30fps
   }
 
-  // Record – starts pw-record on each armed track while also playing back
-  // non-armed tracks. New audio is written from the current playhead position
-  // forward; existing audio before the playhead is preserved.
-  //
-  // Two-phase approach to minimize timing skew between record and playback:
-  //   Phase 1: prepare all WAV files and set up recording state (slow I/O)
-  //   Phase 2: spawn all processes back-to-back (fast, no awaits)
+  // Record – starts native recording on each armed track while also playing
+  // back non-armed tracks. New audio is written from the current playhead
+  // position forward; existing audio before the playhead is preserved.
   async function startRecording() {
     const armedTracks = getArmedTracks(state)
     if (armedTracks.length === 0) return
 
     state.transportState = "recording"
-    transportStartPosition = state.playheadPosition
-    liveRecordingBuffers.clear()
     trackRecordStartPositions.clear()
 
     renderer.requestLive()
 
-    // Phase 1: prepare — write all playback WAV files and click WAV to disk,
-    // and set up recording buffers. All I/O happens here.
-    const playbackPreps: { trackId: string; wavPath: string }[] = []
-    const prepPromises: Promise<void>[] = []
-
-    // Prepare playback tracks
-    for (const track of state.tracks) {
-      if (track.armed) continue
-      if (track.muted) continue
-      if (!track.samples || track.samples.length === 0) continue
-      const hasSolo = state.tracks.some((t) => t.solo)
-      if (hasSolo && !track.solo) continue
-
-      prepPromises.push(
-        audioEngine.prepareTrackWav(track, transportStartPosition).then((path) => {
-          if (path) playbackPreps.push({ trackId: track.id, wavPath: path })
-        }),
-      )
-    }
-
-    // Prepare click WAV
-    let clickWavPath: string | null = null
-    if (state.clickEnabled) {
-      prepPromises.push(
-        audioEngine.prepareClickWav(state.bpm, transportStartPosition).then((path) => {
-          clickWavPath = path
-        }),
-      )
-    }
-
-    // Set up recording buffers for armed tracks
+    // Remember the start position for each armed track
     for (const track of armedTracks) {
-      liveRecordingBuffers.set(track.id, [])
-      trackRecordStartPositions.set(track.id, transportStartPosition)
+      trackRecordStartPositions.set(track.id, state.playheadPosition)
     }
 
-    await Promise.all(prepPromises)
+    // Sync all tracks and start native transport (plays non-muted tracks)
+    await audioEngine.playAll(state)
 
-    // Phase 2: spawn all processes back-to-back with no awaits between them.
-    // This ensures pw-record and pw-play/click start at nearly the same instant.
-    audioEngine.markTransportStart()
-
-    // Spawn pw-record for each armed track
+    // Start recording on each armed track
     for (const track of armedTracks) {
-      spawnRecordingForTrack(track)
+      await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
     }
 
-    // Spawn pw-play for playback tracks
-    for (const { trackId, wavPath } of playbackPreps) {
-      audioEngine.spawnTrackPlayer(trackId, wavPath, state.outputDeviceId)
-    }
-
-    // Spawn click
-    if (clickWavPath) {
-      audioEngine.spawnClickPlayer(clickWavPath, state.outputDeviceId)
-    }
-
-    // Start playhead update interval
+    // Playhead update interval — polls recording data and merges into tracks
     playheadInterval = setInterval(() => {
-      const elapsed = audioEngine.getElapsedSamples()
-      const timeBasedPos = transportStartPosition + elapsed
-      if (timeBasedPos > state.playheadPosition) {
-        state.playheadPosition = timeBasedPos
+      state.playheadPosition = audioEngine.getPlayhead()
+
+      // Poll recording data for each armed track
+      for (const track of state.tracks) {
+        if (!track.armed) continue
+        if (!trackRecordStartPositions.has(track.id)) continue
+
+        audioEngine.pollRecordingData(track.id, (newSamples: Float32Array) => {
+          const recStart = trackRecordStartPositions.get(track.id) ?? 0
+
+          // Get current total recorded length from native engine
+          // (pollRecordingData gives us only the NEW chunk since last poll)
+          const existingRecLen = track.samples
+            ? Math.max(0, (track.samples.length - recStart))
+            : 0
+
+          // Merge: preserve [0..recStart], append new audio after existing recorded data
+          const writeOffset = recStart + existingRecLen
+          const totalLen = writeOffset + newSamples.length
+          const existing = track.samples
+          const merged = new Float32Array(Math.max(totalLen, existing ? existing.length : 0))
+
+          // Copy all existing audio
+          if (existing) {
+            merged.set(existing.subarray(0, Math.min(existing.length, merged.length)), 0)
+          }
+
+          // Write new recorded audio at the write offset
+          merged.set(newSamples, writeOffset)
+
+          track.samples = merged
+          track.sampleRate = state.sampleRate
+
+          // Update native engine's track buffer so playback reflects new audio
+          audioEngine.updateTrackSamples(track)
+        })
       }
+
       autoScroll()
       render()
     }, 33)
@@ -279,71 +212,18 @@ async function main() {
     render()
   }
 
-  // Spawn pw-record for a single track (synchronous — no awaits).
-  // Sets up the recording stream reader in the background.
-  function spawnRecordingForTrack(track: Track): void {
-    audioEngine.startRecording(
-      track.id,
-      (chunk: Float32Array) => {
-        const chunks = liveRecordingBuffers.get(track.id)
-        if (!chunks) return
-
-        chunks.push(new Float32Array(chunk))
-
-        // Concatenate all new chunks so far
-        const totalNewLen = chunks.reduce((sum, c) => sum + c.length, 0)
-        const newAudio = new Float32Array(totalNewLen)
-        let off = 0
-        for (const c of chunks) {
-          newAudio.set(c, off)
-          off += c.length
-        }
-
-        const recStart = trackRecordStartPositions.get(track.id) ?? transportStartPosition
-
-        // Merge with existing audio: preserve [0..recStart],
-        // write new audio at [recStart..]
-        const totalLen = recStart + newAudio.length
-        const existing = track.samples
-        const merged = new Float32Array(Math.max(totalLen, existing ? existing.length : 0))
-
-        // Copy pre-existing audio
-        if (existing) {
-          merged.set(existing.subarray(0, Math.min(existing.length, recStart)), 0)
-          // Preserve tail beyond new recording if existing is longer
-          if (existing.length > totalLen) {
-            merged.set(existing.subarray(totalLen), totalLen)
-          }
-        }
-
-        // Write new recorded audio at recStart
-        merged.set(newAudio, recStart)
-
-        track.samples = merged
-        track.sampleRate = state.sampleRate
-
-        // Move playhead to the end of the new recording
-        state.playheadPosition = recStart + newAudio.length
-        autoScroll()
-        render()
-      },
-      track.inputDeviceId,
-    )
-  }
-
   // Punch-in: start recording on a single track at the given position.
   // Used for live R-key punch-in during playback.
   async function punchInTrack(track: Track, startPosition: number): Promise<void> {
-    liveRecordingBuffers.set(track.id, [])
     trackRecordStartPositions.set(track.id, startPosition)
-    spawnRecordingForTrack(track)
+    await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
   }
 
   // Punch-out: stop recording on a single track and finalize its audio
   async function punchOutTrack(track: Track): Promise<void> {
     const samples = await audioEngine.stopTrackRecording(track.id)
     if (samples) {
-      const recStart = trackRecordStartPositions.get(track.id) ?? transportStartPosition
+      const recStart = trackRecordStartPositions.get(track.id) ?? 0
 
       const totalLen = recStart + samples.length
       const existing = track.samples
@@ -360,10 +240,12 @@ async function main() {
       track.samples = merged
       track.sampleRate = state.sampleRate
 
+      // Update native engine's track buffer
+      audioEngine.updateTrackSamples(track)
+
       await audioEngine.saveTrackToFile(track)
     }
 
-    liveRecordingBuffers.delete(track.id)
     trackRecordStartPositions.delete(track.id)
   }
 
@@ -372,7 +254,7 @@ async function main() {
   function shouldTrackPlay(track: Track): boolean {
     if (track.muted) return false
     if (!track.samples || track.samples.length === 0) return false
-    // During recording, armed tracks have their own pw-record, not pw-play
+    // During recording, armed tracks have their own capture device, not playback
     if (state.transportState === "recording" && track.armed) return false
     const hasSolo = state.tracks.some((t) => t.solo)
     if (hasSolo && !track.solo) return false
@@ -381,20 +263,12 @@ async function main() {
 
   // Live re-evaluate which tracks should be playing.
   // Called when mute/solo changes during playback/recording.
-  async function refreshLivePlayback(): Promise<void> {
-    const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-
+  // In the native engine, this just updates mute/solo flags — the native
+  // mixer handles the rest sample-accurately.
+  function refreshLivePlayback(): void {
     for (const track of state.tracks) {
-      const isPlaying = audioEngine.isTrackPlaying(track.id)
-      const shouldPlay = shouldTrackPlay(track)
-
-      if (isPlaying && !shouldPlay) {
-        // Track is playing but should be silent → kill it
-        audioEngine.stopTrackPlayback(track.id)
-      } else if (!isPlaying && shouldPlay) {
-        // Track should be playing but isn't → start from current position
-        await audioEngine.playTrack(track, currentPos, state.outputDeviceId)
-      }
+      audioEngine.setTrackMuted(track.id, track.muted)
+      audioEngine.setTrackSolo(track.id, track.solo)
     }
   }
 
@@ -403,22 +277,20 @@ async function main() {
     const wasRecording = state.transportState === "recording"
     state.transportState = "stopped"
 
-    // Stop all playback
-    await audioEngine.stopAll()
-
-    // Stop all recordings and finalize track audio
+    // Stop all active recordings and finalize track audio
     if (wasRecording) {
-      const recordingTrackIds = [...liveRecordingBuffers.keys()]
+      const recordingTrackIds = [...trackRecordStartPositions.keys()]
       for (const trackId of recordingTrackIds) {
         const track = state.tracks.find((t) => t.id === trackId)
         if (track) {
           await punchOutTrack(track)
         }
       }
-
-      liveRecordingBuffers.clear()
       trackRecordStartPositions.clear()
     }
+
+    // Stop native transport (stops playback + click)
+    await audioEngine.stopAll()
 
     if (playheadInterval) {
       clearInterval(playheadInterval)
@@ -435,6 +307,7 @@ async function main() {
       if (state.transportState !== "stopped") {
         await stop()
       }
+      audioEngine.destroy()
       renderer.destroy()
       process.exit(0)
     }
@@ -503,12 +376,12 @@ async function main() {
         track.armed = !track.armed
 
         if (state.transportState !== "stopped") {
-          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
+          const currentPos = audioEngine.getPlayhead()
 
           if (track.armed) {
             // Punch-in: start recording on this track at current playhead
-            // Stop playback for this track (it will be recording instead)
-            audioEngine.stopTrackPlayback(track.id)
+            // Mute playback for this track while recording
+            audioEngine.setTrackMuted(track.id, true)
 
             // If we were just "playing", transition to "recording"
             if (state.transportState === "playing") {
@@ -518,18 +391,18 @@ async function main() {
             await punchInTrack(track, currentPos)
           } else {
             // Punch-out: stop recording on this track, finalize audio
-            if (liveRecordingBuffers.has(track.id)) {
+            if (trackRecordStartPositions.has(track.id)) {
               await punchOutTrack(track)
 
-              // If the track isn't muted and should be audible, start playback
+              // Unmute the track if it should be audible
               if (shouldTrackPlay(track)) {
-                await audioEngine.playTrack(track, currentPos, state.outputDeviceId)
+                audioEngine.setTrackMuted(track.id, false)
               }
             }
 
             // If no tracks are still recording, transition back to "playing"
             const stillRecording = state.tracks.some(
-              (t) => t.armed && liveRecordingBuffers.has(t.id),
+              (t) => t.armed && trackRecordStartPositions.has(t.id),
             )
             if (!stillRecording && state.transportState === "recording") {
               state.transportState = "playing"
@@ -542,7 +415,7 @@ async function main() {
       return
     }
 
-    // A - Add track (blocked during transport to avoid pw-play/record confusion)
+    // A - Add track (blocked during transport)
     if (key.name === "a") {
       if (state.transportState !== "stopped") {
         ui.showStatusMessage("Stop transport first (SPACE)")
@@ -570,9 +443,11 @@ async function main() {
           // Track has content → clear it first
           track.samples = null
           track.filePath = null
+          audioEngine.updateTrackSamples(track)
           ui.showStatusMessage(`Cleared "${track.name}" — press D again to delete track`)
         } else if (state.tracks.length > 1) {
           // Track is empty → delete it
+          audioEngine.removeTrack(track.id)
           state.tracks.splice(state.selectedTrackIndex, 1)
           if (state.selectedTrackIndex >= state.tracks.length) {
             state.selectedTrackIndex = state.tracks.length - 1
@@ -647,6 +522,8 @@ async function main() {
         if (state.loopStart !== null && state.loopEnd !== null) {
           state.loopStart = null
           state.loopEnd = null
+          // Update native engine loop state
+          audioEngine.setLoop(null, null)
           ui.showStatusMessage("Loop cleared")
         }
         render()
@@ -679,59 +556,58 @@ async function main() {
       return
     }
 
-    // M - Mute (live: kills or starts pw-play for the affected track)
+    // M - Mute (instant in native engine — no process restart)
     if (key.name === "m") {
       const track = getSelectedTrack(state)
       if (track) {
         track.muted = !track.muted
         if (state.transportState !== "stopped") {
-          await refreshLivePlayback()
+          refreshLivePlayback()
         }
         render()
       }
       return
     }
 
-    // S - Solo (live: re-evaluates all tracks' playback)
+    // S - Solo (instant in native engine — re-evaluates all tracks)
     if (key.name === "s") {
       const track = getSelectedTrack(state)
       if (track) {
         track.solo = !track.solo
         if (state.transportState !== "stopped") {
-          await refreshLivePlayback()
+          refreshLivePlayback()
         }
         render()
       }
       return
     }
 
-    // + / = - Increase BPM (live: restarts click with new BPM)
+    // + / = - Increase BPM (instant click update in native engine)
     if (key.sequence === "+" || key.sequence === "=") {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.bpm, state.playheadPosition, state.outputDeviceId)
+        await audioEngine.startClick(state.bpm)
       }
       render()
       return
     }
 
-    // - - Decrease BPM (live: restarts click with new BPM)
+    // - - Decrease BPM (instant click update in native engine)
     if (key.sequence === "-") {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.bpm, state.playheadPosition, state.outputDeviceId)
+        await audioEngine.startClick(state.bpm)
       }
       render()
       return
     }
 
-    // C - Toggle click (live: starts or stops the click process)
+    // C - Toggle click (instant in native engine)
     if (key.name === "c") {
       state.clickEnabled = !state.clickEnabled
       if (state.transportState !== "stopped") {
         if (state.clickEnabled) {
-          // Start click from current playhead position, phase-aligned
-          await audioEngine.startClick(state.bpm, state.playheadPosition, state.outputDeviceId)
+          await audioEngine.startClick(state.bpm)
         } else {
           audioEngine.stopClick()
         }
@@ -781,6 +657,7 @@ async function main() {
           if (result) {
             track.samples = result.samples
             track.sampleRate = result.sampleRate
+            audioEngine.updateTrackSamples(track)
             ui.showStatusMessage(`Imported: ${filePath}`)
           } else {
             ui.showStatusMessage("Failed to import WAV!")
@@ -812,6 +689,8 @@ async function main() {
         const loaded = await audioEngine.openProject(filePath)
         if (loaded) {
           Object.assign(state, loaded)
+          // Sync all loaded tracks to the native engine
+          audioEngine.syncAllTracks(state)
           const devs = await audioEngine.enumerateDevices()
           state.availableInputDevices = devs.inputs
           state.availableOutputDevices = devs.outputs
@@ -838,20 +717,18 @@ async function main() {
       return
     }
 
-    // V - Volume up
+    // V - Volume up (instant in native engine)
     if (key.name === "v" && !key.shift) {
       const track = getSelectedTrack(state)
       if (track) {
         track.volume = Math.min(1, track.volume + 0.05)
-        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-          audioEngine.setTrackVolume(track.id, track.volume)
-        }
+        audioEngine.setTrackVolume(track.id, track.volume)
         render()
       }
       return
     }
 
-    // [ - Scrub playhead left (1 second, 5 seconds with shift — but shift+[ is { so just 1s)
+    // [ - Scrub playhead left
     if (key.sequence === "[") {
       if (state.transportState !== "stopped") return
       state.playheadPosition = Math.max(0, state.playheadPosition - state.sampleRate)
@@ -867,29 +744,23 @@ async function main() {
       return
     }
 
-    // < (shift+,) - Pan left
+    // < (shift+,) - Pan left (instant in native engine)
     if (key.sequence === "<") {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
-        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-          await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
-        }
+        audioEngine.setTrackPan(track.id, track.pan)
         render()
       }
       return
     }
 
-    // > (shift+.) - Pan right
+    // > (shift+.) - Pan right (instant in native engine)
     if (key.sequence === ">") {
       const track = getSelectedTrack(state)
       if (track) {
         track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
-        if (state.transportState !== "stopped" && audioEngine.isTrackPlaying(track.id)) {
-          const currentPos = transportStartPosition + audioEngine.getElapsedSamples()
-          await audioEngine.restartTrackForPan(track, currentPos, state.outputDeviceId)
-        }
+        audioEngine.setTrackPan(track.id, track.pan)
         render()
       }
       return

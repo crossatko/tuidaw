@@ -11,7 +11,7 @@ import {
   TextAttributes,
   type MouseEvent,
 } from "@opentui/core"
-import type { ProjectState, Track, PipeWireDevice } from "./types"
+import type { ProjectState, Track, AudioDevice } from "./types"
 import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT } from "./types"
 import { renderBrailleWaveform, getPeakLevel, renderLevelMeter } from "./braille"
 import {
@@ -55,8 +55,8 @@ export class UIRenderer {
   private deviceSelectorVisible = false
   private deviceSelectorMode: "input" | "output" = "input"
   private deviceSelectorIndex = 0
-  private deviceSelectorDevices: PipeWireDevice[] = []
-  private deviceSelectorCallback: ((device: PipeWireDevice | null) => void) | null = null
+  private deviceSelectorDevices: AudioDevice[] = []
+  private deviceSelectorCallback: ((device: AudioDevice | null) => void) | null = null
   private filePickerVisible = false
   private filePickerFiles: string[] = []
   private filePickerIndex = 0
@@ -823,9 +823,9 @@ export class UIRenderer {
   // Open device selector overlay
   openDeviceSelector(
     mode: "input" | "output",
-    devices: PipeWireDevice[],
+    devices: AudioDevice[],
     currentDeviceId: number | null,
-    callback: (device: PipeWireDevice | null) => void,
+    callback: (device: AudioDevice | null) => void,
   ): void {
     this.deviceSelectorVisible = true
     this.deviceSelectorMode = mode
@@ -863,7 +863,7 @@ export class UIRenderer {
     }
   }
 
-  deviceSelectorConfirm(): PipeWireDevice | null {
+  deviceSelectorConfirm(): AudioDevice | null {
     if (this.deviceSelectorIndex === 0) {
       // "Default" selected
       if (this.deviceSelectorCallback) this.deviceSelectorCallback(null)

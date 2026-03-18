@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and PipeWire on Arch Linux. The app has a left sidebar with tracks, a main window with braille-font waveforms, a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented.
+Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and miniaudio (native C library). The app has a left sidebar with tracks, a main window with braille-font waveforms, a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses a cross-platform native library (miniaudio) via Bun FFI instead of PipeWire CLI tools.
 
 ## Workflow preferences
 
@@ -13,8 +13,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 ## Instructions
 
 - Use OpenTUI (`@opentui/core`) for the terminal UI framework - it's a Zig-native TUI core with TypeScript bindings, uses Bun runtime
-- Use PipeWire CLI tools (`pw-record`, `pw-play`, `pw-cat`) for audio I/O since user is on Arch with PipeWire
-- Can use `ffmpeg` for anything useful (currently used for mixdown export)
+- Audio I/O via native C library (`native/libtuidaw_audio.so`) wrapping miniaudio, called from TypeScript via `bun:ffi` (`dlopen`)
+- Can use `ffmpeg` for export mixdown (non-realtime, not performance-critical)
 - Braille characters (Unicode 0x2800 range, 2x4 dot grid per char) for waveform rendering in FrameBuffer
 - OpenTUI uses an imperative API with `FrameBufferRenderable` for custom drawing (setCell, fillRect, drawText, setCellWithAlphaBlending)
 - Layout uses Yoga flexbox engine (flexDirection, flexGrow, etc.)
@@ -24,24 +24,42 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 - `MouseEvent` has: `type`, `button`, `x`, `y` (relative to renderable), `modifiers: { shift, alt, ctrl }`, `scroll?: { direction: "up"|"down"|"left"|"right", delta: number }`, `target`, `stopPropagation()`, `preventDefault()`
 - Renderer has `requestLive()`/`dropLive()` for continuous rendering mode (animations/recording)
 - **Must call `renderer.requestRender()` after drawing to frame buffers** for changes to flush to terminal in idle/stopped state (it's a no-op during live mode)
-- Bun is located at `~/.bun/bin/bun` (not in PATH for shell commands)
+- Bun is at `/usr/sbin/bun` (in PATH)
 - `tsconfig.json` has `noUncheckedIndexedAccess: false`
-- **Run `~/.bun/bin/bun run check` after changes to verify type-correctness**
+- **Run `bun run check` after changes to verify type-correctness**
+
+### Native audio engine architecture:
+- C shared library wraps miniaudio, exports flat C API, called from TypeScript via `bun:ffi` (`dlopen`)
+- The native audio callback handles mixing, pan, volume, click generation, and loop regions sample-accurately — no temp files, no process spawning
+- Recording uses per-track miniaudio capture devices with ring buffers polled from JS via `pollRecordingData()`
+- Pan/volume changes are instant (atomic updates in native engine) — no WAV rewrite or process restart
+- Playhead position is sample-accurate from the audio thread via `tuidaw_get_playhead()`
+- Built with `zig cc` (Zig 0.14.0 downloaded to `native/zig-toolchain/`)
+
+### Native API surface (all implemented in C, exported as `EXPORT`):
+- `tuidaw_init/deinit` — engine lifecycle
+- `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` — device enumeration
+- `tuidaw_set_output_device`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` — output device
+- `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` — track management
+- `tuidaw_play(position)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` — transport
+- `tuidaw_set_click(enabled, bpm)` — metronome (generated inline in callback)
+- `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
+- `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
 
 ### Recording behavior (user's explicit requirements):
 - **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
 - **Multiple tracks can be armed simultaneously**, each with different input devices
 - **SPACE starts recording if any tracks are armed**, otherwise just plays
 - **Recording writes from the playhead position forward** -- audio before the playhead is preserved, new audio overwrites from playhead onward
-- **Multi-track simultaneous recording**: one `pw-record` process spawns per armed track with its own `--target` device
+- **Multi-track simultaneous recording**: one native capture device per armed track
 - Non-armed, non-muted tracks play back during recording
 
 ### Live controls during transport (all implemented):
-- **M** = live mute/unmute (kills/starts pw-play for affected track)
-- **S** = live solo toggle (re-evaluates all tracks' playback)
-- **C** = live click toggle (starts/stops click process)
-- **R** = live punch-in/out (starts/stops pw-record without stopping transport)
-- **+/-** = live BPM change (restarts click with new BPM)
+- **M** = live mute/unmute (instant atomic update in native engine)
+- **S** = live solo toggle (re-evaluates all tracks via native engine)
+- **C** = live click toggle (enables/disables click in native callback)
+- **R** = live punch-in/out (starts/stops native recording without stopping transport)
+- **+/-** = live BPM change (instant update in native click generator)
 - **Up/Down** = track selection during playback
 - **A/D** blocked during transport with status message
 
@@ -57,7 +75,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 - **Main waveform area**: scroll up/left = scroll timeline left, scroll down/right = scroll timeline right (~0.5s per tick)
 - **Sidebar volume zone**: scroll on any track row (except pan zone) = adjust volume +/-5% per tick
 - **Sidebar pan zone**: scroll on row 1 at x >= 17 = adjust pan +/-0.05 per tick
-- Pan keyboard shortcuts: `[` = pan left 0.1, `]` = pan right 0.1
+- Pan keyboard shortcuts: `<` = pan left 0.1, `>` = pan right 0.1
 
 ### Project file format:
 - `.tuidaw` files are gzipped tarballs (`tar czf` / `tar xzf`)
@@ -73,20 +91,14 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 
 - OpenTUI is at `@opentui/core` (v0.1.88), repo at `github.com/anomalyco/opentui`, docs at `opentui.com`
 - OpenTUI ships prebuilt native binaries - no Zig installation needed
-- Bun `Subprocess.stdout` can be `number | ReadableStream` - need to type-guard before calling `.getReader()`
-- `pw-record --format s16 --rate 48000 --channels 1 -` streams raw PCM to stdout
-- `pw-record` and `pw-play` both support `--target <serial_or_name>` for device routing
-- `pw-dump` outputs JSON - filter for `media.class === "Audio/Source"` (inputs) and `"Audio/Sink"` (outputs)
 - **Critical OpenTUI discovery**: `renderer.requestRender()` must be called after writing to FrameBuffers for screen to update in non-live mode
 - **Ctrl+key shortcuts DON'T WORK in OpenTUI** -- framework intercepts Ctrl+S/O/P internally
 - User's audio hardware: Focusrite Scarlett Solo (3rd Gen.) with 2 inputs, Logitech G535 headset
 - User's terminal: Ghostty (supports Kitty keyboard protocol), Hyprland desktop
-- **PipeWire default latency is 100ms**; we use `--latency 256` (~5.3ms)
 - **`Bun.write()` returns a Promise** -- must be awaited
-- **Recording latency compensation was WRONG and removed**: The `firstChunkTime - spawnTime` measurement captured JS process/pipe overhead, not audio timing offset. Both `pw-play` and `pw-record` connect to PipeWire graph at similar times and are already in sync. The compensation was creating timing offset, not fixing it.
-- **Sequential process spawning caused real timing skew**: spawning pw-record, then pw-play for each track, then click sequentially meant by the time click started, pw-record had been capturing for hundreds of ms. Fixed with two-phase approach.
-- **Two-phase spawn approach**: Phase 1: write all WAV files to disk in parallel (`Promise.all`). Phase 2: spawn all processes (pw-record, pw-play, click) back-to-back with zero awaits between spawns. This ensures near-simultaneous start.
-- **AudioEngine split methods**: `playTrack()` split into `prepareTrackWav()` (async, writes WAV) + `spawnTrackPlayer()` (sync, spawns process). Similarly `startClick()` split into `prepareClickWav()` + `spawnClickPlayer()`. Allows pre-writing all files then spawning everything at once.
+- miniaudio.h is 95,864 lines — too large for Zig's `@cImport`, so native code is plain C compiled with `zig cc`
+- Zig is not installed system-wide and `sudo` is not available — downloaded Zig 0.14.0 binary to `native/zig-toolchain/`
+- All 27 exported symbols verified via `nm -D` on the compiled shared library
 
 ### OpenTUI Mouse Event API (implemented):
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -102,20 +114,20 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 **All completed and working (type-checks pass):**
 
 1. **Project initialized** with Bun + `@opentui/core`
-2. **Full project structure** with 5 source files + index.ts
+2. **Full project structure** with 5 source files + index.ts + native C library
 3. **Braille waveform renderer** (2x4 dot grid mapping amplitude to vertical dot positions)
 4. **Track manager** with add/remove/select, mute/solo/arm, volume/pan, color assignment
 5. **Full UI**: top bar (transport/BPM/time/output device indicator), left sidebar (track list with M/S/R controls + level meters + input device labels + volume + pan), main area (braille waveforms + beat grid timeline + playhead), status bar (shortcuts)
 6. **Transport controls**: play, stop, record with live waveform drawing
-7. **All keyboard shortcuts**: SPACE, R, A, D, M, S, C, +/-, arrows, Home/End/0, F1-F3, F5, F6, I, E, V, [, ], Q
+7. **All keyboard shortcuts**: SPACE, R, A, D, M, S, C, +/-, arrows, Home/End/0, F1-F3, F5, F6, I, E, V, <, >, [, ], Q
 8. **D key two-step**: first press clears content, second press deletes track
-9. **PipeWire device selection**: F2 (input per track), F3 (global output), device selector overlay
-10. **Multi-track recording** with two-phase spawn (pre-write WAVs, then spawn all processes simultaneously)
-11. **Live transport controls**: M/S/C/R/+/- all work during playback/recording with real audio side-effects
+9. **Audio device selection**: F2 (input per track), F3 (global output), device selector overlay
+10. **Multi-track recording** via native miniaudio capture devices
+11. **Live transport controls**: M/S/C/R/+/- all work during playback/recording with instant native engine updates
 12. **Punch-in/out**: R key during transport starts/stops recording on individual tracks
-13. **`refreshLivePlayback()`**: re-evaluates which tracks should have pw-play running when mute/solo changes
-14. **Metronome click**: pre-rendered continuous WAV with phase-aligned clicks
-15. **Recording timing fixed**: removed bogus latency compensation, implemented two-phase spawn
+13. **`refreshLivePlayback()`**: syncs mute/solo state to native engine for all tracks
+14. **Metronome click**: generated sample-accurately in native audio callback
+15. **Loop region**: handled sample-accurately in native audio callback
 16. **Zenity file dialogs**: F5 save, F6 open, I import, E export
 17. **Project save/open** (.tuidaw gzipped tarball)
 18. **Export mixdown** (ffmpeg amix filter with per-track volume + equal-power pan)
@@ -125,32 +137,39 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 22. **Mouse wheel volume** on sidebar track rows
 23. **Mouse wheel pan** on sidebar pan zone (row 1, x >= 17)
 24. **Pan display** in sidebar (C/L##/R## format)
-25. **Pan keyboard shortcuts** ([ and ])
+25. **Pan keyboard shortcuts** (< and >)
+26. **Native audio engine** (miniaudio-based C library with 27 exported FFI functions)
+27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
+28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
 
 ## File structure
 
 ```
 /home/kreejzak/code/crossatko/tuidaw/
-├── agents.md                 # This file - context for future sessions
+├── AGENTS.md                 # This file - context for future sessions
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
-│                              # mouse handler setup, punchInTrack/punchOutTrack/
-│                              # spawnRecordingForTrack, refreshLivePlayback,
-│                              # shouldTrackPlay. ~776 lines.
+│                              # mouse handler setup, punchInTrack/punchOutTrack,
+│                              # refreshLivePlayback, shouldTrackPlay. ~520 lines.
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
+├── native/
+│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~full implementation)
+│   ├── miniaudio.h           # miniaudio single-header library (95,864 lines)
+│   ├── build.sh              # Build script using zig cc
+│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 27 exported symbols)
+│   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
-│   ├── types.ts              # Types: Track (has pan field), ProjectState, PipeWireDevice,
-│   │                          # TransportState, ProjectDescriptor, TrackDescriptor (has pan),
+│   ├── types.ts              # Types: Track, ProjectState, AudioDevice (was PipeWireDevice),
+│   │                          # TransportState, ProjectDescriptor, TrackDescriptor,
 │   │                          # AudioChunk, constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
 │   │                          # TRACK_ROW_HEIGHT=4), TRACK_COLORS array, BRAILLE_BASE,
 │   │                          # BRAILLE_DOTS. ~109 lines.
-│   ├── audio-engine.ts       # AudioEngine class - PipeWire device enumeration, recording,
-│   │                          # playback (split: prepareTrackWav + spawnTrackPlayer),
-│   │                          # click (split: prepareClickWav + spawnClickPlayer),
-│   │                          # markTransportStart, stopTrackPlayback, isTrackPlaying,
-│   │                          # WAV read/write/parse, exportMixdown (with pan), saveProject,
-│   │                          # openProject. Also exports zenitySave()/zenityOpen(). ~812 lines.
+│   ├── audio-engine.ts       # AudioEngine class - uses bun:ffi + dlopen to call native lib.
+│   │                          # Device enumeration, recording (poll-based), playback,
+│   │                          # instant pan/volume/mute/solo, click, loop, transport.
+│   │                          # WAV read/write/parse, exportMixdown (ffmpeg), saveProject,
+│   │                          # openProject. Also exports zenitySave()/zenityOpen(). ~880 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~127 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
@@ -163,37 +182,37 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and Pipe
 │                              # (track list with M/S/R, volume, pan, level meters, input
 │                              # device labels), main area (braille waveforms, beat grid
 │                              # timeline, playhead), status bar, help overlay, device selector
-│                              # overlay, file picker overlay. ~995 lines.
+│                              # overlay, file picker overlay. ~1098 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
 └── node_modules/
     └── @opentui/core/        # OpenTUI framework (v0.1.88)
-        ├── lib/RGBA.d.ts     # RGBA.fromHex(), RGBA.fromValues(), RGBA.fromInts()
-        ├── renderer.d.ts     # MouseEvent class, MouseButton enum, CliRenderer
-        ├── Renderable.d.ts   # onMouseScroll and other mouse handler setters
-        └── renderables/
-            ├── FrameBuffer.d.ts  # FrameBufferRenderable (inherits mouse from Renderable)
-            └── Box.d.ts          # BoxRenderable (inherits mouse from Renderable)
 ```
 
 ## Key architecture patterns
 
-### Two-phase transport start
-All transport start operations (play/record) use a two-phase approach:
-1. **Phase 1 (async)**: Write all WAV files to disk in parallel using `Promise.all`
-2. **Phase 2 (sync)**: Spawn all pw-record/pw-play/click processes back-to-back with zero awaits
+### Native audio engine (miniaudio)
+The C library (`native/tuidaw_audio.c`) wraps miniaudio and exports a flat C API. The audio callback runs on a separate thread and handles:
+- Multi-track mixing with per-track volume and pan (equal-power panning)
+- Metronome click generation (inline sine wave synthesis)
+- Loop region handling (sample-accurate boundary detection)
+- Playhead tracking (atomic counter incremented per frame)
 
-This minimizes timing skew between processes.
+All parameter changes (volume, pan, mute, solo, BPM) are instant atomic updates — no WAV rewriting or process restarting needed.
 
-### AudioEngine split methods
-- `playTrack()` = convenience wrapper: `prepareTrackWav()` + `spawnTrackPlayer()`
-- `startClick()` = convenience wrapper: `prepareClickWav()` + `spawnClickPlayer()`
-- The split allows pre-writing all files, then spawning everything at once in Phase 2.
+### TypeScript FFI bridge
+`AudioEngine` class in `audio-engine.ts` uses `bun:ffi` `dlopen` to call the native library. It maintains:
+- Track ID mapping (string IDs ↔ native integer IDs)
+- Pinned buffer references (preventing GC of Float32Arrays while native code holds pointers)
+- Recording state tracking (which tracks are recording, start positions)
+
+### Recording via polling
+During recording, the native engine captures audio into ring buffers. TypeScript polls these buffers every ~33ms via `pollRecordingData()`, which returns only new samples since the last poll. These are merged into the track's `samples` Float32Array at the correct offset.
 
 ### Live playback refresh
-When mute/solo changes during transport, `refreshLivePlayback()` iterates all tracks, compares `isTrackPlaying()` vs `shouldTrackPlay()`, and starts/stops pw-play processes accordingly.
+When mute/solo changes during transport, `refreshLivePlayback()` syncs all tracks' mute/solo state to the native engine via `setTrackMuted()` / `setTrackSolo()`. The native mixer handles the rest sample-accurately.
 
 ### Punch-in/out
-`punchInTrack(track, position)` starts a new pw-record process mid-transport. `punchOutTrack(track)` stops the recording, merges audio, and saves to file. The track transitions between recording and playback seamlessly.
+`punchInTrack(track, position)` starts a native capture device mid-transport. `punchOutTrack(track)` stops recording, retrieves the full buffer, merges audio, and saves to file.
 
 ### UI rendering model
 `UIRenderer.render(state)` redraws all four frame buffers (topbar, sidebar, main, statusbar) every frame. Overlays (help, device selector, file picker) are drawn on top of the main area FB. After rendering, `renderer.requestRender()` is called to flush changes to terminal.
