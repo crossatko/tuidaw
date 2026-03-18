@@ -214,6 +214,9 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ```
 /home/kreejzak/code/crossatko/tuidaw/
 ├── AGENTS.md                 # This file - context for future sessions
+├── LICENSE                   # MIT License
+├── README.md                 # Full setup instructions, feature list, shortcuts
+├── setup.sh                  # Bootstrap: downloads Zig, bun install, builds native lib
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
 │                              # refreshLivePlayback, shouldTrackPlay,
@@ -221,11 +224,14 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit), test (bun test)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
+├── .github/
+│   └── workflows/
+│       └── build.yml         # CI: multi-arch native lib build on tag push
 ├── native/
 │   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~954 lines)
-│   ├── miniaudio.h           # miniaudio single-header library (95,864 lines)
+│   ├── miniaudio.h           # miniaudio single-header library (95,864 lines, committed)
 │   ├── build.sh              # Build script using zig cc
-│   ├── libtuidaw_audio.so    # Compiled shared library (3.4MB, 32 exported symbols)
+│   ├── libtuidaw_audio.so    # Pre-built shared library (x86_64 Linux, 32 exported symbols)
 │   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
