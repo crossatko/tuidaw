@@ -77,10 +77,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 ### Timeline and playhead navigation (beat-based):
 - **Left/Right arrows** = scroll view by 1 beat (Shift: 1 bar / 4 beats)
-- **[ / ]** = scrub playhead left/right by 1 bar (4 beats)
+- **[ / ]** = scrub playhead left/right by 1 bar (4 beats) — **works during playback** (seeks native engine + resets WSOLA)
 - **Mouse wheel** on main area = scroll view by 1 beat per tick
-- **Home / 0** = jump to beginning, **End** = jump to end of audio
-- **Mouse click** on timeline = set playhead to clicked position
+- **Home / 0** = jump to beginning, **End** = jump to end of audio — **works during playback**
+- **Mouse click** on timeline = set playhead to clicked position — **works during playback**
 - **View always recenters** when playhead moves outside the visible area (ensurePlayheadVisible)
 - Timeline beat grid renders based on `samplesPerBeat = (60 / bpm) * sampleRate`
 
@@ -177,6 +177,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
 35. **Waveform speed-scaling**: waveform display stretches/compresses to match WSOLA playback duration (samplesPerSubCol and scrollOffset scaled by speed factor)
 36. **Unified TRACK_ROW_HEIGHT=5** for both sidebar and waveform (4 content rows + 1 separator), sidebar has dedicated volume/pan row
+37. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
 
 ## File structure
 
@@ -186,7 +187,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
 │                              # mouse handler setup, punchInTrack/punchOutTrack,
 │                              # refreshLivePlayback, shouldTrackPlay,
-│                              # ensurePlayheadVisible, autoScroll. ~831 lines.
+│                              # ensurePlayheadVisible, autoScroll. ~843 lines.
 ├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit)
 ├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
 ├── bun.lock
@@ -209,7 +210,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # chunk scanning), resampling (linear interpolation),
 │   │                          # BPM detection (two-pass: onset ACF + sample-level),
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1120 lines.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1141 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,

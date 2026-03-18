@@ -702,9 +702,16 @@ EXPORT long tuidaw_get_playhead(void) {
     return atomic_load(&g_engine.playhead_samples);
 }
 
-// Set playhead position (for scrubbing while stopped).
+// Set playhead position (for scrubbing — works during playback too).
+// Resets WSOLA states so all tracks re-sync to the new position.
 EXPORT void tuidaw_set_playhead(long position) {
     atomic_store(&g_engine.playhead_samples, position);
+    // Reset WSOLA states so each track re-syncs to the new position
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (g_engine.tracks[i].active) {
+            wsola_reset(&g_engine.tracks[i].wsola, (double)position);
+        }
+    }
 }
 
 // ── Click / Metronome ───────────────────────────────────────────────────────
