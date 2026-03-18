@@ -198,6 +198,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
+34. **Free-scroll mode**: during playback, manual scroll (mouse wheel, arrows) enters free-roam mode — view stays where user scrolled. Auto-scroll re-engages when playhead naturally enters the visible area. Cleared on stop, seeks, and playhead jumps.
 34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
 35. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
 36. **Unified TRACK_ROW_HEIGHT=4** for both sidebar and waveform (pure content rows, no separator), sidebar has dedicated volume/pan row
