@@ -27,6 +27,7 @@ import {
   getProjectDurationSamples,
 } from "./src/state"
 import type { ProjectState, Track } from "./src/types"
+import { CLICK_TRACK_INDEX } from "./src/types"
 
 async function main() {
   // ── Initialize ──────────────────────────────────────────────────────────
@@ -67,7 +68,10 @@ async function main() {
       render()
     },
     onTrackClick: (trackIndex: number) => {
-      if (trackIndex >= 0 && trackIndex < state.tracks.length) {
+      if (trackIndex === CLICK_TRACK_INDEX) {
+        state.selectedTrackIndex = CLICK_TRACK_INDEX
+        render()
+      } else if (trackIndex >= 0 && trackIndex < state.tracks.length) {
         state.selectedTrackIndex = trackIndex
         render()
       }
@@ -534,9 +538,9 @@ async function main() {
       return
     }
 
-    // Up/Down - Select track
+    // Up/Down - Select track (up from 0 goes to click track at index -1)
     if (key.name === "up" || key.name === "k") {
-      if (state.selectedTrackIndex > 0) {
+      if (state.selectedTrackIndex > CLICK_TRACK_INDEX) {
         state.selectedTrackIndex--
         render()
       }
@@ -639,14 +643,29 @@ async function main() {
     }
 
     // M - Mute (instant in native engine — no process restart)
+    // When click track is selected: toggle clickEnabled (same as C)
     if (key.name === "m") {
-      const track = getSelectedTrack(state)
-      if (track) {
-        track.muted = !track.muted
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        // Toggle click enable/disable (same as C key)
+        state.clickEnabled = !state.clickEnabled
         if (state.transportState !== "stopped") {
-          refreshLivePlayback()
+          if (state.clickEnabled) {
+            audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
+            await audioEngine.startClick(state.originalBpm)
+          } else {
+            audioEngine.stopClick()
+          }
         }
         render()
+      } else {
+        const track = getSelectedTrack(state)
+        if (track) {
+          track.muted = !track.muted
+          if (state.transportState !== "stopped") {
+            refreshLivePlayback()
+          }
+          render()
+        }
       }
       return
     }
@@ -667,9 +686,6 @@ async function main() {
     // + / = - Increase BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "+" || key.sequence === "=") {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
-      if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.originalBpm)
-      }
       // On empty project, change the base tempo (no speed change needed)
       if (getProjectDurationSamples(state) === 0) {
         state.originalBpm = state.bpm
@@ -677,6 +693,11 @@ async function main() {
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
+      // Always regenerate click buffer when BPM changes (originalBpm may have changed)
+      audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
+      if (state.transportState !== "stopped" && state.clickEnabled) {
+        await audioEngine.startClick(state.originalBpm)
+      }
       render()
       return
     }
@@ -684,9 +705,6 @@ async function main() {
     // - - Decrease BPM (instant click update in native engine + WSOLA speed)
     if (key.sequence === "-") {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
-      if (state.transportState !== "stopped" && state.clickEnabled) {
-        await audioEngine.startClick(state.originalBpm)
-      }
       // On empty project, change the base tempo (no speed change needed)
       if (getProjectDurationSamples(state) === 0) {
         state.originalBpm = state.bpm
@@ -694,6 +712,11 @@ async function main() {
       // Update WSOLA playback speed based on ratio to original BPM
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
+      // Always regenerate click buffer when BPM changes (originalBpm may have changed)
+      audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
+      if (state.transportState !== "stopped" && state.clickEnabled) {
+        await audioEngine.startClick(state.originalBpm)
+      }
       render()
       return
     }
@@ -703,6 +726,7 @@ async function main() {
       state.clickEnabled = !state.clickEnabled
       if (state.transportState !== "stopped") {
         if (state.clickEnabled) {
+          audioEngine.updateClickBuffer(state.originalBpm, state.sampleRate)
           await audioEngine.startClick(state.originalBpm)
         } else {
           audioEngine.stopClick()
@@ -827,12 +851,19 @@ async function main() {
     }
 
     // V - Volume up (instant in native engine)
+    // When click track is selected: increase click volume
     if (key.name === "v" && !key.shift) {
-      const track = getSelectedTrack(state)
-      if (track) {
-        track.volume = Math.min(1, track.volume + 0.05)
-        audioEngine.setTrackVolume(track.id, track.volume)
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        state.clickVolume = Math.min(2, Math.round((state.clickVolume + 0.05) * 100) / 100)
+        audioEngine.setClickVolume(state.clickVolume)
         render()
+      } else {
+        const track = getSelectedTrack(state)
+        if (track) {
+          track.volume = Math.min(1, track.volume + 0.05)
+          audioEngine.setTrackVolume(track.id, track.volume)
+          render()
+        }
       }
       return
     }
@@ -866,23 +897,37 @@ async function main() {
     }
 
     // < (shift+,) - Pan left (instant in native engine)
+    // When click track is selected: pan click left
     if (key.sequence === "<") {
-      const track = getSelectedTrack(state)
-      if (track) {
-        track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
-        audioEngine.setTrackPan(track.id, track.pan)
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        state.clickPan = Math.max(-1, Math.round((state.clickPan - 0.1) * 100) / 100)
+        audioEngine.setClickPan(state.clickPan)
         render()
+      } else {
+        const track = getSelectedTrack(state)
+        if (track) {
+          track.pan = Math.max(-1, Math.round((track.pan - 0.1) * 100) / 100)
+          audioEngine.setTrackPan(track.id, track.pan)
+          render()
+        }
       }
       return
     }
 
     // > (shift+.) - Pan right (instant in native engine)
+    // When click track is selected: pan click right
     if (key.sequence === ">") {
-      const track = getSelectedTrack(state)
-      if (track) {
-        track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
-        audioEngine.setTrackPan(track.id, track.pan)
+      if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
+        state.clickPan = Math.min(1, Math.round((state.clickPan + 0.1) * 100) / 100)
+        audioEngine.setClickPan(state.clickPan)
         render()
+      } else {
+        const track = getSelectedTrack(state)
+        if (track) {
+          track.pan = Math.min(1, Math.round((track.pan + 0.1) * 100) / 100)
+          audioEngine.setTrackPan(track.id, track.pan)
+          render()
+        }
       }
       return
     }

@@ -12,7 +12,7 @@ import {
   type MouseEvent,
 } from "@opentui/core"
 import type { ProjectState, Track, AudioDevice } from "./types"
-import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT, CLICK_ROW_HEIGHT } from "./types"
+import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT, CLICK_ROW_HEIGHT, CLICK_TRACK_INDEX } from "./types"
 import { renderBrailleWaveform, getPeakLevel, renderLevelMeter } from "./braille"
 import {
   formatTime,
@@ -183,7 +183,7 @@ export class UIRenderer {
     }
 
     // Sidebar: mouse wheel adjusts volume or pan on the SELECTED track
-    // Click track row is at the top when click is enabled (CLICK_ROW_HEIGHT rows)
+    // Click track row is always at the top (CLICK_ROW_HEIGHT rows)
     // Pan zone: row 2 (within track), x >= 9 (where "Pan:" label starts)
     // Volume zone: everything else in sidebar
     this.sidebarFB.onMouseScroll = (event: MouseEvent) => {
@@ -199,11 +199,11 @@ export class UIRenderer {
       const contentY = localY - 1
       if (contentY < 0) return
 
-      // Check if click track is visible and cursor is on it
-      const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
-      if (this.currentState?.clickEnabled && contentY < CLICK_ROW_HEIGHT) {
-        // On click track row — pan zone: x >= 13 (where pan indicator is drawn)
-        if (event.x >= 13) {
+      // Click track row is ALWAYS shown at the top (CLICK_ROW_HEIGHT rows)
+      const clickOffset = CLICK_ROW_HEIGHT
+      if (contentY < CLICK_ROW_HEIGHT) {
+        // On click track row — pan zone: x >= 9 (where Pan: label is drawn)
+        if (event.x >= 9) {
           callbacks.onClickPanChange(delta * 0.05)
         } else {
           callbacks.onClickVolumeChange(delta * 0.05)
@@ -235,13 +235,14 @@ export class UIRenderer {
       const contentY = localY - 1
       if (contentY < 0) return
 
-      // Skip click track row if visible
-      const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
-      if (this.currentState?.clickEnabled && contentY < CLICK_ROW_HEIGHT) {
-        return // Click on click track row — no track selection
+      // Click track row is ALWAYS shown at the top (CLICK_ROW_HEIGHT rows)
+      if (contentY < CLICK_ROW_HEIGHT) {
+        // Click on click track row — select click track (sentinel -1)
+        callbacks.onTrackClick(CLICK_TRACK_INDEX)
+        return
       }
 
-      const trackIndex = Math.floor((contentY - clickOffset) / TRACK_ROW_HEIGHT)
+      const trackIndex = Math.floor((contentY - CLICK_ROW_HEIGHT) / TRACK_ROW_HEIGHT)
       callbacks.onTrackClick(trackIndex)
     }
 
@@ -262,11 +263,14 @@ export class UIRenderer {
         } else {
           // Waveform area — select track
           draggingTimeline = false
-          // Account for click track row offset in main area
-          const clickOffset = (this.currentState?.clickEnabled) ? CLICK_ROW_HEIGHT : 0
+          // Click track row is ALWAYS at top (CLICK_ROW_HEIGHT rows)
           const waveformY = localY - 1  // subtract timeline row
-          if (waveformY < clickOffset) return  // Click on click waveform — no track selection
-          const trackIndex = Math.floor((waveformY - clickOffset) / TRACK_ROW_HEIGHT)
+          if (waveformY < CLICK_ROW_HEIGHT) {
+            // Click on click waveform row — select click track
+            callbacks.onTrackClick(CLICK_TRACK_INDEX)
+            return
+          }
+          const trackIndex = Math.floor((waveformY - CLICK_ROW_HEIGHT) / TRACK_ROW_HEIGHT)
           callbacks.onTrackClick(trackIndex)
         }
       } else if (event.type === "drag" && draggingTimeline) {
@@ -431,22 +435,45 @@ export class UIRenderer {
       fb.setCell(w - 1, y, "│", FG_DIM, BG_SIDEBAR)
     }
 
-    // Click track row (compact: 1 content row + 1 separator) — shown at top when enabled
+    // Click track row — always shown (5 rows matching TRACK_ROW_HEIGHT)
+    // Uses dim/muted colors when click is disabled; bright when enabled/selected.
     let y = 1
-    if (state.clickEnabled) {
-      const bg = BG_SIDEBAR
+    {
+      const isSelected = state.selectedTrackIndex === CLICK_TRACK_INDEX
+      const isEnabled = state.clickEnabled
+      const bg = isSelected ? BG_SELECTED : BG_SIDEBAR
+      const iconColor = isEnabled ? CLICK_COLOR : FG_DIM
+      const labelColor = isEnabled ? CLICK_COLOR : FG_DIM
 
-      // Content row: icon + "Click" + volume + pan
-      fb.fillRect(0, y, w - 1, 1, bg)
-      fb.setCell(0, y, "♩", CLICK_COLOR, bg)
-      fb.drawText(" Click", 1, y, CLICK_COLOR, bg, TextAttributes.BOLD)
+      // Row 0-3 background
+      for (let row = 0; row < CLICK_ROW_HEIGHT - 1; row++) {
+        fb.fillRect(0, y + row, w - 1, 1, bg)
+      }
 
-      // Volume (allowing >100%)
+      // Selection indicator
+      if (isSelected) {
+        for (let row = 0; row < CLICK_ROW_HEIGHT - 1; row++) {
+          fb.setCell(0, y + row, "▌", CLICK_COLOR, bg)
+        }
+      }
+
+      // Row 0: icon + "Click" label + enabled status
+      fb.setCell(1, y, "♩", iconColor, bg)
+      fb.drawText(" Click", 2, y, labelColor, bg, isEnabled ? TextAttributes.BOLD : 0)
+      if (isEnabled) {
+        fb.drawText(" ON", 8, y, FG_GREEN, bg, TextAttributes.BOLD)
+      } else {
+        fb.drawText(" off", 8, y, FG_DIM, bg)
+      }
+
+      // Row 1: M placeholder (no mute for click — C toggles enable/disable)
+      fb.drawText(" C:toggle", 1, y + 1, FG_DIM, bg)
+
+      // Row 2: Volume + Pan
       const volPct = Math.round(state.clickVolume * 100)
-      const volStr = `${volPct}%`
-      fb.drawText(volStr, 8, y, FG_DIM, bg)
+      const volStr = `V:${volPct}%`
+      fb.drawText(volStr, 1, y + 2, FG_DIM, bg)
 
-      // Pan
       let panStr: string
       if (state.clickPan === 0) {
         panStr = "C"
@@ -455,11 +482,14 @@ export class UIRenderer {
       } else {
         panStr = `R${Math.round(state.clickPan * 100)}`
       }
-      fb.drawText(panStr, 13, y, FG_DIM, bg)
+      fb.drawText(`Pan:${panStr}`, 9, y + 2, FG_DIM, bg)
 
-      // Separator
+      // Row 3: empty (click track has no level meter / input device)
+      fb.drawText("♩ metronome", 1, y + 3, FG_DIM, bg)
+
+      // Row 4: Separator
       for (let x = 0; x < w - 1; x++) {
-        fb.setCell(x, y + 1, "─", RGBA.fromHex("#292e42"), bg)
+        fb.setCell(x, y + CLICK_ROW_HEIGHT - 1, "─", RGBA.fromHex("#292e42"), bg)
       }
 
       y += CLICK_ROW_HEIGHT
@@ -580,40 +610,38 @@ export class UIRenderer {
     // Timeline header (1 row)
     this.renderTimeline(fb, w, state, samplesPerSubCol)
 
-    // Click track waveform row (1 content row + 1 separator) — shown above regular tracks
+    // Click track waveform row — always shown above regular tracks (CLICK_ROW_HEIGHT rows)
+    // Uses bright CLICK_COLOR when enabled, FG_DIM when disabled.
+    // Shows | characters at beat positions (not braille) for a grid-like look.
     let y = 1
-    if (state.clickEnabled) {
+    {
+      const isEnabled = state.clickEnabled
       const clickH = Math.min(CLICK_ROW_HEIGHT, h - y)
       if (clickH > 0) {
-        fb.fillRect(0, y, w, clickH, BG)
+        const isSelected = state.selectedTrackIndex === CLICK_TRACK_INDEX
+        const rowBg = isSelected ? BG_SELECTED : BG
+        fb.fillRect(0, y, w, clickH, rowBg)
 
-         // Generate synthetic click beat pattern for braille rendering
-         // Each beat gets a spike, rendered as 1 row of braille
-         // Uses originalBpm because coordinates are in content-space:
-         // the native click fires on wall-clock intervals at (60/bpm)*sampleRate,
-         // but content-space playhead advances at speed=bpm/originalBpm per frame,
-         // so click lands every (60/originalBpm)*sampleRate content-space samples.
-         if (clickH >= 1) {
-           const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
-          const samplesPerCol = samplesPerSubCol * 2
+        // Generate beat tick marks using | characters across content rows
+        // Uses originalBpm because coordinates are in content-space
+        const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
+        const samplesPerCol = samplesPerSubCol * 2
+        const beatColor = isEnabled ? CLICK_COLOR : FG_DIM
+        const contentRows = Math.max(1, clickH - 1) // last row is separator
 
-          for (let x = 0; x < w; x++) {
-            const samplePos = state.scrollOffset + x * samplesPerCol
-            // Check if this column contains a beat boundary
-            const beatStart = Math.floor(samplePos / samplesPerBeat) * samplesPerBeat
-            const nextBeat = beatStart + samplesPerBeat
+        for (let x = 0; x < w; x++) {
+          const samplePos = state.scrollOffset + x * samplesPerCol
+          const beatStart = Math.floor(samplePos / samplesPerBeat) * samplesPerBeat
+          const nextBeat = beatStart + samplesPerBeat
 
-            // Check if a beat falls within this column's sample range
-            let hasBeat = false
-            if (beatStart >= samplePos && beatStart < samplePos + samplesPerCol) {
-              hasBeat = true
-            } else if (nextBeat >= samplePos && nextBeat < samplePos + samplesPerCol) {
-              hasBeat = true
-            }
+          // Check if a beat falls within this column's sample range
+          const hasBeat = (beatStart >= samplePos && beatStart < samplePos + samplesPerCol) ||
+                          (nextBeat >= samplePos && nextBeat < samplePos + samplesPerCol)
 
-            if (hasBeat) {
-              // Full-height spike at beat position (braille char with all dots set)
-              fb.setCell(x, y, "⣿", CLICK_COLOR, BG)
+          if (hasBeat) {
+            // Full-height | spike across all content rows
+            for (let row = 0; row < contentRows; row++) {
+              fb.setCell(x, y + row, "│", beatColor, rowBg)
             }
           }
         }
@@ -621,7 +649,7 @@ export class UIRenderer {
         // Separator (last row of click area)
         if (clickH >= 2) {
           for (let x = 0; x < w; x++) {
-            fb.setCell(x, y + clickH - 1, "─", GRID_COLOR, BG)
+            fb.setCell(x, y + clickH - 1, "─", GRID_COLOR, rowBg)
           }
         }
 
