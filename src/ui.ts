@@ -12,7 +12,7 @@ import {
   type MouseEvent,
 } from "@opentui/core"
 import type { ProjectState, Track, AudioDevice } from "./types"
-import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT } from "./types"
+import { SIDEBAR_WIDTH, TOPBAR_HEIGHT, TRACK_ROW_HEIGHT, WAVEFORM_ROW_HEIGHT } from "./types"
 import { renderBrailleWaveform, getPeakLevel, renderLevelMeter } from "./braille"
 import {
   formatTime,
@@ -229,7 +229,7 @@ export class UIRenderer {
         } else {
           // Waveform area — select track (localY=1 is first track row)
           draggingTimeline = false
-          const trackIndex = Math.floor((localY - 1) / TRACK_ROW_HEIGHT)
+          const trackIndex = Math.floor((localY - 1) / WAVEFORM_ROW_HEIGHT)
           callbacks.onTrackClick(trackIndex)
         }
       } else if (event.type === "drag" && draggingTimeline) {
@@ -502,7 +502,10 @@ export class UIRenderer {
     // Calculate zoom: how many samples per braille sub-column
     // Each character is 2 sub-columns wide
     // Default: fit ~10 seconds into the view
-    const samplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (w * 2) * 10))
+    // When speed != 1.0, scale so waveform visually stretches/compresses
+    const speed = state.bpm / state.originalBpm
+    const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (w * 2) * 10))
+    const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
 
     // Timeline header (1 row)
     this.renderTimeline(fb, w, state, samplesPerSubCol)
@@ -510,7 +513,7 @@ export class UIRenderer {
     // Render each track's waveform
     let y = 1
     for (let i = 0; i < state.tracks.length; i++) {
-      const trackH = Math.min(TRACK_ROW_HEIGHT, h - y)
+      const trackH = Math.min(WAVEFORM_ROW_HEIGHT, h - y)
       if (trackH <= 0) break
 
       const track = state.tracks[i]
@@ -524,11 +527,14 @@ export class UIRenderer {
 
       // Draw waveform using braille if track has samples
       if (track.samples && track.samples.length > 0 && !track.muted) {
+        // Scale scrollOffset by speed: playhead position is wall-clock time,
+        // but source samples are consumed at rate * speed by WSOLA
+        const sourceOffset = Math.round(state.scrollOffset * speed)
         const braille = renderBrailleWaveform(
           track.samples,
           w,
           trackH,
-          state.scrollOffset,
+          sourceOffset,
           samplesPerSubCol,
         )
 
@@ -541,11 +547,12 @@ export class UIRenderer {
         }
       } else if (track.muted && track.samples) {
         // Show dimmed waveform for muted tracks
+        const sourceOffset = Math.round(state.scrollOffset * speed)
         const braille = renderBrailleWaveform(
           track.samples,
           w,
           trackH,
-          state.scrollOffset,
+          sourceOffset,
           samplesPerSubCol,
         )
 

@@ -73,8 +73,10 @@ async function main() {
     },
     onTimelineClick: (x: number, mainWidth: number) => {
       if (state.transportState !== "stopped") return
-      // Same formula as ui.ts renderMainArea/renderTimeline
-      const samplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+      // Same formula as ui.ts renderMainArea/renderTimeline (speed-adjusted)
+      const speed = state.bpm / state.originalBpm
+      const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+      const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
       const samplesPerCol = samplesPerSubCol * 2
       const samplePos = state.scrollOffset + x * samplesPerCol
       state.playheadPosition = Math.max(0, samplePos)
@@ -109,10 +111,12 @@ async function main() {
 
   // ── Transport Controls ──────────────────────────────────────────────────
 
-  // Helper: compute visible sample range
+  // Helper: compute visible sample range (speed-adjusted to match ui.ts rendering)
   function getVisibleSamples() {
     const mainWidth = renderer.width - 22 // SIDEBAR_WIDTH
-    const samplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+    const speed = state.bpm / state.originalBpm
+    const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+    const samplesPerSubCol = Math.max(1, Math.round(baseSamplesPerSubCol * speed))
     const samplesPerCol = samplesPerSubCol * 2
     return mainWidth * samplesPerCol
   }
