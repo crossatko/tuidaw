@@ -388,10 +388,12 @@ export class UIRenderer {
     fb.drawText("BPM:", bpmX, 1, FG_DIM, BG_TOPBAR)
     fb.drawText(` ${state.bpm} `, bpmX + 4, 1, FG_YELLOW, BG_TOPBAR, TextAttributes.BOLD)
 
-    // Speed indicator (show when speed != 1.0x)
+    // Speed indicator (show when speed != 1.0x) or BPM lock indicator
     const speed = state.bpm / state.originalBpm
     const speedX = bpmX + 4 + ` ${state.bpm} `.length
-    if (speed < 0.99 || speed > 1.01) {
+    if (state.bpmLocked) {
+      fb.drawText(" LOCK ", speedX, 1, RGBA.fromHex("#1a1b26"), RGBA.fromHex("#E5C07B"))
+    } else if (speed < 0.99 || speed > 1.01) {
       const pct = Math.round(speed * 100)
       fb.drawText(` ${pct}% `, speedX, 1, RGBA.fromHex("#1a1b26"), RGBA.fromHex("#BB8FCE"))
     }
@@ -883,6 +885,7 @@ export class UIRenderer {
       "{/}:Nudge",
       "</>:Pan",
       "P:Loop",
+      "B:BPM Lock",
       "F5:Save",
       "F6:Open",
       "I:Import",
@@ -945,8 +948,9 @@ export class UIRenderer {
       ["HOME / 0", "Jump to beginning"],
       ["M", "Toggle mute on selected track"],
       ["S", "Toggle solo on selected track"],
-      ["+", "Increase BPM (speed up)"],
-      ["-", "Decrease BPM (slow down)"],
+      ["+", "Increase BPM (speed up / relabel if locked)"],
+      ["-", "Decrease BPM (slow down / relabel if locked)"],
+      ["B", "Toggle BPM lock (label-only vs speed change)"],
       ["C", "Toggle metronome click"],
       ["P", "Practice loop (start/end/clear)"],
       ["V", "Volume up on selected track"],

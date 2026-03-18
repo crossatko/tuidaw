@@ -68,7 +68,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **S** = live solo toggle (re-evaluates all tracks via native engine)
 - **C** = live click toggle (enables/disables click in native callback)
 - **R** = live punch-in/out (starts/stops native recording without stopping transport)
-- **+/-** = live BPM change (instant update in native click generator)
+- **+/-** = live BPM change (instant update in native click generator; when BPM locked, changes base tempo without speed change)
+- **B** = toggle BPM lock (locked: +/- relabels tempo without speed change; unlocked: +/- changes WSOLA speed)
 - **Up/Down** = track selection during playback
 - **A/D** blocked during transport with status message
 
