@@ -110,9 +110,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 ### Export mixdown:
 - Uses ffmpeg with `volume` and `pan` filters per track (equal-power panning law)
+- **WSOLA time-stretch applied offline** when speed != 1.0: each track's samples are pitch-preserving time-stretched in TypeScript before writing to temp WAV (matching native engine's window=1024, hop=512, search=±256 algorithm)
 - Single track: volume + pan + aformat
 - Multiple tracks: volume + pan per input, then amix with normalize=0, aformat
-- When clickEnabled: generates synthetic click WAV (1kHz sine, 20ms decay, 48kHz) and includes as additional ffmpeg input with click's volume and pan
+- When clickEnabled: generates synthetic click WAV (1kHz sine, 20ms decay, 48kHz) at adjusted BPM, duration matched to stretched track length, includes as additional ffmpeg input with click's volume and pan
 - Output: pcm_s16le WAV, stereo
 
 ## Discoveries
@@ -239,7 +240,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # chunk scanning), resampling (linear interpolation),
 │   │                          # BPM detection (two-pass: onset ACF + sample-level),
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1214 lines.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1313 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,

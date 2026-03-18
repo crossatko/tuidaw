@@ -931,31 +931,130 @@ export class AudioEngine {
     return { samples: rawSamples, sampleRate }
   }
 
+  // ── Offline WSOLA Time-Stretch ───────────────────────────────────────
+  // Pitch-preserving time stretch matching the native engine's algorithm.
+  // Parameters match native: window=1024, hop=512, search=±256.
+  // speed < 1: output is longer (slower playback), speed > 1: shorter (faster).
+  private wsolaStretch(samples: Float32Array, speed: number): Float32Array {
+    const WINDOW = 1024
+    const HOP = 512
+    const SEARCH = 256
+    const len = samples.length
+    // Output length: input_length / speed (slower = more output samples)
+    const outLen = Math.ceil(len / speed)
+    const output = new Float32Array(outLen)
+
+    // Hann window
+    const hann = new Float32Array(WINDOW)
+    for (let i = 0; i < WINDOW; i++) {
+      hann[i] = 0.5 * (1.0 - Math.cos((2 * Math.PI * i) / (WINDOW - 1)))
+    }
+
+    const safeRead = (pos: number): number => {
+      if (pos < 0 || pos >= len) return 0
+      return samples[pos]!
+    }
+
+    let inputPos = 0.0
+    let outPos = 0
+    const prevWindow = new Float32Array(WINDOW) // previous windowed segment
+
+    while (outPos < outLen) {
+      const targetInput = Math.round(inputPos)
+
+      // Past end of audio — fill remaining with silence
+      if (targetInput >= len) {
+        break
+      }
+
+      // Find best alignment by cross-correlating previous window tail
+      // with candidate positions
+      let bestOffset = 0
+      if (outPos > 0) {
+        let bestCorr = -1e30
+        for (let offset = -SEARCH; offset <= SEARCH; offset++) {
+          const pos = targetInput + offset
+          let corr = 0
+          let norm1 = 0
+          let norm2 = 0
+          for (let i = 0; i < HOP; i += 4) {
+            const s1 = prevWindow[HOP + i]!
+            const s2 = safeRead(pos + i)
+            corr += s1 * s2
+            norm1 += s1 * s1
+            norm2 += s2 * s2
+          }
+          const denom = Math.sqrt(norm1 * norm2 + 1e-20)
+          const normalized = corr / denom
+          if (normalized > bestCorr) {
+            bestCorr = normalized
+            bestOffset = offset
+          }
+        }
+      }
+
+      const alignedPos = targetInput + bestOffset
+
+      // Extract and window the new segment
+      const newWindow = new Float32Array(WINDOW)
+      for (let i = 0; i < WINDOW; i++) {
+        newWindow[i] = safeRead(alignedPos + i) * hann[i]!
+      }
+
+      // Overlap-add: blend previous tail with start of new window
+      const remaining = outLen - outPos
+      const hopOut = Math.min(HOP, remaining)
+      for (let i = 0; i < hopOut; i++) {
+        output[outPos + i] = prevWindow[HOP + i]! + newWindow[i]!
+      }
+      outPos += hopOut
+
+      // Store new window for next iteration
+      prevWindow.set(newWindow)
+
+      // Advance input position
+      inputPos += HOP * speed
+    }
+
+    return output.subarray(0, outPos)
+  }
+
   // ── Export Mixdown ─────────────────────────────────────────────────────
   // Still uses ffmpeg for the final mix (non-realtime, not performance-critical)
 
   async exportMixdown(state: ProjectState, outputPath: string): Promise<boolean> {
     const tracksToMix: { track: Track; tempPath: string }[] = []
     const hasSolo = state.tracks.some((t) => t.solo)
+    const speed = state.bpm / state.originalBpm
 
     for (const track of state.tracks) {
       if (!track.samples || track.samples.length === 0) continue
       if (track.muted) continue
       if (hasSolo && !track.solo) continue
 
+      // Apply WSOLA time-stretch when speed != 1.0 so the exported audio
+      // plays at the adjusted BPM while preserving pitch
+      const exportSamples = (Math.abs(speed - 1.0) > 0.001)
+        ? this.wsolaStretch(track.samples, speed)
+        : track.samples
+
       const tempPath = `/tmp/tuidaw_mix_${track.id}.wav`
-      await this.writeWav(tempPath, track.samples, track.sampleRate)
+      await this.writeWav(tempPath, exportSamples, track.sampleRate)
       tracksToMix.push({ track, tempPath })
     }
 
     // Generate click track WAV if click is enabled
     let clickTempPath: string | null = null
     if (state.clickEnabled) {
-      // Determine total duration from the longest track (or at least 1 beat if no tracks)
+      // Determine total duration from the longest track AFTER time-stretching
+      // (at speed 0.5x, the stretched audio is 2x longer)
       let totalSamples = 0
       for (const track of state.tracks) {
-        if (track.samples && track.samples.length > totalSamples) {
-          totalSamples = track.samples.length
+        if (track.samples && track.samples.length > 0) {
+          const stretched = (Math.abs(speed - 1.0) > 0.001)
+            ? Math.ceil(track.samples.length / speed)
+            : track.samples.length
+          if (stretched > totalSamples) totalSamples = stretched
         }
       }
       if (totalSamples === 0) {
