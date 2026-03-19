@@ -803,6 +803,10 @@ async function main() {
       if (track) {
         ui.openDeviceSelector("input", state.availableInputDevices, track.inputDeviceId, (device) => {
           track.inputDeviceId = device ? device.id : null
+          // Sync input device to native engine immediately so it's ready for recording
+          audioEngine.syncTrack(track)
+          const devName = device ? device.description : "Default"
+          ui.showStatusMessage(`Input: ${devName}`)
         })
         render()
       }
@@ -818,8 +822,14 @@ async function main() {
 
       ui.openDeviceSelector("output", state.availableOutputDevices, state.outputDeviceId, (device) => {
         state.outputDeviceId = device ? device.id : null
-        // Apply immediately — restart playback device with new output
-        audioEngine.setOutputDevice(state.outputDeviceId)
+        // Force-restart playback device with the new output immediately
+        try {
+          audioEngine.forceRestartOutputDevice(state.outputDeviceId)
+          const devName = device ? device.description : "Default"
+          ui.showStatusMessage(`Output: ${devName}`)
+        } catch {
+          ui.showStatusMessage("Failed to switch output device!")
+        }
       })
       render()
       return
@@ -883,6 +893,8 @@ async function main() {
           audioEngine.syncAllTracks(state)
           // Restore WSOLA speed from saved bpm/originalBpm ratio
           audioEngine.setSpeed(state.bpm / state.originalBpm)
+          // Apply output device from saved project (if any)
+          audioEngine.setOutputDevice(state.outputDeviceId)
           const devs = await audioEngine.enumerateDevices()
           state.availableInputDevices = devs.inputs
           state.availableOutputDevices = devs.outputs

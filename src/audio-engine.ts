@@ -41,6 +41,7 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_device_name:      { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32] },
   tuidaw_is_device_default:    { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32] },
   tuidaw_set_output_device:    { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_get_active_device_index: { returns: FFIType.i32 },
   tuidaw_start_playback_device:{ returns: FFIType.i32 },
   tuidaw_stop_playback_device: { returns: FFIType.void },
   tuidaw_add_track:            { returns: FFIType.i32, args: [FFIType.i32] },
@@ -215,10 +216,31 @@ export class AudioEngine {
 
   // ── Output Device ────────────────────────────────────────────────────
 
-  // Switch the playback device. Stops the current device, sets the new index,
-  // and restarts with the new device. Safe to call while transport is stopped.
+  // Switch the playback device. Only restarts the device if the requested
+  // device differs from the currently active one (avoids unnecessary
+  // stop+start which can confuse PipeWire/PulseAudio routing policies).
   setOutputDevice(deviceId: number | null): void {
-    lib.symbols.tuidaw_set_output_device(deviceId ?? -1)
+    const nativeIdx = deviceId ?? -1
+    const activeIdx = lib.symbols.tuidaw_get_active_device_index()
+    if (nativeIdx === activeIdx) {
+      // Device already active — no restart needed
+      return
+    }
+    lib.symbols.tuidaw_set_output_device(nativeIdx)
+    lib.symbols.tuidaw_stop_playback_device()
+    const result = lib.symbols.tuidaw_start_playback_device()
+    if (result !== 0) {
+      throw new Error("Failed to restart playback device with new output")
+    }
+  }
+
+  // Force-restart the playback device with the current output_device_index,
+  // even if it hasn't changed. Used for the initial device switch in the
+  // F3 callback where we want to guarantee the device actually gets
+  // re-initialized with the chosen output.
+  forceRestartOutputDevice(deviceId: number | null): void {
+    const nativeIdx = deviceId ?? -1
+    lib.symbols.tuidaw_set_output_device(nativeIdx)
     lib.symbols.tuidaw_stop_playback_device()
     const result = lib.symbols.tuidaw_start_playback_device()
     if (result !== 0) {
