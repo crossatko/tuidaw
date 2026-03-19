@@ -30,7 +30,7 @@ interface TuidawWasmModule {
   _tuidaw_get_playhead(): number
   _tuidaw_set_playhead(position: number): void
   _tuidaw_set_click(enabled: number, bpm: number): void
-  _tuidaw_generate_click(bpm: number, durationFrames: number): void
+  _tuidaw_generate_click(bpm: number, durationFrames: number): number
   _tuidaw_set_click_samples(ptr: number, len: number): void
   _tuidaw_set_click_volume(volume: number): void
   _tuidaw_set_click_pan(pan: number): void
@@ -189,8 +189,14 @@ export class WebAudioBridge {
     this.m._tuidaw_set_click(enabled ? 1 : 0, bpm)
   }
 
-  generateClick(bpm: number, durationFrames: number): void {
-    this.m._tuidaw_generate_click(bpm, durationFrames)
+  generateClick(bpm: number, durationFrames: number): boolean {
+    try {
+      const result = this.m._tuidaw_generate_click(bpm, durationFrames)
+      return result === 0
+    } catch (e) {
+      console.error("generateClick failed:", e, `(bpm=${bpm}, frames=${durationFrames})`)
+      return false
+    }
   }
 
   setClickVolume(volume: number): void {

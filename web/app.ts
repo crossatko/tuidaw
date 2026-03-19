@@ -600,7 +600,9 @@ async function play() {
 
   if (state.clickEnabled) {
     const duration = getClickDuration()
-    audio.generateClick(state.bpm, duration)
+    if (!audio.generateClick(state.bpm, duration)) {
+      showStatus("Click buffer allocation failed (memory limit)")
+    }
     audio.setClick(true, state.bpm)
     audio.setClickVolume(state.clickVolume)
     audio.setClickPan(state.clickPan)
@@ -646,7 +648,10 @@ function getClickDuration(): number {
   }
   const speed = state.bpm / state.originalBpm
   const outputDuration = speed > 0 ? Math.ceil(maxLen / speed) : maxLen
-  return Math.max(outputDuration + SAMPLE_RATE * 60, SAMPLE_RATE * 600)
+  // WASM has limited memory — use smaller click buffer than TUI
+  // Project duration + 10s extra, minimum 30s, maximum 3 minutes
+  const duration = Math.max(outputDuration + SAMPLE_RATE * 10, SAMPLE_RATE * 30)
+  return Math.min(duration, SAMPLE_RATE * 180)
 }
 
 // ── Scrolling ───────────────────────────────────────────────────────────
@@ -902,7 +907,9 @@ function setupKeyboard() {
         state.clickEnabled = !state.clickEnabled
         if (state.transportState !== "stopped") {
           if (state.clickEnabled) {
-            audio.generateClick(state.bpm, getClickDuration())
+            if (!audio.generateClick(state.bpm, getClickDuration())) {
+              showStatus("Click buffer allocation failed")
+            }
             audio.setClick(true, state.bpm)
             audio.setClickVolume(state.clickVolume)
             audio.setClickPan(state.clickPan)
