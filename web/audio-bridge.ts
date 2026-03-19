@@ -87,14 +87,15 @@ export class WebAudioBridge {
     })
     this.module = mod
 
-    // Initialize miniaudio engine (uses Web Audio backend automatically)
-    const result = mod._tuidaw_init()
+    // Initialize miniaudio engine (uses Web Audio / AudioWorklet backend)
+    // With ASYNCIFY, _tuidaw_init may return a Promise (AudioWorklet init calls emscripten_sleep)
+    const result = await mod._tuidaw_init()
     if (result !== 0) {
       throw new Error(`tuidaw_init failed with code ${result}`)
     }
 
-    // Start the playback device
-    mod._tuidaw_start_playback_device()
+    // Start the playback device (may also be async with AudioWorklet)
+    await mod._tuidaw_start_playback_device()
   }
 
   get isReady(): boolean {

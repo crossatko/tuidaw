@@ -44,8 +44,10 @@ CFLAGS="$CFLAGS -sEXPORTED_RUNTIME_METHODS=$EXPORTED_RUNTIME"
 CFLAGS="$CFLAGS -sALLOW_MEMORY_GROWTH=1"
 CFLAGS="$CFLAGS -sINITIAL_MEMORY=134217728"  # 128MB initial (DAW needs memory for audio + click buffers)
 CFLAGS="$CFLAGS -sSTACK_SIZE=1048576"        # 1MB stack (WSOLA uses stack arrays)
-CFLAGS="$CFLAGS -sAUDIO_WORKLET=1"           # Use AudioWorklet (not ScriptProcessorNode)
+CFLAGS="$CFLAGS -DMA_ENABLE_AUDIO_WORKLETS"   # Tell miniaudio to compile AudioWorklet path (not ScriptProcessorNode)
+CFLAGS="$CFLAGS -sAUDIO_WORKLET=1"           # Emscripten AudioWorklet support
 CFLAGS="$CFLAGS -sWASM_WORKERS=1"            # Required for AUDIO_WORKLET
+CFLAGS="$CFLAGS -sASYNCIFY"                  # Required: miniaudio's AudioWorklet init calls emscripten_sleep()
 CFLAGS="$CFLAGS -sMODULARIZE=1"             # Wrap in a factory function
 CFLAGS="$CFLAGS -sEXPORT_NAME='TuidawAudio'" # Factory function name
 CFLAGS="$CFLAGS -sENVIRONMENT=web,worker"    # Browser-only (no Node.js)
