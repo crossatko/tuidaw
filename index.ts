@@ -116,6 +116,16 @@ async function main() {
   // Playhead update interval
   let playheadInterval: ReturnType<typeof setInterval> | null = null
 
+  // Helper: compute click buffer duration in frames.
+  // Match the logic in AudioEngine.playAll() — enough for the project at
+  // the current speed, plus 60s margin, minimum 10 minutes.
+  function getClickDuration(): number {
+    const projectDuration = getProjectDurationSamples(state)
+    const speed = state.bpm / state.originalBpm
+    const outputDuration = speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
+    return Math.max(outputDuration + state.sampleRate * 60, state.sampleRate * 600)
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────
   function render() {
     ui.render(state)
@@ -680,7 +690,7 @@ async function main() {
         state.clickEnabled = !state.clickEnabled
         if (state.transportState !== "stopped") {
           if (state.clickEnabled) {
-             audioEngine.updateClickBuffer(state.bpm, state.sampleRate)
+            audioEngine.updateClickBuffer(state.bpm, getClickDuration())
             await audioEngine.startClick(state.bpm)
           } else {
             audioEngine.stopClick()
@@ -725,7 +735,7 @@ async function main() {
       audioEngine.setSpeed(speed)
       // Update displayed BPM in native click engine (buffer regen needed — BPM is baked into length)
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        audioEngine.updateClickBuffer(state.bpm, state.sampleRate)
+        audioEngine.updateClickBuffer(state.bpm, getClickDuration())
         await audioEngine.startClick(state.bpm)
       }
       render()
@@ -744,7 +754,7 @@ async function main() {
       audioEngine.setSpeed(speed)
       // Update displayed BPM in native click engine (buffer regen needed — BPM is baked into length)
       if (state.transportState !== "stopped" && state.clickEnabled) {
-        audioEngine.updateClickBuffer(state.bpm, state.sampleRate)
+        audioEngine.updateClickBuffer(state.bpm, getClickDuration())
         await audioEngine.startClick(state.bpm)
       }
       render()
@@ -764,7 +774,7 @@ async function main() {
       state.clickEnabled = !state.clickEnabled
       if (state.transportState !== "stopped") {
         if (state.clickEnabled) {
-           audioEngine.updateClickBuffer(state.bpm, state.sampleRate)
+          audioEngine.updateClickBuffer(state.bpm, getClickDuration())
           await audioEngine.startClick(state.bpm)
         } else {
           audioEngine.stopClick()
@@ -823,7 +833,7 @@ async function main() {
               state.bpm = result.detectedBPM
               state.originalBpm = result.detectedBPM
               audioEngine.setSpeed(1.0) // reset speed since bpm == originalBpm
-              audioEngine.updateClickBuffer(state.bpm, state.sampleRate) // regen buffer for new BPM
+              audioEngine.updateClickBuffer(state.bpm, getClickDuration()) // regen buffer for new BPM
               audioEngine.startClick(state.bpm) // sync click generator with displayed BPM
               ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
             } else {

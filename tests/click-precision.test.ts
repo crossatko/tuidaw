@@ -4,12 +4,10 @@
 // These tests verify that click pulses have zero cumulative drift, using
 // tuidaw_render() to bypass the audio device for deterministic output.
 //
-// Architecture: the click buffer contains ONE FULL BEAT: click tone (960
-// samples of 1kHz sine + 20ms decay) followed by silence to fill the beat
-// duration. Buffer length = round(60/BPM * sampleRate), so BPM is baked
-// into the buffer length. The native callback reads the buffer with simple
-// integer modulo: click_samples[counter % click_samples_len]. No floating-
-// point BPM math, no fmod, no precision issues.
+// Architecture: the click buffer is generated natively by tuidaw_generate_click()
+// which fills a long pre-rendered buffer with click tones at GCD-exact beat
+// positions. The native callback reads click_samples[counter] with a simple
+// bounds check. No modulo, no floating-point BPM math, no fmod.
 //
 // Uses null audio backend — no sound output.
 
@@ -51,54 +49,13 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_speed:             { returns: FFIType.f32 },
   tuidaw_set_click:             { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
   tuidaw_set_click_samples:     { returns: FFIType.void, args: [FFIType.ptr, FFIType.i32] },
+  tuidaw_generate_click:        { returns: FFIType.i32, args: [FFIType.f32, FFIType.i32] },
   tuidaw_set_click_volume:      { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_set_click_pan:         { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_render:                { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
 })
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-// Greatest common divisor (Euclidean algorithm)
-function gcd(a: number, b: number): number {
-  a = Math.abs(a)
-  b = Math.abs(b)
-  while (b) { const t = b; b = a % b; a = t }
-  return a
-}
-
-// Generate a pre-baked click buffer: N beats with click tone at each beat
-// start. N is chosen so total length is an EXACT INTEGER (via GCD), giving
-// zero cumulative drift when looped with integer modulo.
-// Beat positions use pure integer arithmetic: floor(k * bufLen / N).
-function generateClickBeat(bpm: number): Float32Array {
-  const toneLen = Math.round(SAMPLE_RATE * 0.02) // 20ms = 960 samples
-  const totalPerMinute = SAMPLE_RATE * 60 // 2,880,000
-
-  const bpmScaled = Math.round(bpm * 100)
-  const totalScaled = totalPerMinute * 100
-  const d = gcd(bpmScaled, totalScaled)
-  let numBeats = bpmScaled / d
-
-  const maxBufLen = SAMPLE_RATE * 20 // ~20 seconds
-  const tentativeBufLen = Math.round(numBeats * totalPerMinute / bpm)
-  if (tentativeBufLen > maxBufLen) {
-    numBeats = 1
-  }
-
-  const bufLen = Math.round(numBeats * totalPerMinute / bpm)
-  const buf = new Float32Array(bufLen)
-
-  for (let beat = 0; beat < numBeats; beat++) {
-    const beatStart = Math.floor(beat * bufLen / numBeats)
-    for (let i = 0; i < toneLen && beatStart + i < bufLen; i++) {
-      const t = i / SAMPLE_RATE
-      const envelope = 1.0 - i / toneLen
-      buf[beatStart + i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
-    }
-  }
-
-  return buf
-}
 
 // Render audio offline: returns interleaved stereo buffer
 function render(frameCount: number): Float32Array {
@@ -146,12 +103,12 @@ function findClickOnsets(stereo: Float32Array, threshold: number = 0.1): number[
   return onsets
 }
 
-// Set up click playback at a given BPM and start from position 0.
+// Set up click playback at a given BPM using the native click generator.
+// Generates a buffer long enough for the test duration, starts from position 0.
 // Returns the exact (fractional) samples-per-beat.
-function setupClick(bpm: number): number {
-  const clickBeat = generateClickBeat(bpm)
-  pinnedBuffers.push(clickBeat)
-  lib.symbols.tuidaw_set_click_samples(ptr(clickBeat), clickBeat.length)
+function setupClick(bpm: number, durationSeconds: number = 60): number {
+  const durationFrames = Math.ceil(durationSeconds * SAMPLE_RATE) + SAMPLE_RATE // + 1s margin
+  lib.symbols.tuidaw_generate_click(bpm, durationFrames)
   lib.symbols.tuidaw_set_click(1, bpm)
   lib.symbols.tuidaw_set_click_volume(1.0)
   lib.symbols.tuidaw_set_click_pan(0.0)
@@ -173,14 +130,6 @@ function verifyPrecision(
   let totalAbsError = 0
 
   for (let i = 0; i < onsets.length; i++) {
-    // Ideal position of beat i in the output buffer
-    // When starting from 0: beat n is at output frame where pos = n * spb_exact
-    // The onset is detected 1 sample after the beat boundary (sin(0) = 0)
-    // but the boundary itself is at n * spb_exact, so the onset is at
-    // ceil(n * spb_exact) or floor(n * spb_exact) + 1.
-    //
-    // For non-zero start positions, we need to find which beat number
-    // corresponds to each onset in the output.
     const outputFrame = onsets[i]!
     const absolutePos = outputFrame + startPos
 
@@ -202,7 +151,7 @@ function verifyPrecision(
   console.log(`${label}: ${onsets.length} onsets, max error ${maxFoundError.toFixed(2)} samples (${(maxFoundError / SAMPLE_RATE * 1000).toFixed(3)}ms), avg ${avgError.toFixed(2)}`)
 }
 
-// ── Keep pinned references alive ────────────────────────────────────────────
+// ── Keep pinned references alive (for track samples) ────────────────────────
 const pinnedBuffers: Float32Array[] = []
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -323,13 +272,12 @@ describe("Click precision (offline render)", () => {
 
   test("155 BPM, 5 minutes of playback — zero cumulative drift", () => {
     // Key test: 155 BPM has fractional spb = 18580.6451... per beat.
-    // The pre-baked buffer uses N=31 beats (576000 samples) — an exact integer.
-    // The buffer loops via integer modulo, so drift resets to 0 every 31 beats.
+    // The native generator uses GCD-exact integer math for beat positions.
     // Max error should be < 2 samples at any point (rounding + onset detection).
     const bpm = 155
-    const spbExact = setupClick(bpm)
     const durationSeconds = 300 // 5 minutes
     const numBeats = Math.floor(durationSeconds * bpm / 60)
+    const spbExact = setupClick(bpm, durationSeconds + 10) // extra margin
     const totalFrames = Math.ceil(spbExact * numBeats) + 1000
 
     lib.symbols.tuidaw_play(0)
@@ -356,9 +304,9 @@ describe("Click precision (offline render)", () => {
 
   test("212 BPM, 3 minutes — high BPM stress test", () => {
     const bpm = 212
-    const spbExact = setupClick(bpm)  // 13584.9056...
     const durationSeconds = 180
     const numBeats = Math.floor(durationSeconds * bpm / 60)
+    const spbExact = setupClick(bpm, durationSeconds + 10) // extra margin
     const totalFrames = Math.ceil(spbExact * numBeats) + 1000
 
     lib.symbols.tuidaw_play(0)
