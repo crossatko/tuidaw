@@ -308,6 +308,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 84. **Server Cache-Control for SW**: `web/server.ts` serves `/sw.js` with `Cache-Control: no-cache, no-store, must-revalidate` so browsers always check for service worker updates. Other static files use default caching.
 85. **Track nudge in Web UI**: Touch-friendly `◀` `▶` nudge buttons rendered on the right side of the selected track's waveform area (only shown when stopped and track has audio). Buttons shift track position by 1/16 beat (same as TUI `{`/`}` keys). `◀` trims from start (shift earlier), `▶` prepends silence (shift later). Hit zone `"waveform-nudge"` with `btnAction: "nudge-left" | "nudge-right"`. Keyboard `{`/`}` shortcuts also implemented. Shared `nudgeTrack()` function handles both button and keyboard input. Updates WASM engine via `audio.setTrackSamples()`.
 86. **Full-width volume/pan sliders in Web UI**: Regular track sliders widened from half-width (107px total / 83px rail) to full sidebar width (`FULL_SLIDER_W = SIDEBAR_W - SLIDER_PAD * 2 = 244px` total / 184px rail). `drawMiniSlider()` and `getSliderGeometry()` now accept optional `totalW` parameter — click track sliders remain side-by-side using the default half-width formula. Value text made more prominent: bold 11px font, white color (was dim 9px). Hit testing and drag handlers updated to use matching wider geometry.
+87. **Web recording support**: Full getUserMedia-based recording in the browser. Uses `ScriptProcessorNode` (4096 buffer, mono, 48kHz) for capture — bypasses WASM/native recording path (miniaudio Emscripten capture unreliable). Armed tracks auto-record when Space starts transport. Live punch-in/out via R key or sidebar R button during playback. Recording data polled every animation frame, live-merged into track samples for real-time waveform display. Play button shows red "Rec" indicator during recording. Armed tracks muted during recording (own capture, not playback). Recorded audio written from playhead position forward, preserving existing audio before/after. Multi-track simultaneous recording supported. `web/audio-bridge.ts` has `requestMicAccess()`, `startRecording()`, `pollRecording()`, `stopRecording()` methods.
 
 ## File structure
 
@@ -530,5 +531,4 @@ Mouse zones for sidebar scroll:
 
 ## TODO:
 
-- Web recording support
 - Export mixdown in web UI

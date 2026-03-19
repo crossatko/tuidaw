@@ -289,10 +289,132 @@ export class WebAudioBridge {
     return this.m._tuidaw_get_speed()
   }
 
+  // ── Recording (getUserMedia + ScriptProcessorNode) ─────────────────────
+  // Recording is done entirely in JS — we capture audio from the browser's
+  // getUserMedia API and accumulate samples in a Float32Array buffer.
+  // The WASM recording path (tuidaw_start_recording) is NOT used because
+  // miniaudio's Emscripten capture device support is unreliable across browsers.
+
+  private recStreams: Map<string, MediaStream> = new Map()
+  private recContexts: Map<string, { ctx: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode }> = new Map()
+  private recBuffers: Map<string, Float32Array[]> = new Map() // trackId -> chunks
+  private recLengths: Map<string, number> = new Map() // trackId -> total samples so far
+
+  /** Request microphone access. Call early (on user gesture) to prime the permission.
+   *  Returns true if permission was granted. */
+  async requestMicAccess(): Promise<boolean> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      })
+      // Stop tracks immediately — we just wanted the permission
+      for (const t of stream.getTracks()) t.stop()
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Start recording on a track. Opens getUserMedia and captures samples. */
+  async startRecording(trackId: string): Promise<void> {
+    // Get mic stream
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        sampleRate: 48000,
+      }
+    })
+    this.recStreams.set(trackId, stream)
+
+    // Create an AudioContext at 48kHz for capture
+    const ctx = new AudioContext({ sampleRate: 48000 })
+    const source = ctx.createMediaStreamSource(stream)
+
+    // Use ScriptProcessorNode (widely supported, simpler than AudioWorklet for capture)
+    // Buffer size 4096 = ~85ms at 48kHz — good balance of latency vs overhead
+    const processor = ctx.createScriptProcessor(4096, 1, 1)
+    const chunks: Float32Array[] = []
+    this.recBuffers.set(trackId, chunks)
+    this.recLengths.set(trackId, 0)
+
+    processor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0)
+      const copy = new Float32Array(input.length)
+      copy.set(input)
+      chunks.push(copy)
+      this.recLengths.set(trackId, (this.recLengths.get(trackId) ?? 0) + copy.length)
+    }
+
+    source.connect(processor)
+    processor.connect(ctx.destination) // ScriptProcessorNode requires output connection
+
+    this.recContexts.set(trackId, { ctx, source, processor })
+  }
+
+  /** Poll new recording samples since last poll. Returns new samples or null. */
+  pollRecording(trackId: string): Float32Array | null {
+    const chunks = this.recBuffers.get(trackId)
+    if (!chunks || chunks.length === 0) return null
+
+    // Drain all chunks into a single buffer
+    let totalLen = 0
+    for (const c of chunks) totalLen += c.length
+    if (totalLen === 0) return null
+
+    const merged = new Float32Array(totalLen)
+    let offset = 0
+    for (const c of chunks) {
+      merged.set(c, offset)
+      offset += c.length
+    }
+    // Clear chunks (they've been consumed)
+    chunks.length = 0
+    return merged
+  }
+
+  /** Stop recording on a track. Returns total recorded samples or null. */
+  stopRecording(trackId: string): Float32Array | null {
+    // Drain remaining chunks
+    const remaining = this.pollRecording(trackId)
+
+    // Close audio nodes and stream
+    const nodes = this.recContexts.get(trackId)
+    if (nodes) {
+      nodes.processor.disconnect()
+      nodes.source.disconnect()
+      nodes.ctx.close().catch(() => {})
+      this.recContexts.delete(trackId)
+    }
+
+    const stream = this.recStreams.get(trackId)
+    if (stream) {
+      for (const t of stream.getTracks()) t.stop()
+      this.recStreams.delete(trackId)
+    }
+
+    this.recBuffers.delete(trackId)
+    this.recLengths.delete(trackId)
+
+    return remaining
+  }
+
+  /** Check if any tracks are currently recording */
+  get isRecording(): boolean {
+    return this.recContexts.size > 0
+  }
+
   // ── Cleanup ───────────────────────────────────────────────────────────
 
   destroy(): void {
     if (!this.module) return
+
+    // Stop all recordings
+    for (const trackId of [...this.recContexts.keys()]) {
+      this.stopRecording(trackId)
+    }
+
     // Free all allocated buffers
     for (const ptr of this.allocatedBuffers.values()) {
       this.m._free(ptr)
