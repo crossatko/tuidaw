@@ -197,6 +197,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 - **Separate tsconfigs**: Root tsconfig excludes browser files (`web/app.ts`, `web/audio-bridge.ts`); `web/tsconfig.json` extends root with DOM libs, includes only browser files
 - **Canvas 2D rendering**: Waveforms, beat grid, playhead, track sidebar all rendered via Canvas 2D API
 - **WAV import**: Built-in parser in browser (16/24-bit PCM, 32-bit float, stereo downmix, auto-resample to 48kHz) — no server round-trip needed
+- **BPM detection on import (Web UI)**: Full shared pipeline — detectBPM → resample → findBeatOffset → trim. Auto-sets project BPM when project is empty. Track renamed from filename.
 
 ### OpenTUI Mouse Event API:
 
@@ -277,6 +278,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 63. **Web UI foundation (feature/webui branch)**: Dual-mode entry point (`index.ts` dispatcher), Bun HTTP server on port 3666 with COOP/COEP headers for SharedArrayBuffer, Canvas 2D waveform rendering, beat grid, playhead animation, track sidebar, transport controls (Space/M/S/R/C/+/-), keyboard shortcuts, mouse interaction, WAV file import with built-in parser (16/24-bit PCM, 32-bit float, auto-resample to 48kHz).
 64. **WASM audio engine**: Same `tuidaw_audio.c` compiled to WebAssembly via Emscripten. miniaudio auto-selects Web Audio backend. Typed `AudioBridge` wrapper maps string track IDs to numeric IDs, manages WASM heap memory for sample buffers. All 37 `tuidaw_*` exports available.
 65. **TUI refactoring**: `index.ts` (was 1043 lines) split into 15-line dispatcher + `tui.ts` (1048 lines). TUI functionality preserved.
+66. **Extract BPM detection + DSP to shared utils**: `detectBPM`, `refineBPM`, `refineBPMMulti`, `findBeatOffset` extracted from `AudioEngine` class methods to standalone functions in `src/utils/bpm.ts` (~310 lines). `resample` extracted to `src/utils/dsp.ts` (~25 lines). Both used by TUI (`src/audio-engine.ts`) and Web UI (`web/app.ts`). Web UI import pipeline now runs full BPM detection → resample → beat offset trim → auto-set project BPM → rename track from filename.
 
 ## File structure
 
@@ -318,16 +320,21 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # Device enumeration, recording (poll-based), playback,
 │   │                          # instant pan/volume/mute/solo, click, loop, transport.
 │   │                          # WAV read/write/parse (16/24/32-bit, stereo downmix,
-│   │                          # chunk scanning), resampling (linear interpolation),
-│   │                          # BPM detection (two-pass: onset ACF + sample-level),
-│   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1634 lines.
+│   │                          # chunk scanning), exportMixdown (ffmpeg), saveProject,
+│   │                          # openProject. Imports BPM/DSP from src/utils/.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1200 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
 │   │                          # getSelectedTrack, getArmedTrack, getArmedTracks, formatTime,
 │   │                          # formatBeatPosition, getProjectDurationSamples,
 │   │                          # getProjectDurationSeconds. ~97 lines.
+│   ├── utils/
+│   │   ├── bpm.ts            # BPM detection (shared TUI + Web). detectBPM, refineBPM,
+│   │   │                      # refineBPMMulti, findBeatOffset. Two-pass onset ACF +
+│   │   │                      # multi-candidate sample-level refinement. ~310 lines.
+│   │   └── dsp.ts            # DSP utilities (shared TUI + Web). resample (linear
+│   │                          # interpolation to target sample rate). ~25 lines.
 │   └── ui.ts                 # UIRenderer class - all OpenTUI rendering + mouse handlers.
 │                              # setupMouseHandlers(callbacks) for scroll/volume/pan.
 │                              # Has Tokyo Night color constants. Renders: top bar, sidebar
@@ -344,11 +351,12 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # (required for SharedArrayBuffer / WASM pthreads).
 │   ├── index.html            # HTML shell with Tokyo Night CSS theme, layout structure
 │   │                          # (topbar, sidebar, dual canvas, statusbar), loading overlay.
-│   ├── app.ts                # Main browser app (~580 lines): Canvas 2D waveform rendering,
+│   ├── app.ts                # Main browser app (~1013 lines): Canvas 2D waveform rendering,
 │   │                          # beat grid, playhead animation, track sidebar, transport
 │   │                          # controls, keyboard shortcuts, mouse interaction, WAV import
 │   │                          # with built-in parser (16/24-bit PCM, 32-bit float, resample).
-│   ├── audio-bridge.ts       # Typed wrapper (~220 lines) around WASM tuidaw_* exports.
+│   │                          # BPM detection on import via shared src/utils/bpm.ts.
+│   ├── audio-bridge.ts       # Typed wrapper (~270 lines) around WASM tuidaw_* exports.
 │   │                          # Track ID mapping (string→numeric), WASM heap memory
 │   │                          # management for sample buffers, transport/click/loop/speed.
 │   ├── tsconfig.json         # Extends root, adds DOM/DOM.Iterable libs. Includes only

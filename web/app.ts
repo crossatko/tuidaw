@@ -5,6 +5,8 @@
 // Uses Canvas 2D for waveform rendering and the WASM audio engine.
 
 import { WebAudioBridge, type WebTrack } from "./audio-bridge"
+import { detectBPM, findBeatOffset } from "../src/utils/bpm"
+import { resample } from "../src/utils/dsp"
 
 // ── Tokyo Night Colors ──────────────────────────────────────────────────
 const Colors = {
@@ -864,19 +866,46 @@ async function importWav() {
 
     try {
       const arrayBuf = await file.arrayBuffer()
-      const samples = parseWavFile(new Uint8Array(arrayBuf))
+      const parsed = parseWavFile(new Uint8Array(arrayBuf))
 
-      if (!samples) {
+      if (!parsed) {
         showStatus("Failed to parse WAV file!")
         return
+      }
+
+      // Detect BPM before resampling (use original sample rate for accuracy)
+      const detectedBPM = detectBPM(parsed.samples, parsed.sampleRate)
+
+      // Resample to project sample rate if needed
+      let samples = parsed.sampleRate !== SAMPLE_RATE
+        ? resample(parsed.samples, parsed.sampleRate, SAMPLE_RATE)
+        : parsed.samples
+
+      // Find beat offset and trim audio so first beat sits at sample 0
+      if (detectedBPM) {
+        const beatOffset = findBeatOffset(samples, SAMPLE_RATE, detectedBPM)
+        if (beatOffset > 0 && beatOffset < samples.length) {
+          samples = samples.slice(beatOffset)
+        }
+      }
+
+      // Set project BPM if project is empty (all tracks have no audio)
+      if (detectedBPM) {
+        const projectEmpty = state.tracks.every(t => !t.samples || t.samples.length === 0)
+        if (projectEmpty) {
+          state.bpm = detectedBPM
+          state.originalBpm = detectedBPM
+        }
       }
 
       const track = state.tracks[state.selectedTrackIndex]
       if (track) {
         track.samples = samples
         track.sampleRate = SAMPLE_RATE
+        track.name = file.name.replace(/\.wav$/i, "")
         if (audio.isReady) audio.setTrackSamples(track.id, samples)
-        showStatus(`Imported: ${file.name} (${(samples.length / SAMPLE_RATE).toFixed(1)}s)`)
+        const bpmInfo = detectedBPM ? ` | ${detectedBPM} BPM` : ""
+        showStatus(`Imported: ${file.name} (${(samples.length / SAMPLE_RATE).toFixed(1)}s${bpmInfo})`)
         renderSidebar()
         renderFrame()
       }
@@ -889,8 +918,9 @@ async function importWav() {
   input.click()
 }
 
-/** Minimal WAV parser — 16-bit PCM, mono/stereo, any sample rate */
-function parseWavFile(data: Uint8Array): Float32Array | null {
+/** Minimal WAV parser — 16/24-bit PCM, 32-bit float, mono/stereo, any sample rate.
+ *  Returns raw decoded samples at the source sample rate (no resampling). */
+function parseWavFile(data: Uint8Array): { samples: Float32Array; sampleRate: number } | null {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
 
   // Check RIFF header
@@ -976,22 +1006,7 @@ function parseWavFile(data: Uint8Array): Float32Array | null {
     return null
   }
 
-  // Resample to 48kHz if needed
-  if (sampleRate !== SAMPLE_RATE) {
-    const ratio = SAMPLE_RATE / sampleRate
-    const newLen = Math.floor(monoSamples.length * ratio)
-    const resampled = new Float32Array(newLen)
-    for (let i = 0; i < newLen; i++) {
-      const srcIdx = i / ratio
-      const idx0 = Math.floor(srcIdx)
-      const idx1 = Math.min(idx0 + 1, monoSamples.length - 1)
-      const frac = srcIdx - idx0
-      resampled[i] = monoSamples[idx0] * (1 - frac) + monoSamples[idx1] * frac
-    }
-    return resampled
-  }
-
-  return monoSamples
+  return { samples: monoSamples, sampleRate }
 }
 
 // ── Start ───────────────────────────────────────────────────────────────
