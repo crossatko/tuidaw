@@ -116,7 +116,8 @@ typedef struct {
     _Atomic float playback_speed;
 
     // Output device
-    int           output_device_index;   // -1 = default
+    int           output_device_index;   // -1 = default (requested)
+    int           active_device_index;   // -1 = default (currently active on playback_device)
     int           use_null_backend;      // force null (silent) backend for tests
 
     // Device info cache
@@ -566,6 +567,7 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
+    g_engine.active_device_index = -1;
 
     ma_context_config ctxConfig = ma_context_config_init();
     if (ma_context_init(NULL, 0, &ctxConfig, &g_engine.context) != MA_SUCCESS) {
@@ -595,6 +597,7 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
+    g_engine.active_device_index = -1;
     g_engine.use_null_backend = 1;
 
     ma_backend backends[] = { ma_backend_null };
@@ -706,6 +709,12 @@ EXPORT void tuidaw_set_output_device(int index) {
     g_engine.output_device_index = index;
 }
 
+// Get the currently active output device index (-1 = default).
+// This is the device that was used when tuidaw_start_playback_device() last succeeded.
+EXPORT int tuidaw_get_active_device_index(void) {
+    return g_engine.active_device_index;
+}
+
 // ── Playback Device Management ──────────────────────────────────────────────
 
 // Start (or restart) the playback device. Must be called before playing.
@@ -715,6 +724,7 @@ EXPORT int tuidaw_start_playback_device(void) {
     if (g_engine.playback_active) {
         ma_device_uninit(&g_engine.playback_device);
         g_engine.playback_active = 0;
+        g_engine.active_device_index = -1;
     }
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
@@ -739,6 +749,7 @@ EXPORT int tuidaw_start_playback_device(void) {
     }
 
     g_engine.playback_active = 1;
+    g_engine.active_device_index = g_engine.output_device_index;
     return 0;
 }
 
@@ -747,6 +758,7 @@ EXPORT void tuidaw_stop_playback_device(void) {
     if (g_engine.playback_active) {
         ma_device_uninit(&g_engine.playback_device);
         g_engine.playback_active = 0;
+        g_engine.active_device_index = -1;
     }
 }
 
