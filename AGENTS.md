@@ -199,7 +199,8 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 - **WAV import**: Built-in parser in browser (16/24-bit PCM, 32-bit float, stereo downmix, auto-resample to 48kHz) — no server round-trip needed
 - **BPM detection on import (Web UI)**: Full shared pipeline — detectBPM → resample → findBeatOffset → trim. Auto-sets project BPM when project is empty. Track renamed from filename.
 - **WAV parsing unification**: TUI version used Node `Buffer` API (`readUInt32LE`, `readInt16LE`), Web version used `DataView`/`Uint8Array`. Shared implementation in `src/utils/wav.ts` uses `Uint8Array`/`DataView` which works in both Bun (`Buffer extends Uint8Array`) and browser. Both had identical algorithm: chunk-scanning RIFF/WAVE parser.
-- **Full-canvas conversion**: Previous web UI used HTML DOM (topbar div, sidebar div with innerHTML-rebuilt track rows, statusbar div, 2 canvases). Track heights didn't align between DOM sidebar rows and canvas waveform rows due to HTML margins/padding/borders. Converted to single `<canvas id="app">` filling viewport — all rendering via Canvas 2D. Mouse handling uses zone-based hit testing (`hitTest()` returns zone type + track index + button action).
+- **Full-canvas conversion**: Previous web UI used HTML DOM (topbar div, sidebar div with innerHTML-rebuilt track rows, statusbar div, 2 canvases). Track heights didn't align between DOM sidebar rows and canvas waveform rows due to HTML margins/padding/borders. Converted to single `<canvas id="app">` for sidebar/timeline/waveforms/statusbar — all rendered via Canvas 2D. Mouse handling uses zone-based hit testing (`hitTest()` returns zone type + track index + button action). **Topbar is HTML DOM** (not canvas) — real `<button>` elements guarantee Safari/iOS user activation for file dialogs.
+- **Safari user activation chain**: Safari blocks programmatic `.click()` on file inputs unless it happens in the synchronous call stack of a trusted user gesture. Three things broke this: (1) `async` functions consumed the activation token before reaching `.click()`, (2) file inputs not in the DOM are silently ignored by Safari, (3) `touchstart preventDefault()` on the canvas consumed the activation token. Ultimate fix: move topbar to real DOM buttons so file dialog triggers are native user gestures — canvas `touchstart preventDefault()` doesn't interfere since topbar is outside the canvas.
 
 ### OpenTUI Mouse Event API:
 
@@ -293,6 +294,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 76. **Delete button + waveform swipe scrolling**: `×` delete button on each track in sidebar (top-right, 28x24px). Two-step: first tap clears audio content, second tap removes track (if >1 tracks). Last empty track shows "Last track — nothing to delete" status. Selects track on tap for visual feedback. Waveform area supports touch swipe scrolling via `DragState` type `"waveform-scroll"`.
 77. **Canvas-relative event coordinates**: All pointer/mouse/wheel events use `canvasCoords()` helper (via `getBoundingClientRect()`) instead of raw `clientX/clientY`. Fixes hit testing when canvas has any offset (mobile address bars, non-zero canvas position).
 78. **Safari file dialog fix**: File input elements (`importWav`, `openProject`) are appended to DOM (`display:none`) before `.click()` — Safari silently ignores clicks on detached inputs. Uses `addEventListener("change", ...)` instead of `onchange` for reliability. Elements cleaned up after selection. Import WAV accept broadened to `audio/x-wav,audio/*` for Safari MIME matching.
+79. **Topbar moved to HTML DOM**: Canvas topbar replaced with real `<button>` elements in `<div id="topbar">` in `index.html`. Guarantees Safari/iOS user activation for file dialogs (Import, Open) since button clicks are native user gestures — canvas `touchstart preventDefault()` no longer interferes. `index.html` expanded to ~142 lines with styled buttons, BPM display, speed/time indicators, status message. `app.ts` removed `drawTopbar()`, `getTopbarLayout()`, all topbar hit zones, `BTN_H`, `inRect()`. Added `setupTopbar()` (wires DOM click handlers) and `updateTopbar()` (syncs button states/text from `render()`). Canvas height = `calc(100vh - 56px)`, all y-offsets in canvas rendering start at 0 instead of TOPBAR_H.
 
 ## File structure
 
@@ -368,18 +370,23 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # Bundles app.ts via Bun.build for browser.
 │   │                          # Serves static files with COOP/COEP headers
 │   │                          # (required for SharedArrayBuffer / WASM pthreads).
-│   ├── index.html            # Minimal HTML shell — single <canvas id="app"> + script tag
-│   │                          # + 15 lines CSS. Full app rendered via Canvas 2D. ~26 lines.
-│   ├── app.ts                # Main browser app (~2300 lines): Full-canvas Canvas 2D rendering
-│   │                          # of entire UI (topbar, sidebar, timeline, waveforms, statusbar).
+│   ├── index.html            # HTML shell with DOM topbar (<div id="topbar"> with real
+│   │                          # <button> elements for Play, Loop, Click, BPM +/-, Save,
+│   │                          # Open, Import, Export, +Track) + <canvas id="app"> for
+│   │                          # sidebar/timeline/waveforms/statusbar. OLED-themed CSS.
+│   │                          # Topbar is DOM (not canvas) for Safari/iOS user activation
+│   │                          # compatibility with file dialogs. ~142 lines.
+│   ├── app.ts                # Main browser app (~2100 lines): Canvas 2D rendering
+│   │                          # of sidebar, timeline, waveforms, statusbar (NOT topbar).
 │   │                          # OLED theme (true black bg, white fg, color accents for active states).
 │   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
 │   │                          # (Space/M/S/R/C/+/-/hjkl/arrows/[]/</>/Home/End), mouse
 │   │                          # interaction, WAV import with shared parser + BPM detection.
 │   │                          # Layout: SIDEBAR_W=260, TOPBAR_H=56, TRACK_H=120, CLICK_ROW_H=48.
 │   │                          # Touch-friendly: visual volume/pan sliders, drag interaction,
-│   │                          # double-click reset, topbar buttons (Save, Open, Click, BPM +/-,
-│   │                          # Import, Export, +Track), pointer events, touch preventDefault.
+│   │                          # double-click reset, pointer events, touch preventDefault.
+│   │                          # setupTopbar() wires DOM button handlers, updateTopbar() syncs
+│   │                          # button states/text. Canvas height = calc(100vh - 56px).
 │   │                          # Project save/open: pure JS tar/gzip (CompressionStream API),
 │   │                          # compatible with TUI .tuidaw format (gzipped tarball).
 │   ├── audio-bridge.ts       # Typed wrapper (~270 lines) around WASM tuidaw_* exports.

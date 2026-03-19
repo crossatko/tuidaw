@@ -1,9 +1,8 @@
 // ============================================================================
 // tuidaw Web App — Full-canvas DAW interface (touch-friendly)
 // ============================================================================
-// Single <canvas> renders everything: topbar, sidebar, waveforms, statusbar.
-// No DOM elements besides the canvas itself (+ hidden file input for import).
-// Touch-friendly: larger buttons, visual sliders, all actions via touch.
+// Canvas renders sidebar, waveforms, statusbar. Topbar is real HTML DOM
+// (buttons work natively on iOS Safari — no user-activation workarounds).
 
 import { WebAudioBridge, type WebTrack } from "./audio-bridge"
 import { detectBPM, findBeatOffset } from "../src/utils/bpm"
@@ -43,14 +42,13 @@ const SAMPLE_RATE = 48000
 
 // ── Layout Constants (touch-friendly sizes) ─────────────────────────────
 const SIDEBAR_W = 260
-const TOPBAR_H = 56
+const TOPBAR_H = 56       // height of the DOM topbar — used for canvas offset
 const STATUSBAR_H = 36
-const TIMELINE_H = 48   // must match CLICK_ROW_H so sidebar tracks align with waveform tracks
+const TIMELINE_H = 48     // must match CLICK_ROW_H so sidebar tracks align with waveform tracks
 const TRACK_H = 120
 const CLICK_ROW_H = TIMELINE_H
 
 // Button sizing
-const BTN_H = 36        // topbar button height
 const MSR_BTN_W = 32    // mute/solo/arm button width
 const MSR_BTN_H = 28    // mute/solo/arm button height
 
@@ -144,12 +142,12 @@ if (!_ctx) _debugError("Failed to get 2d context from canvas")
 const ctx = _ctx!
 let dpr = window.devicePixelRatio || 1
 let W = 0  // logical width
-let H = 0  // logical height
+let H = 0  // logical height (canvas only — excludes topbar)
 
 function resize() {
   dpr = window.devicePixelRatio || 1
   W = window.innerWidth
-  H = window.innerHeight
+  H = window.innerHeight - TOPBAR_H   // canvas starts below the DOM topbar
   canvas.width = W * dpr
   canvas.height = H * dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -201,237 +199,24 @@ let lastClickTrack = -99
 // ── Rendering ───────────────────────────────────────────────────────────
 function render() {
   ctx.clearRect(0, 0, W, H)
-  drawTopbar()
   drawSidebar()
   drawTimeline()
   drawWaveformArea()
   drawStatusbar()
-}
-
-// ── Topbar ──────────────────────────────────────────────────────────────
-// Topbar layout: [Play] [Loop] [Click] | [-] BPM [+] | Speed | Time | ... [Import] [Export] [+Track]
-function drawTopbar() {
-  ctx.fillStyle = C.bgDark
-  ctx.fillRect(0, 0, W, TOPBAR_H)
-
-  // Bottom border
-  ctx.fillStyle = C.border
-  ctx.fillRect(0, TOPBAR_H - 1, W, 1)
-
-  const textY = TOPBAR_H / 2 + 5
-  const btnY = (TOPBAR_H - BTN_H) / 2
-  let x = 12
-
-  // ── Play button ───────────────────────────────────────────────────
-  const playW = 80
-  const isPlaying = state.transportState !== "stopped"
-
-  ctx.fillStyle = isPlaying ? C.green : C.bgHighlight
-  roundRect(ctx, x, btnY, playW, BTN_H, 4)
-  ctx.fill()
-  if (!isPlaying) {
-    ctx.strokeStyle = C.border
-    ctx.lineWidth = 1
-    roundRect(ctx, x, btnY, playW, BTN_H, 4)
-    ctx.stroke()
-  }
-
-  ctx.fillStyle = isPlaying ? "#000000" : C.fg
-  ctx.font = "bold 13px monospace"
-  ctx.textAlign = "center"
-  ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + playW / 2, textY)
-  ctx.textAlign = "left"
-  x += playW + 8
-
-  // ── Loop button ───────────────────────────────────────────────────
-  const loopW = 64
-  const hasLoop = state.loopStart !== null && state.loopEnd !== null
-  const settingLoop = state.loopStart !== null && state.loopEnd === null
-
-  ctx.fillStyle = hasLoop ? C.purple : C.bgHighlight
-  roundRect(ctx, x, btnY, loopW, BTN_H, 4)
-  ctx.fill()
-  if (!hasLoop) {
-    ctx.strokeStyle = settingLoop ? C.purple : C.border
-    ctx.lineWidth = 1
-    roundRect(ctx, x, btnY, loopW, BTN_H, 4)
-    ctx.stroke()
-  }
-
-  ctx.fillStyle = hasLoop ? "#000000" : (settingLoop ? C.purple : C.fgDim)
-  ctx.font = "bold 12px monospace"
-  ctx.textAlign = "center"
-  ctx.fillText(settingLoop ? "Loop..." : "Loop", x + loopW / 2, textY)
-  ctx.textAlign = "left"
-  x += loopW + 8
-
-  // ── Click button ──────────────────────────────────────────────────
-  const clickW = 64
-  ctx.fillStyle = state.clickEnabled ? C.cyan : C.bgHighlight
-  roundRect(ctx, x, btnY, clickW, BTN_H, 4)
-  ctx.fill()
-  if (!state.clickEnabled) {
-    ctx.strokeStyle = C.border
-    ctx.lineWidth = 1
-    roundRect(ctx, x, btnY, clickW, BTN_H, 4)
-    ctx.stroke()
-  }
-
-  ctx.fillStyle = state.clickEnabled ? "#000000" : C.fgDim
-  ctx.font = "bold 12px monospace"
-  ctx.textAlign = "center"
-  ctx.fillText("Click", x + clickW / 2, textY)
-  ctx.textAlign = "left"
-  x += clickW + 16
-
-  // ── BPM: [-] value [+] ───────────────────────────────────────────
-  const bpmBtnW = 32
-  // Minus button
-  ctx.fillStyle = C.bgHighlight
-  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
-  ctx.fill()
-  ctx.strokeStyle = C.border
-  ctx.lineWidth = 1
-  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
-  ctx.stroke()
-  ctx.fillStyle = C.fg
-  ctx.font = "bold 16px monospace"
-  ctx.textAlign = "center"
-  ctx.fillText("-", x + bpmBtnW / 2, textY + 1)
-  x += bpmBtnW + 4
-
-  // BPM value
-  ctx.fillStyle = C.cyan
-  ctx.font = "bold 14px monospace"
-  ctx.textAlign = "center"
-  const bpmStr = `${state.bpm} BPM`
-  const bpmTextW = ctx.measureText(bpmStr).width + 16
-  ctx.fillText(bpmStr, x + bpmTextW / 2, textY)
-  x += bpmTextW + 4
-
-  // Plus button
-  ctx.fillStyle = C.bgHighlight
-  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
-  ctx.fill()
-  ctx.strokeStyle = C.border
-  ctx.lineWidth = 1
-  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
-  ctx.stroke()
-  ctx.fillStyle = C.fg
-  ctx.font = "bold 16px monospace"
-  ctx.textAlign = "center"
-  ctx.fillText("+", x + bpmBtnW / 2, textY + 1)
-  ctx.textAlign = "left"
-  x += bpmBtnW + 12
-
-  // ── Speed % ───────────────────────────────────────────────────────
-  const speed = state.bpm / state.originalBpm
-  if (Math.abs(speed - 1) > 0.001) {
-    ctx.fillStyle = C.orange
-    ctx.font = "12px monospace"
-    ctx.fillText(`${Math.round(speed * 100)}%`, x, textY)
-    x += 50
-  }
-
-  // ── Time ──────────────────────────────────────────────────────────
-  const seconds = state.playheadPosition / SAMPLE_RATE
-  const mins = Math.floor(seconds / 60)
-  const secs = (seconds % 60).toFixed(1)
-  ctx.fillStyle = C.fgDim
-  ctx.font = "13px monospace"
-  ctx.fillText(`${mins}:${secs.padStart(4, "0")}`, x, textY)
-
-  // ── Right-aligned buttons: [Save] [Open] [Import] [Export] [+Track] ────
-  const rightBtns = [
-    { label: "+Track", key: "add-track", w: 72 },
-    { label: "Export", key: "export", w: 64 },
-    { label: "Import", key: "import", w: 64 },
-    { label: "Open", key: "open", w: 56 },
-    { label: "Save", key: "save", w: 56 },
-  ]
-  let rx = W - 12
-  for (const btn of rightBtns) {
-    rx -= btn.w
-    ctx.fillStyle = C.bgHighlight
-    roundRect(ctx, rx, btnY, btn.w, BTN_H, 4)
-    ctx.fill()
-    ctx.strokeStyle = C.border
-    ctx.lineWidth = 1
-    roundRect(ctx, rx, btnY, btn.w, BTN_H, 4)
-    ctx.stroke()
-    ctx.fillStyle = C.fgDim
-    ctx.font = "bold 11px monospace"
-    ctx.textAlign = "center"
-    ctx.fillText(btn.label, rx + btn.w / 2, textY)
-    ctx.textAlign = "left"
-    rx -= 8
-  }
-
-  // ── Status message (before right buttons) ─────────────────────────
-  if (state.statusMessage) {
-    ctx.fillStyle = C.yellow
-    ctx.font = "12px monospace"
-    ctx.textAlign = "right"
-    ctx.fillText(state.statusMessage, rx - 8, textY)
-    ctx.textAlign = "left"
-  }
-}
-
-// ── Compute topbar button positions (must match drawTopbar) ─────────────
-function getTopbarLayout() {
-  const btnY = (TOPBAR_H - BTN_H) / 2
-  let x = 12
-  const playW = 80
-  const play = { x, y: btnY, w: playW, h: BTN_H }
-  x += playW + 8
-  const loopW = 64
-  const loop = { x, y: btnY, w: loopW, h: BTN_H }
-  x += loopW + 8
-  const clickW = 64
-  const click = { x, y: btnY, w: clickW, h: BTN_H }
-  x += clickW + 16
-  const bpmBtnW = 32
-  const bpmMinus = { x, y: btnY, w: bpmBtnW, h: BTN_H }
-  x += bpmBtnW + 4
-  // BPM text area
-  ctx.font = "bold 14px monospace"
-  const bpmStr = `${state.bpm} BPM`
-  const bpmTextW = ctx.measureText(bpmStr).width + 16
-  const bpmText = { x, y: btnY, w: bpmTextW, h: BTN_H }
-  x += bpmTextW + 4
-  const bpmPlus = { x, y: btnY, w: bpmBtnW, h: BTN_H }
-
-  // Right-aligned buttons
-  let rx = W - 12
-  const addTrackW = 72
-  const addTrack = { x: rx - addTrackW, y: btnY, w: addTrackW, h: BTN_H }
-  rx -= addTrackW + 8
-  const exportW = 64
-  const exportBtn = { x: rx - exportW, y: btnY, w: exportW, h: BTN_H }
-  rx -= exportW + 8
-  const importW = 64
-  const importBtn = { x: rx - importW, y: btnY, w: importW, h: BTN_H }
-  rx -= importW + 8
-  const openW = 56
-  const openBtn = { x: rx - openW, y: btnY, w: openW, h: BTN_H }
-  rx -= openW + 8
-  const saveW = 56
-  const saveBtn = { x: rx - saveW, y: btnY, w: saveW, h: BTN_H }
-
-  return { play, loop, click, bpmMinus, bpmText, bpmPlus, saveBtn, openBtn, importBtn, exportBtn, addTrack }
+  updateTopbar()
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────
 function drawSidebar() {
-  const sidebarH = H - TOPBAR_H - STATUSBAR_H
+  const sidebarH = H - STATUSBAR_H
   ctx.fillStyle = C.bgDark
-  ctx.fillRect(0, TOPBAR_H, SIDEBAR_W, sidebarH)
+  ctx.fillRect(0, 0, SIDEBAR_W, sidebarH)
 
   // Right border
   ctx.fillStyle = C.border
-  ctx.fillRect(SIDEBAR_W - 1, TOPBAR_H, 1, sidebarH)
+  ctx.fillRect(SIDEBAR_W - 1, 0, 1, sidebarH)
 
-  let y = TOPBAR_H
+  let y = 0
 
   // ── Click track row ───────────────────────────────────────────────
   drawClickTrackRow(y)
@@ -665,7 +450,7 @@ function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, 
   ctx.fillRect(knobX + SLIDER_KNOB_W / 2 - 1, knobY + 4, 2, SLIDER_KNOB_H - 8)
 }
 
-// Get slider geometry for hit testing (returns { trackX, trackW, sliderY } given the same params as drawMiniSlider)
+// Get slider geometry for hit testing (returns { trackX, trackW } given the same params as drawMiniSlider)
 function getSliderGeometry(sliderX: number): { trackX: number; trackW: number } {
   const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
   const trackW = sliderW - 24
@@ -676,7 +461,7 @@ function getSliderGeometry(sliderX: number): { trackX: number; trackW: number } 
 // ── Timeline ────────────────────────────────────────────────────────────
 function drawTimeline() {
   const x0 = SIDEBAR_W
-  const y0 = TOPBAR_H
+  const y0 = 0
   const w = W - SIDEBAR_W
   const h = TIMELINE_H
 
@@ -799,9 +584,9 @@ function drawLoopRegionOnTimeline(x0: number, y0: number, w: number, h: number, 
 // ── Waveform Area ───────────────────────────────────────────────────────
 function drawWaveformArea() {
   const x0 = SIDEBAR_W
-  const y0 = TOPBAR_H + TIMELINE_H
+  const y0 = TIMELINE_H
   const w = W - SIDEBAR_W
-  const areaH = H - TOPBAR_H - TIMELINE_H - STATUSBAR_H
+  const areaH = H - TIMELINE_H - STATUSBAR_H
 
   ctx.fillStyle = C.bg
   ctx.fillRect(x0, y0, w, areaH)
@@ -967,6 +752,151 @@ function drawStatusbar() {
   ctx.fillText(shortcuts, 16, textY)
 }
 
+// ── DOM Topbar ──────────────────────────────────────────────────────────
+// All topbar buttons are real HTML elements defined in index.html.
+// setupTopbar() wires click handlers; updateTopbar() syncs visual state.
+
+function setupTopbar() {
+  const btnPlay = document.getElementById("btn-play")!
+  const btnLoop = document.getElementById("btn-loop")!
+  const btnClick = document.getElementById("btn-click")!
+  const btnBpmMinus = document.getElementById("btn-bpm-minus")!
+  const btnBpmPlus = document.getElementById("btn-bpm-plus")!
+  const bpmDisplay = document.getElementById("bpm-display")!
+  const btnSave = document.getElementById("btn-save")!
+  const btnOpen = document.getElementById("btn-open")!
+  const btnImport = document.getElementById("btn-import")!
+  const btnExport = document.getElementById("btn-export")!
+  const btnAddTrack = document.getElementById("btn-add-track")!
+
+  btnPlay.addEventListener("click", () => {
+    if (state.transportState !== "stopped") stopTransport()
+    else play()
+  })
+
+  btnLoop.addEventListener("click", () => {
+    toggleLoop()
+  })
+
+  btnClick.addEventListener("click", () => {
+    state.clickEnabled = !state.clickEnabled
+    if (state.transportState !== "stopped") {
+      if (state.clickEnabled) {
+        if (!audio.generateClick(state.bpm, getClickDuration())) {
+          showStatus("Click buffer allocation failed")
+        }
+        audio.setClick(true, state.bpm)
+        audio.setClickVolume(state.clickVolume)
+        audio.setClickPan(state.clickPan)
+      } else {
+        audio.setClick(false, 0)
+      }
+    }
+    render()
+  })
+
+  btnBpmMinus.addEventListener("click", () => {
+    state.bpm = Math.max(20, state.bpm - 1)
+    if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
+    render()
+  })
+
+  btnBpmPlus.addEventListener("click", () => {
+    state.bpm = Math.min(300, state.bpm + 1)
+    if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
+    render()
+  })
+
+  // Double-click BPM display resets to originalBpm
+  let bpmLastClick = 0
+  bpmDisplay.addEventListener("click", () => {
+    const now = performance.now()
+    if (now - bpmLastClick < 400) {
+      state.bpm = state.originalBpm
+      if (audio.isReady) audio.setSpeed(1)
+      showStatus(`BPM reset to ${state.originalBpm}`)
+      render()
+    }
+    bpmLastClick = now
+  })
+
+  // Import and Open use direct DOM click handlers — guaranteed user activation
+  // on all browsers including iOS Safari (no touchstart preventDefault issue).
+  btnImport.addEventListener("click", () => {
+    importWav()
+  })
+
+  btnOpen.addEventListener("click", () => {
+    openProject()
+  })
+
+  btnSave.addEventListener("click", () => {
+    saveProject()
+  })
+
+  btnExport.addEventListener("click", () => {
+    showStatus("Export not yet implemented in Web UI")
+  })
+
+  btnAddTrack.addEventListener("click", () => {
+    if (state.transportState !== "stopped") {
+      showStatus("Stop transport first (Space)")
+    } else {
+      const newTrack = createTrack(`Track ${nextTrackNum++}`, state.tracks.length)
+      state.tracks.push(newTrack)
+      if (audio.isReady) audio.syncTrack(newTrack)
+      state.selectedTrackIndex = state.tracks.length - 1
+      render()
+    }
+  })
+}
+
+/** Sync DOM topbar button states/classes and text displays with current app state */
+function updateTopbar() {
+  const btnPlay = document.getElementById("btn-play")!
+  const btnLoop = document.getElementById("btn-loop")!
+  const btnClick = document.getElementById("btn-click")!
+  const bpmDisplay = document.getElementById("bpm-display")!
+  const speedDisplay = document.getElementById("speed-display")!
+  const timeDisplay = document.getElementById("time-display")!
+  const statusMsg = document.getElementById("status-msg")!
+
+  // Play button
+  const isPlaying = state.transportState !== "stopped"
+  btnPlay.textContent = isPlaying ? "|| Pause" : "\u25B6 Play"
+  btnPlay.classList.toggle("active-green", isPlaying)
+
+  // Loop button
+  const hasLoop = state.loopStart !== null && state.loopEnd !== null
+  const settingLoop = state.loopStart !== null && state.loopEnd === null
+  btnLoop.textContent = settingLoop ? "Loop..." : "Loop"
+  btnLoop.classList.toggle("active-purple", hasLoop)
+  btnLoop.classList.toggle("setting-loop", settingLoop && !hasLoop)
+
+  // Click button
+  btnClick.classList.toggle("active-cyan", state.clickEnabled)
+
+  // BPM
+  bpmDisplay.textContent = `${state.bpm} BPM`
+
+  // Speed
+  const speed = state.bpm / state.originalBpm
+  if (Math.abs(speed - 1) > 0.001) {
+    speedDisplay.textContent = `${Math.round(speed * 100)}%`
+  } else {
+    speedDisplay.textContent = ""
+  }
+
+  // Time
+  const seconds = state.playheadPosition / SAMPLE_RATE
+  const mins = Math.floor(seconds / 60)
+  const secs = (seconds % 60).toFixed(1)
+  timeDisplay.textContent = `${mins}:${secs.padStart(4, "0")}`
+
+  // Status message
+  statusMsg.textContent = state.statusMessage
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 function formatPan(pan: number): string {
   if (Math.abs(pan) < 0.01) return "C"
@@ -997,8 +927,14 @@ function showStatus(msg: string) {
   if (state.statusTimeout) clearTimeout(state.statusTimeout)
   state.statusTimeout = setTimeout(() => {
     state.statusMessage = ""
+    // Update DOM status and re-render canvas
+    const statusMsg = document.getElementById("status-msg")
+    if (statusMsg) statusMsg.textContent = ""
     render()
   }, 3000)
+  // Immediately update DOM status element
+  const statusMsg = document.getElementById("status-msg")
+  if (statusMsg) statusMsg.textContent = msg
   render()
 }
 
@@ -1155,11 +1091,8 @@ function ensurePlayheadVisible() {
   }
 }
 
-// ── Hit zones for mouse ─────────────────────────────────────────────────
-type Zone = "topbar-play" | "topbar-loop" | "topbar-click" | "topbar-bpm-minus" | "topbar-bpm-plus" | "topbar-bpm-text"
-           | "topbar-save" | "topbar-open"
-           | "topbar-import" | "topbar-export" | "topbar-add-track" | "topbar"
-           | "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
+// ── Hit zones for mouse (canvas only — topbar is DOM) ───────────────────
+type Zone = "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
            | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
            | "timeline" | "waveform" | "statusbar" | "none"
 
@@ -1175,26 +1108,6 @@ interface HitResult {
 function hitTest(cx: number, cy: number): HitResult {
   const result: HitResult = { zone: "none", trackIndex: -1, localX: cx, localY: cy }
 
-  // Topbar
-  if (cy < TOPBAR_H) {
-    const layout = getTopbarLayout()
-
-    if (inRect(cx, cy, layout.play)) { result.zone = "topbar-play"; return result }
-    if (inRect(cx, cy, layout.loop)) { result.zone = "topbar-loop"; return result }
-    if (inRect(cx, cy, layout.click)) { result.zone = "topbar-click"; return result }
-    if (inRect(cx, cy, layout.bpmMinus)) { result.zone = "topbar-bpm-minus"; return result }
-    if (inRect(cx, cy, layout.bpmPlus)) { result.zone = "topbar-bpm-plus"; return result }
-    if (inRect(cx, cy, layout.bpmText)) { result.zone = "topbar-bpm-text"; return result }
-    if (inRect(cx, cy, layout.importBtn)) { result.zone = "topbar-import"; return result }
-    if (inRect(cx, cy, layout.exportBtn)) { result.zone = "topbar-export"; return result }
-    if (inRect(cx, cy, layout.addTrack)) { result.zone = "topbar-add-track"; return result }
-    if (inRect(cx, cy, layout.saveBtn)) { result.zone = "topbar-save"; return result }
-    if (inRect(cx, cy, layout.openBtn)) { result.zone = "topbar-open"; return result }
-
-    result.zone = "topbar"
-    return result
-  }
-
   // Statusbar
   if (cy >= H - STATUSBAR_H) {
     result.zone = "statusbar"
@@ -1203,7 +1116,7 @@ function hitTest(cx: number, cy: number): HitResult {
 
   // Sidebar
   if (cx < SIDEBAR_W) {
-    const sideY = cy - TOPBAR_H
+    const sideY = cy
 
     // Click track row
     if (sideY >= 0 && sideY < CLICK_ROW_H) {
@@ -1286,7 +1199,7 @@ function hitTest(cx: number, cy: number): HitResult {
   }
 
   // Timeline
-  if (cy < TOPBAR_H + TIMELINE_H) {
+  if (cy < TIMELINE_H) {
     result.zone = "timeline"
     result.localX = cx - SIDEBAR_W
     return result
@@ -1295,14 +1208,10 @@ function hitTest(cx: number, cy: number): HitResult {
   // Waveform area
   result.zone = "waveform"
   result.localX = cx - SIDEBAR_W
-  result.localY = cy - TOPBAR_H - TIMELINE_H
+  result.localY = cy - TIMELINE_H
   result.trackIndex = Math.floor(result.localY / TRACK_H)
   if (result.trackIndex >= state.tracks.length) result.trackIndex = -1
   return result
-}
-
-function inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
-  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
 }
 
 /** Convert a pointer/mouse event's clientX/clientY to canvas-relative logical coords */
@@ -1324,7 +1233,7 @@ function checkDoubleClick(zone: string, trackIndex: number): boolean {
   return isDouble
 }
 
-// ── Mouse Handling ──────────────────────────────────────────────────────
+// ── Mouse Handling (canvas only — topbar uses DOM handlers) ─────────────
 function setupMouse() {
   // Pointer down (for click + drag start)
   canvas.addEventListener("pointerdown", (e) => {
@@ -1332,82 +1241,6 @@ function setupMouse() {
     const hit = hitTest(cx, cy)
 
     switch (hit.zone) {
-      case "topbar-play":
-        if (state.transportState !== "stopped") stopTransport()
-        else play()
-        break
-
-      case "topbar-loop":
-        toggleLoop()
-        break
-
-      case "topbar-click":
-        state.clickEnabled = !state.clickEnabled
-        if (state.transportState !== "stopped") {
-          if (state.clickEnabled) {
-            if (!audio.generateClick(state.bpm, getClickDuration())) {
-              showStatus("Click buffer allocation failed")
-            }
-            audio.setClick(true, state.bpm)
-            audio.setClickVolume(state.clickVolume)
-            audio.setClickPan(state.clickPan)
-          } else {
-            audio.setClick(false, 0)
-          }
-        }
-        render()
-        break
-
-      case "topbar-bpm-minus":
-        state.bpm = Math.max(20, state.bpm - 1)
-        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
-        render()
-        break
-
-      case "topbar-bpm-plus":
-        state.bpm = Math.min(300, state.bpm + 1)
-        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
-        render()
-        break
-
-      case "topbar-bpm-text":
-        // Double-click resets BPM to original
-        if (checkDoubleClick("bpm", -1)) {
-          state.bpm = state.originalBpm
-          if (audio.isReady) audio.setSpeed(1)
-          showStatus(`BPM reset to ${state.originalBpm}`)
-          render()
-        }
-        break
-
-      case "topbar-import":
-        importWav()
-        break
-
-      case "topbar-export":
-        showStatus("Export not yet implemented in Web UI")
-        break
-
-      case "topbar-save":
-        saveProject()
-        break
-
-      case "topbar-open":
-        openProject()
-        break
-
-      case "topbar-add-track":
-        if (state.transportState !== "stopped") {
-          showStatus("Stop transport first (Space)")
-        } else {
-          const newTrack = createTrack(`Track ${nextTrackNum++}`, state.tracks.length)
-          state.tracks.push(newTrack)
-          if (audio.isReady) audio.syncTrack(newTrack)
-          state.selectedTrackIndex = state.tracks.length - 1
-          render()
-        }
-        break
-
       case "sidebar-click":
         state.selectedTrackIndex = -1
         render()
@@ -1553,7 +1386,7 @@ function setupMouse() {
     if (!drag) {
       // Cursor style
       const hit = hitTest(cx, cy)
-      if (hit.zone !== "none" && hit.zone !== "topbar" && hit.zone !== "statusbar" && hit.zone !== "waveform") {
+      if (hit.zone !== "none" && hit.zone !== "statusbar" && hit.zone !== "waveform") {
         canvas.style.cursor = "pointer"
       } else {
         canvas.style.cursor = "default"
@@ -1665,21 +1498,9 @@ function setupMouse() {
     }
   }, { passive: false })
 
-  // Touch events: prevent default to avoid scrolling/zooming on iPad.
-  // IMPORTANT: Do NOT preventDefault on touches that land on buttons requiring
-  // user activation (Import, Open) — iOS Safari consumes the user gesture token
-  // when touchstart is prevented, so the subsequent pointerdown can no longer
-  // open file dialogs programmatically.
-  canvas.addEventListener("touchstart", (e) => {
-    const touch = e.touches[0]
-    if (touch) {
-      const { cx, cy } = canvasCoords(touch)
-      const hit = hitTest(cx, cy)
-      // Let user activation pass through for file-dialog buttons
-      if (hit.zone === "topbar-import" || hit.zone === "topbar-open") return
-    }
-    e.preventDefault()
-  }, { passive: false })
+  // Touch events: unconditional preventDefault on canvas to block iOS scroll/zoom.
+  // Topbar is a separate DOM element, so its touch events are not affected.
+  canvas.addEventListener("touchstart", (e) => { e.preventDefault() }, { passive: false })
   canvas.addEventListener("touchmove", (e) => { e.preventDefault() }, { passive: false })
 }
 
@@ -2365,7 +2186,7 @@ function openProject() {
 
 // ── Init ────────────────────────────────────────────────────────────────
 async function init() {
-  _debugLog(`init: ${W}x${H}, dpr=${dpr}`)
+  _debugLog(`init: ${window.innerWidth}x${window.innerHeight}, dpr=${dpr}`)
   resize()
   window.addEventListener("resize", resize)
 
@@ -2383,7 +2204,8 @@ async function init() {
     return
   }
 
-  _debugLog("Setting up mouse + keyboard...")
+  _debugLog("Setting up topbar + mouse + keyboard...")
+  setupTopbar()
   setupMouse()
   setupKeyboard()
   _debugLog("Rendering initial frame...")
