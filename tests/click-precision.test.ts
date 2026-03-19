@@ -263,12 +263,12 @@ describe("Click precision (offline render)", () => {
     lib.symbols.tuidaw_stop()
 
     const onsets = findClickOnsets(output, 0.05)
-    // Click frame counter resets to 0 on play, so clicks start from output
-    // frame 0 regardless of content-space start position. This means the
-    // first click is at output frame 0 (not offset by startPos).
+    // Click counter is set to startPos/speed on play, so clicks align to the
+    // absolute beat grid. The first click appears at output frame
+    // (nextBeat - startPos) = (24000 - 5000) = 19000, then every 24000 frames.
+    // Use startPos to verify against absolute beat positions.
     expect(onsets.length).toBeGreaterThanOrEqual(8)
-    // Verify against output-space positions (startPos=0 since counter resets)
-    verifyPrecision(onsets, spbExact, "120BPM-nonzero", 0)
+    verifyPrecision(onsets, spbExact, "120BPM-nonzero", startPos)
   })
 
   test("155 BPM, 5 minutes of playback — zero cumulative drift", () => {
