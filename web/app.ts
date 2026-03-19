@@ -24,6 +24,7 @@ const C = {
   red: "#f05060",
   orange: "#e89040",
   yellow: "#e0c050",
+  purple: "#b080e0",
 } as const
 
 const TRACK_COLORS = [
@@ -187,7 +188,30 @@ function drawTopbar() {
   ctx.textAlign = "center"
   ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + btnW / 2, textY)
   ctx.textAlign = "left"
-  x += btnW + 16
+  x += btnW + 8
+
+  // Loop button
+  const loopBtnW = 64
+  const hasLoop = state.loopStart !== null && state.loopEnd !== null
+  const settingLoop = state.loopStart !== null && state.loopEnd === null
+
+  ctx.fillStyle = hasLoop ? C.purple : (settingLoop ? C.bgHighlight : C.bgHighlight)
+  roundRect(ctx, x, btnY, loopBtnW, btnH, 4)
+  ctx.fill()
+
+  if (!hasLoop) {
+    ctx.strokeStyle = settingLoop ? C.purple : C.border
+    ctx.lineWidth = 1
+    roundRect(ctx, x, btnY, loopBtnW, btnH, 4)
+    ctx.stroke()
+  }
+
+  ctx.fillStyle = hasLoop ? "#000000" : (settingLoop ? C.purple : C.fgDim)
+  ctx.font = "bold 11px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText(settingLoop ? "Loop..." : "Loop", x + loopBtnW / 2, textY)
+  ctx.textAlign = "left"
+  x += loopBtnW + 16
 
   // BPM
   ctx.fillStyle = C.cyan
@@ -402,10 +426,69 @@ function drawTimeline() {
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
-    ctx.fillStyle = "rgba(91, 156, 245, 0.2)"
+    ctx.fillStyle = "rgba(176, 128, 224, 0.25)"
     const clampX1 = Math.max(x0, lx1)
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, h)
+
+    // Loop start marker
+    if (lx1 >= x0 && lx1 <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(lx1, y0)
+      ctx.lineTo(lx1, y0 + h)
+      ctx.stroke()
+      // Triangle marker
+      ctx.fillStyle = C.purple
+      ctx.beginPath()
+      ctx.moveTo(lx1, y0)
+      ctx.lineTo(lx1 + 6, y0)
+      ctx.lineTo(lx1, y0 + 8)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    // Loop end marker
+    if (lx2 >= x0 && lx2 <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(lx2, y0)
+      ctx.lineTo(lx2, y0 + h)
+      ctx.stroke()
+      // Triangle marker
+      ctx.fillStyle = C.purple
+      ctx.beginPath()
+      ctx.moveTo(lx2, y0)
+      ctx.lineTo(lx2 - 6, y0)
+      ctx.lineTo(lx2, y0 + 8)
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+
+  // Loop start indicator (when setting loop, before end is placed)
+  if (state.loopStart !== null && state.loopEnd === null) {
+    const lx = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
+    if (lx >= x0 && lx <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 2
+      ctx.setLineDash([4, 4])
+      ctx.beginPath()
+      ctx.moveTo(lx, y0)
+      ctx.lineTo(lx, y0 + h)
+      ctx.stroke()
+      ctx.setLineDash([])
+      // Triangle marker
+      ctx.fillStyle = C.purple
+      ctx.beginPath()
+      ctx.moveTo(lx, y0)
+      ctx.lineTo(lx + 6, y0)
+      ctx.lineTo(lx, y0 + 8)
+      ctx.closePath()
+      ctx.fill()
+    }
   }
 
   // Playhead
@@ -460,10 +543,43 @@ function drawWaveformArea() {
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
-    ctx.fillStyle = "rgba(91, 156, 245, 0.1)"
+    ctx.fillStyle = "rgba(176, 128, 224, 0.08)"
     const clampX1 = Math.max(x0, lx1)
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, gridH)
+
+    // Loop start/end markers (vertical lines spanning waveform area)
+    if (lx1 >= x0 && lx1 <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(lx1, y0)
+      ctx.lineTo(lx1, y0 + gridH)
+      ctx.stroke()
+    }
+    if (lx2 >= x0 && lx2 <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(lx2, y0)
+      ctx.lineTo(lx2, y0 + gridH)
+      ctx.stroke()
+    }
+  }
+
+  // Loop start indicator (when setting, dashed line)
+  if (state.loopStart !== null && state.loopEnd === null) {
+    const lx = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
+    if (lx >= x0 && lx <= x0 + w) {
+      ctx.strokeStyle = C.purple
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([4, 4])
+      ctx.beginPath()
+      ctx.moveTo(lx, y0)
+      ctx.lineTo(lx, y0 + gridH)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
   }
 
   // Tracks
@@ -555,7 +671,7 @@ function drawStatusbar() {
   ctx.fillStyle = C.fgDim
   ctx.font = "11px monospace"
   const textY = y + STATUSBAR_H / 2 + 4
-  const shortcuts = "Space Play  R Arm  M Mute  S Solo  C Click  +/- BPM  hjkl Nav  I Import  A Add  D Del"
+  const shortcuts = "Space Play  P Loop  R Arm  M Mute  S Solo  C Click  +/- BPM  hjkl Nav  I Import"
   ctx.fillText(shortcuts, 16, textY)
 }
 
@@ -594,6 +710,46 @@ function showStatus(msg: string) {
   render()
 }
 
+// ── Loop ────────────────────────────────────────────────────────────────
+function toggleLoop() {
+  if (state.transportState !== "stopped") {
+    // During transport, P only clears the loop
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      state.loopStart = null
+      state.loopEnd = null
+      audio.setLoop(null, null)
+      showStatus("Loop cleared")
+    }
+    render()
+    return
+  }
+
+  // 3-step cycle when stopped
+  if (state.loopStart === null && state.loopEnd === null) {
+    // Step 1: set loop start at playhead
+    state.loopStart = state.playheadPosition
+    showStatus("Loop start set — move playhead, press P again for end")
+  } else if (state.loopStart !== null && state.loopEnd === null) {
+    // Step 2: set loop end at playhead
+    const a = state.loopStart
+    const b = state.playheadPosition
+    if (a === b) {
+      state.loopStart = null
+      showStatus("Loop cancelled (start = end)")
+    } else {
+      state.loopStart = Math.min(a, b)
+      state.loopEnd = Math.max(a, b)
+      showStatus("Loop region set — press P to clear")
+    }
+  } else {
+    // Step 3: clear loop
+    state.loopStart = null
+    state.loopEnd = null
+    showStatus("Loop cleared")
+  }
+  render()
+}
+
 // ── Transport ───────────────────────────────────────────────────────────
 async function play() {
   const ready = await ensureAudioReady()
@@ -618,7 +774,13 @@ async function play() {
   }
 
   if (state.loopStart !== null && state.loopEnd !== null) {
-    audio.setLoop(state.loopStart, state.loopEnd)
+    if (state.playheadPosition <= state.loopEnd) {
+      audio.setLoop(state.loopStart, state.loopEnd)
+    } else {
+      audio.setLoop(null, null)
+    }
+  } else {
+    audio.setLoop(null, null)
   }
 
   audio.setSpeed(state.bpm / state.originalBpm)
@@ -664,10 +826,35 @@ function getClickDuration(): number {
 }
 
 // ── Scrolling ───────────────────────────────────────────────────────────
+
+function syncLoopAfterSeek() {
+  if (state.loopStart !== null && state.loopEnd !== null) {
+    if (state.playheadPosition > state.loopEnd) {
+      // Playhead is past the loop — disable native loop so playback continues linearly
+      audio.setLoop(null, null)
+    } else {
+      // Playhead is before or inside the loop — enable it
+      audio.setLoop(state.loopStart, state.loopEnd)
+    }
+  }
+}
+
 function autoScroll() {
   const w = W - SIDEBAR_W
   const samplesPerCol = getSamplesPerCol(w)
   const visibleSamples = w * samplesPerCol
+
+  // Loop-aware: center loop region on screen when it fits and playhead is inside
+  if (state.loopStart !== null && state.loopEnd !== null) {
+    const loopLen = state.loopEnd - state.loopStart
+    if (loopLen < visibleSamples &&
+        state.playheadPosition >= state.loopStart &&
+        state.playheadPosition <= state.loopEnd) {
+      const loopCenter = state.loopStart + loopLen / 2
+      state.scrollOffset = Math.max(0, loopCenter - Math.floor(visibleSamples / 2))
+      return
+    }
+  }
 
   if (state.playheadPosition < state.scrollOffset) {
     state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples * 0.2))
@@ -688,7 +875,7 @@ function ensurePlayheadVisible() {
 }
 
 // ── Hit zones for mouse ─────────────────────────────────────────────────
-type Zone = "topbar-play" | "topbar" | "sidebar-click" | "sidebar-track" | "sidebar-btn"
+type Zone = "topbar-play" | "topbar-loop" | "topbar" | "sidebar-click" | "sidebar-track" | "sidebar-btn"
            | "timeline" | "waveform" | "statusbar" | "none"
 
 interface HitResult {
@@ -704,9 +891,13 @@ function hitTest(cx: number, cy: number): HitResult {
 
   // Topbar
   if (cy < TOPBAR_H) {
+    const btnY = (TOPBAR_H - 28) / 2
     // Play button: x=16, w=80
-    if (cx >= 16 && cx <= 96 && cy >= (TOPBAR_H - 28) / 2 && cy <= (TOPBAR_H + 28) / 2) {
+    if (cx >= 16 && cx <= 96 && cy >= btnY && cy <= btnY + 28) {
       result.zone = "topbar-play"
+    // Loop button: x=104, w=64
+    } else if (cx >= 104 && cx <= 168 && cy >= btnY && cy <= btnY + 28) {
+      result.zone = "topbar-loop"
     } else {
       result.zone = "topbar"
     }
@@ -777,6 +968,10 @@ function setupMouse() {
         else play()
         break
 
+      case "topbar-loop":
+        toggleLoop()
+        break
+
       case "sidebar-click":
         state.selectedTrackIndex = -1
         render()
@@ -811,6 +1006,7 @@ function setupMouse() {
         state.playheadPosition = Math.max(0, Math.floor(state.scrollOffset + hit.localX * samplesPerCol))
         if (state.transportState !== "stopped") {
           audio.setPlayhead(state.playheadPosition)
+          syncLoopAfterSeek()
           state.freeScroll = true
         }
         render()
@@ -858,7 +1054,7 @@ function setupMouse() {
   // Cursor style
   canvas.addEventListener("mousemove", (e) => {
     const hit = hitTest(e.clientX, e.clientY)
-    if (hit.zone === "topbar-play" || hit.zone === "sidebar-btn" ||
+    if (hit.zone === "topbar-play" || hit.zone === "topbar-loop" || hit.zone === "sidebar-btn" ||
         hit.zone === "sidebar-track" || hit.zone === "sidebar-click" ||
         hit.zone === "timeline") {
       canvas.style.cursor = "pointer"
@@ -878,6 +1074,10 @@ function setupKeyboard() {
         e.preventDefault()
         if (state.transportState !== "stopped") stopTransport()
         else play()
+        break
+
+      case "p":
+        toggleLoop()
         break
 
       case "m":
@@ -983,7 +1183,10 @@ function setupKeyboard() {
       case "[": {
         const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
         state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBeat * 4)
-        if (state.transportState !== "stopped") audio.setPlayhead(state.playheadPosition)
+        if (state.transportState !== "stopped") {
+          audio.setPlayhead(state.playheadPosition)
+          syncLoopAfterSeek()
+        }
         ensurePlayheadVisible()
         render()
         break
@@ -992,7 +1195,10 @@ function setupKeyboard() {
       case "]": {
         const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
         state.playheadPosition += samplesPerBeat * 4
-        if (state.transportState !== "stopped") audio.setPlayhead(state.playheadPosition)
+        if (state.transportState !== "stopped") {
+          audio.setPlayhead(state.playheadPosition)
+          syncLoopAfterSeek()
+        }
         ensurePlayheadVisible()
         render()
         break
@@ -1003,7 +1209,10 @@ function setupKeyboard() {
         state.playheadPosition = 0
         state.scrollOffset = 0
         state.freeScroll = false
-        if (state.transportState !== "stopped") audio.setPlayhead(0)
+        if (state.transportState !== "stopped") {
+          audio.setPlayhead(0)
+          syncLoopAfterSeek()
+        }
         render()
         break
 
@@ -1013,7 +1222,10 @@ function setupKeyboard() {
           if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
         }
         state.playheadPosition = maxLen
-        if (state.transportState !== "stopped") audio.setPlayhead(maxLen)
+        if (state.transportState !== "stopped") {
+          audio.setPlayhead(maxLen)
+          syncLoopAfterSeek()
+        }
         ensurePlayheadVisible()
         render()
         break

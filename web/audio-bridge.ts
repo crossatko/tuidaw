@@ -272,7 +272,7 @@ export class WebAudioBridge {
 
   setLoop(start: number | null, end: number | null): void {
     if (start === null || end === null) {
-      this.m._tuidaw_set_loop(0, 0)
+      this.m._tuidaw_set_loop(-1, -1)
     } else {
       this.m._tuidaw_set_loop(start, end)
     }
