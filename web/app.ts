@@ -8,7 +8,8 @@
 import { WebAudioBridge, type WebTrack } from "./audio-bridge"
 import { detectBPM, findBeatOffset } from "../src/utils/bpm"
 import { resample } from "../src/utils/dsp"
-import { parseWav } from "../src/utils/wav"
+import { parseWav, encodeWav } from "../src/utils/wav"
+import type { ProjectDescriptor, TrackDescriptor } from "../src/types"
 
 // ── OLED Colors ─────────────────────────────────────────────────────────
 const C = {
@@ -62,6 +63,7 @@ const DEFAULT_CLICK_PAN = 0
 
 // ── App State ───────────────────────────────────────────────────────────
 interface AppState {
+  projectName: string
   tracks: WebTrack[]
   selectedTrackIndex: number
   transportState: "stopped" | "playing" | "recording"
@@ -82,6 +84,7 @@ interface AppState {
 
 function createDefaultState(): AppState {
   return {
+    projectName: "Untitled",
     tracks: [createTrack("Track 1", 0)],
     selectedTrackIndex: 0,
     transportState: "stopped",
@@ -316,11 +319,13 @@ function drawTopbar() {
   ctx.font = "13px monospace"
   ctx.fillText(`${mins}:${secs.padStart(4, "0")}`, x, textY)
 
-  // ── Right-aligned buttons: [Import] [Export] [+Track] ─────────────
+  // ── Right-aligned buttons: [Save] [Open] [Import] [Export] [+Track] ────
   const rightBtns = [
     { label: "+Track", key: "add-track", w: 72 },
     { label: "Export", key: "export", w: 64 },
     { label: "Import", key: "import", w: 64 },
+    { label: "Open", key: "open", w: 56 },
+    { label: "Save", key: "save", w: 56 },
   ]
   let rx = W - 12
   for (const btn of rightBtns) {
@@ -384,8 +389,14 @@ function getTopbarLayout() {
   rx -= exportW + 8
   const importW = 64
   const importBtn = { x: rx - importW, y: btnY, w: importW, h: BTN_H }
+  rx -= importW + 8
+  const openW = 56
+  const openBtn = { x: rx - openW, y: btnY, w: openW, h: BTN_H }
+  rx -= openW + 8
+  const saveW = 56
+  const saveBtn = { x: rx - saveW, y: btnY, w: saveW, h: BTN_H }
 
-  return { play, loop, click, bpmMinus, bpmText, bpmPlus, importBtn, exportBtn, addTrack }
+  return { play, loop, click, bpmMinus, bpmText, bpmPlus, saveBtn, openBtn, importBtn, exportBtn, addTrack }
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────
@@ -1108,6 +1119,7 @@ function ensurePlayheadVisible() {
 
 // ── Hit zones for mouse ─────────────────────────────────────────────────
 type Zone = "topbar-play" | "topbar-loop" | "topbar-click" | "topbar-bpm-minus" | "topbar-bpm-plus" | "topbar-bpm-text"
+           | "topbar-save" | "topbar-open"
            | "topbar-import" | "topbar-export" | "topbar-add-track" | "topbar"
            | "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
            | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
@@ -1138,6 +1150,8 @@ function hitTest(cx: number, cy: number): HitResult {
     if (inRect(cx, cy, layout.importBtn)) { result.zone = "topbar-import"; return result }
     if (inRect(cx, cy, layout.exportBtn)) { result.zone = "topbar-export"; return result }
     if (inRect(cx, cy, layout.addTrack)) { result.zone = "topbar-add-track"; return result }
+    if (inRect(cx, cy, layout.saveBtn)) { result.zone = "topbar-save"; return result }
+    if (inRect(cx, cy, layout.openBtn)) { result.zone = "topbar-open"; return result }
 
     result.zone = "topbar"
     return result
@@ -1318,6 +1332,14 @@ function setupMouse() {
 
       case "topbar-export":
         showStatus("Export not yet implemented in Web UI")
+        break
+
+      case "topbar-save":
+        saveProject()
+        break
+
+      case "topbar-open":
+        openProject()
         break
 
       case "topbar-add-track":
@@ -1874,6 +1896,352 @@ async function importWav() {
     } catch (err) {
       showStatus(`Import error: ${err}`)
       console.error("WAV import failed:", err)
+    }
+  }
+
+  input.click()
+}
+
+// ── Tar utilities (pure JS, browser-compatible) ─────────────────────────
+// Minimal tar creator/extractor for .tuidaw project files.
+// Uses USTAR format (POSIX). Supports files up to 8GB (octal encoding).
+
+function tarWriteString(buf: Uint8Array, offset: number, str: string, len: number) {
+  for (let i = 0; i < len; i++) {
+    buf[offset + i] = i < str.length ? str.charCodeAt(i) : 0
+  }
+}
+
+function tarWriteOctal(buf: Uint8Array, offset: number, value: number, len: number) {
+  const s = value.toString(8).padStart(len - 1, "0")
+  for (let i = 0; i < len - 1; i++) buf[offset + i] = s.charCodeAt(i)
+  buf[offset + len - 1] = 0
+}
+
+function tarComputeChecksum(header: Uint8Array): number {
+  // Checksum field (offset 148, length 8) is treated as spaces during computation
+  let sum = 0
+  for (let i = 0; i < 512; i++) {
+    sum += (i >= 148 && i < 156) ? 32 : header[i]
+  }
+  return sum
+}
+
+function tarCreateEntry(filename: string, data: Uint8Array): Uint8Array {
+  const header = new Uint8Array(512)
+  tarWriteString(header, 0, filename, 100)       // name
+  tarWriteOctal(header, 100, 0o644, 8)           // mode
+  tarWriteOctal(header, 108, 0, 8)               // uid
+  tarWriteOctal(header, 116, 0, 8)               // gid
+  tarWriteOctal(header, 124, data.length, 12)    // size
+  tarWriteOctal(header, 136, Math.floor(Date.now() / 1000), 12) // mtime
+  tarWriteString(header, 257, "ustar", 6)        // magic
+  tarWriteString(header, 263, "00", 2)            // version
+
+  const checksum = tarComputeChecksum(header)
+  tarWriteOctal(header, 148, checksum, 7)
+  header[155] = 32 // space after checksum
+
+  // Data blocks (padded to 512-byte boundary)
+  const dataBlocks = Math.ceil(data.length / 512) * 512
+  const entry = new Uint8Array(512 + dataBlocks)
+  entry.set(header)
+  entry.set(data, 512)
+  return entry
+}
+
+function tarCreate(files: { name: string; data: Uint8Array }[]): Uint8Array {
+  const entries: Uint8Array[] = []
+  let totalSize = 0
+  for (const f of files) {
+    const entry = tarCreateEntry(f.name, f.data)
+    entries.push(entry)
+    totalSize += entry.length
+  }
+  // Two zero blocks = end of archive
+  totalSize += 1024
+  const tar = new Uint8Array(totalSize)
+  let offset = 0
+  for (const entry of entries) {
+    tar.set(entry, offset)
+    offset += entry.length
+  }
+  return tar
+}
+
+function tarReadOctal(buf: Uint8Array, offset: number, len: number): number {
+  let s = ""
+  for (let i = 0; i < len; i++) {
+    const c = buf[offset + i]
+    if (c === 0 || c === 32) break
+    s += String.fromCharCode(c)
+  }
+  return parseInt(s, 8) || 0
+}
+
+function tarReadString(buf: Uint8Array, offset: number, len: number): string {
+  let s = ""
+  for (let i = 0; i < len; i++) {
+    const c = buf[offset + i]
+    if (c === 0) break
+    s += String.fromCharCode(c)
+  }
+  return s
+}
+
+function tarExtract(tar: Uint8Array): { name: string; data: Uint8Array }[] {
+  const files: { name: string; data: Uint8Array }[] = []
+  let offset = 0
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512)
+    // Check for zero block (end of archive)
+    let allZero = true
+    for (let i = 0; i < 512; i++) { if (header[i] !== 0) { allZero = false; break } }
+    if (allZero) break
+
+    const name = tarReadString(header, 0, 100)
+    const size = tarReadOctal(header, 124, 12)
+    const typeFlag = header[156]
+
+    offset += 512
+    // typeFlag 0 or ASCII '0' (48) = regular file, also accept missing (NUL)
+    if (typeFlag === 0 || typeFlag === 48) {
+      const data = tar.slice(offset, offset + size)
+      // Strip leading "./" from filenames (TUI saves with -C tmpDir .)
+      const cleanName = name.replace(/^\.\//, "")
+      if (cleanName) files.push({ name: cleanName, data })
+    }
+    offset += Math.ceil(size / 512) * 512
+  }
+  return files
+}
+
+async function gzipCompress(data: Uint8Array): Promise<Uint8Array> {
+  const cs = new CompressionStream("gzip")
+  const writer = cs.writable.getWriter()
+  writer.write(data as unknown as BufferSource)
+  writer.close()
+  const chunks: Uint8Array[] = []
+  const reader = cs.readable.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+  }
+  let totalLen = 0
+  for (const c of chunks) totalLen += c.length
+  const result = new Uint8Array(totalLen)
+  let off = 0
+  for (const c of chunks) { result.set(c, off); off += c.length }
+  return result
+}
+
+async function gzipDecompress(data: Uint8Array): Promise<Uint8Array> {
+  const ds = new DecompressionStream("gzip")
+  const writer = ds.writable.getWriter()
+  writer.write(data as unknown as BufferSource)
+  writer.close()
+  const chunks: Uint8Array[] = []
+  const reader = ds.readable.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+  }
+  let totalLen = 0
+  for (const c of chunks) totalLen += c.length
+  const result = new Uint8Array(totalLen)
+  let off = 0
+  for (const c of chunks) { result.set(c, off); off += c.length }
+  return result
+}
+
+// ── Project Save ────────────────────────────────────────────────────────
+async function saveProject() {
+  if (state.transportState !== "stopped") {
+    showStatus("Stop transport first")
+    return
+  }
+
+  showStatus("Saving project...")
+
+  try {
+    const files: { name: string; data: Uint8Array }[] = []
+    const trackDescs: TrackDescriptor[] = []
+
+    for (const track of state.tracks) {
+      let wavFile: string | null = null
+      if (track.samples && track.samples.length > 0) {
+        const safeName = track.id.replace(/[^a-zA-Z0-9_-]/g, "_")
+        wavFile = `tracks/${safeName}.wav`
+        const wavData = encodeWav(track.samples, track.sampleRate)
+        files.push({ name: wavFile, data: wavData })
+      }
+      trackDescs.push({
+        id: track.id,
+        name: track.name,
+        color: track.color,
+        muted: track.muted,
+        solo: track.solo,
+        armed: track.armed,
+        volume: track.volume,
+        pan: track.pan,
+        sampleRate: track.sampleRate,
+        inputDeviceId: null,
+        wavFile,
+      })
+    }
+
+    const descriptor: ProjectDescriptor = {
+      version: 1,
+      projectName: state.projectName,
+      bpm: state.bpm,
+      originalBpm: state.originalBpm,
+      clickEnabled: state.clickEnabled,
+      clickVolume: state.clickVolume,
+      clickPan: state.clickPan,
+      sampleRate: state.sampleRate,
+      playheadPosition: state.playheadPosition,
+      scrollOffset: state.scrollOffset,
+      loopStart: state.loopStart,
+      loopEnd: state.loopEnd,
+      outputDeviceId: null,
+      selectedTrackIndex: state.selectedTrackIndex,
+      tracks: trackDescs,
+    }
+
+    const encoder = new TextEncoder()
+    files.unshift({ name: "project.json", data: encoder.encode(JSON.stringify(descriptor, null, 2)) })
+
+    const tar = tarCreate(files)
+    const gz = await gzipCompress(tar)
+
+    // Trigger browser download
+    const blob = new Blob([gz.buffer as ArrayBuffer], { type: "application/gzip" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${state.projectName}.tuidaw`
+    a.click()
+    URL.revokeObjectURL(url)
+
+    showStatus(`Project saved: ${state.projectName}.tuidaw`)
+  } catch (err) {
+    showStatus(`Save error: ${err}`)
+    console.error("Project save failed:", err)
+  }
+}
+
+// ── Project Open ────────────────────────────────────────────────────────
+async function openProject() {
+  if (state.transportState !== "stopped") {
+    showStatus("Stop transport first")
+    return
+  }
+
+  const input = document.createElement("input")
+  input.type = "file"
+  input.accept = ".tuidaw"
+
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+
+    showStatus(`Opening: ${file.name}...`)
+
+    try {
+      const arrayBuf = await file.arrayBuffer()
+      const gz = new Uint8Array(arrayBuf)
+      const tar = await gzipDecompress(gz)
+      const entries = tarExtract(tar)
+
+      // Find project.json
+      const projectEntry = entries.find(e => e.name === "project.json")
+      if (!projectEntry) {
+        showStatus("Invalid project file: no project.json found")
+        return
+      }
+
+      const decoder = new TextDecoder()
+      const desc = JSON.parse(decoder.decode(projectEntry.data)) as ProjectDescriptor
+
+      // Build track lookup (WAV data by filename)
+      const wavMap = new Map<string, Uint8Array>()
+      for (const entry of entries) {
+        if (entry.name.startsWith("tracks/") && entry.name.endsWith(".wav")) {
+          wavMap.set(entry.name, entry.data)
+        }
+      }
+
+      // Remove old tracks from audio engine
+      if (audio.isReady) {
+        for (const track of state.tracks) {
+          audio.removeTrack(track.id)
+        }
+      }
+
+      // Rebuild tracks
+      const newTracks: WebTrack[] = []
+      for (const td of desc.tracks) {
+        let samples: Float32Array | null = null
+        if (td.wavFile) {
+          const wavData = wavMap.get(td.wavFile)
+          if (wavData) {
+            const parsed = parseWav(wavData)
+            if (parsed) samples = parsed.samples
+          }
+        }
+        newTracks.push({
+          id: td.id,
+          name: td.name,
+          color: td.color,
+          volume: td.volume,
+          pan: td.pan,
+          muted: td.muted,
+          solo: td.solo,
+          armed: td.armed,
+          samples,
+          sampleRate: td.sampleRate,
+        })
+      }
+
+      // Restore state
+      state.projectName = desc.projectName
+      state.tracks = newTracks
+      state.bpm = desc.bpm
+      state.originalBpm = desc.originalBpm ?? desc.bpm
+      state.clickEnabled = desc.clickEnabled
+      state.clickVolume = desc.clickVolume ?? 0.5
+      state.clickPan = desc.clickPan ?? 0
+      state.sampleRate = desc.sampleRate
+      state.playheadPosition = desc.playheadPosition
+      state.scrollOffset = desc.scrollOffset
+      state.loopStart = desc.loopStart
+      state.loopEnd = desc.loopEnd
+      state.selectedTrackIndex = Math.min(desc.selectedTrackIndex, newTracks.length - 1)
+      state.freeScroll = false
+
+      // Update nextTrackNum
+      let maxNum = 0
+      for (const t of newTracks) {
+        const m = t.name.match(/^Track (\d+)$/)
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1]))
+      }
+      nextTrackNum = maxNum + 1
+
+      // Sync all tracks to audio engine
+      if (audio.isReady) {
+        for (const track of state.tracks) {
+          audio.syncTrack(track)
+        }
+      }
+
+      const baseName = file.name.replace(/\.tuidaw$/i, "")
+      showStatus(`Opened: ${baseName} (${newTracks.length} tracks)`)
+      render()
+    } catch (err) {
+      showStatus(`Open error: ${err}`)
+      console.error("Project open failed:", err)
     }
   }
 

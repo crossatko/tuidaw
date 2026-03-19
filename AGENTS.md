@@ -288,6 +288,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 71. **Fix WSOLA audio quality in Web UI**: Added missing `-DMA_ENABLE_AUDIO_WORKLETS` and `-sASYNCIFY` flags to `native/build-wasm.sh`. Without `-DMA_ENABLE_AUDIO_WORKLETS`, miniaudio's C code never compiled the AudioWorklet path — it fell back to the deprecated ScriptProcessorNode which runs the audio callback on the main thread (subject to GC pauses, layout recalc, event handling delays). `-sASYNCIFY` is required because miniaudio's AudioWorklet init path calls `emscripten_sleep()` while waiting for the worklet to start. Updated `audio-bridge.ts` to `await` the `_tuidaw_init()` and `_tuidaw_start_playback_device()` calls since they are now async with ASYNCIFY.
 72. **Touch-friendly Web UI overhaul**: Major layout and interaction redesign for touch/tablet usage. Layout constants enlarged: `SIDEBAR_W=260`, `TOPBAR_H=56`, `TRACK_H=120`, `CLICK_ROW_H=48`, `STATUSBAR_H=36`, `BTN_H=36`. Topbar now has Click button, BPM [-]/[+] buttons, Import/Export/+Track buttons. Sidebar tracks have visual draggable volume and pan sliders (volume: 0-100% range, click volume: 0-200% range, pan: fill-from-center). Click track row has compact volume/pan sliders. MSR buttons enlarged (32x28px). Pointer events for drag interaction (pointerdown/pointermove/pointerup). Double-click/double-tap resets: volume→0.8, pan→0, BPM→originalBpm, clickVol→0.5, clickPan→0. Touch event `preventDefault()` to block iOS scroll/zoom. Extended hit zones: `topbar-click`, `topbar-bpm-minus/plus/text`, `topbar-import/export/add-track`, `sidebar-click-vol/pan`, `sidebar-vol-slider/pan-slider`. Scroll wheel on pan slider zone adjusts pan.
 73. **Fix slider alignment and layout bugs**: Fixed click track pan slider drawing using wrong `SLIDER_W` constant (160px) instead of computed `sliderW` (107px) — 27px offset between visual and hit zone. Removed unused `SLIDER_W` constant. Fixed sidebar click row height (48px) vs timeline height (28px) mismatch causing 20px vertical offset between sidebar track rows and waveform track rows — unified `TIMELINE_H = CLICK_ROW_H = 48`. Fixed track volume range: was incorrectly mapped as 0-2 (200%) in hit test/drag but drawn as 0-1 — unified to 0-1 (100%) range. Click volume remains 0-2 (200%) with correct slider fraction (value/2).
+74. **Project save/open in Web UI**: Full `.tuidaw` project save/open implemented client-side in the browser. Pure JS tar creation/extraction (USTAR format) + browser `CompressionStream`/`DecompressionStream` APIs for gzip. Format is fully interoperable with TUI — projects saved in the browser can be opened in the terminal and vice versa. Save triggers browser download of `.tuidaw` file. Open uses `<input type="file">` dialog. Topbar has [Save] and [Open] buttons (touch-friendly). Restores all state: tracks with audio, BPM, click settings, loop region, playhead position, scroll offset, selected track. Syncs all restored tracks to WASM audio engine.
 
 ## File structure
 
@@ -365,7 +366,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # (required for SharedArrayBuffer / WASM pthreads).
 │   ├── index.html            # Minimal HTML shell — single <canvas id="app"> + script tag
 │   │                          # + 15 lines CSS. Full app rendered via Canvas 2D. ~26 lines.
-│   ├── app.ts                # Main browser app (~1420 lines): Full-canvas Canvas 2D rendering
+│   ├── app.ts                # Main browser app (~2300 lines): Full-canvas Canvas 2D rendering
 │   │                          # of entire UI (topbar, sidebar, timeline, waveforms, statusbar).
 │   │                          # OLED theme (true black bg, white fg, color accents for active states).
 │   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
@@ -373,8 +374,10 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # interaction, WAV import with shared parser + BPM detection.
 │   │                          # Layout: SIDEBAR_W=260, TOPBAR_H=56, TRACK_H=120, CLICK_ROW_H=48.
 │   │                          # Touch-friendly: visual volume/pan sliders, drag interaction,
-│   │                          # double-click reset, topbar buttons (Click, BPM +/-, Import,
-│   │                          # Export, +Track), pointer events, touch preventDefault.
+│   │                          # double-click reset, topbar buttons (Save, Open, Click, BPM +/-,
+│   │                          # Import, Export, +Track), pointer events, touch preventDefault.
+│   │                          # Project save/open: pure JS tar/gzip (CompressionStream API),
+│   │                          # compatible with TUI .tuidaw format (gzipped tarball).
 │   ├── audio-bridge.ts       # Typed wrapper (~270 lines) around WASM tuidaw_* exports.
 │   │                          # Track ID mapping (string→numeric), WASM heap memory
 │   │                          # management for sample buffers, transport/click/loop/speed.
@@ -490,5 +493,4 @@ Mouse zones for sidebar scroll:
 ## TODO:
 
 - Web recording support
-- Project save/load in web UI
 - Export mixdown in web UI
