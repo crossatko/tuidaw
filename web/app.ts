@@ -4,7 +4,7 @@
 // Canvas renders sidebar, waveforms, statusbar. Topbar is real HTML DOM
 // (buttons work natively on iOS Safari — no user-activation workarounds).
 
-import { WebAudioBridge, type WebTrack } from "./audio-bridge"
+import { WebAudioBridge, type WebTrack, type InputDeviceInfo } from "./audio-bridge"
 import { detectBPM, findBeatOffset } from "../src/utils/bpm"
 import { resample } from "../src/utils/dsp"
 import { parseWav, encodeWav } from "../src/utils/wav"
@@ -140,6 +140,8 @@ function createTrack(name: string, colorIndex: number): WebTrack {
     armed: false,
     samples: null,
     sampleRate: SAMPLE_RATE,
+    inputDeviceId: null,
+    inputChannel: 0,
   }
 }
 
@@ -175,6 +177,9 @@ let animFrameId: number | null = null
 let audioInitPromise: Promise<void> | null = null
 let audioInitStarted = false
 
+// Available input devices (populated after mic access)
+let inputDevices: InputDeviceInfo[] = []
+
 // Per-track: the playhead position when that track's recording began (for punch-in)
 const trackRecordStartPositions: Map<string, number> = new Map()
 // Accumulated recorded samples per track (merged from polling chunks)
@@ -193,6 +198,13 @@ async function ensureAudioReady(): Promise<boolean> {
       await audio.init()
       _debugLog("Audio engine ready")
       for (const track of state.tracks) audio.syncTrack(track)
+      // Request mic access to prime permission + enumerate devices
+      await audio.requestMicAccess()
+      inputDevices = audio.inputDevices
+      audio.onDeviceChange(() => {
+        inputDevices = audio.inputDevices
+        render()
+      })
     } catch (err) {
       _debugError(`Audio init failed: ${err}`)
       console.error("Audio init failed:", err)
@@ -369,20 +381,42 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
   ctx.font = "bold 12px monospace"
   ctx.fillText("\u00D7", delBtnX + 9, delBtnY + 17) // × symbol
 
-  // Row 2 (y+26..y+54): M S R buttons (bigger)
+  // Row 2 (y+26..y+54): M S R buttons (bigger) + input device/channel info
   const msrY = y + 28
   drawMSRButton(pad, msrY, "M", track.muted, C.orange)
   drawMSRButton(pad + MSR_BTN_W + 6, msrY, "S", track.solo, C.yellow)
   drawMSRButton(pad + (MSR_BTN_W + 6) * 2, msrY, "R", track.armed, C.red)
 
-  // Duration info (right of MSR buttons)
-  ctx.fillStyle = C.fgDim
-  ctx.font = "10px monospace"
-  if (track.samples && track.samples.length > 0) {
-    const dur = (track.samples.length / SAMPLE_RATE).toFixed(1)
-    ctx.fillText(`${dur}s`, pad + (MSR_BTN_W + 6) * 3 + 8, msrY + 18)
+  // Input device + channel info (right of MSR buttons)
+  const infoX = pad + (MSR_BTN_W + 6) * 3 + 8
+  const infoMaxW = SIDEBAR_W - pad - infoX
+  if (track.armed || isSelected) {
+    // Show input device label + channel
+    const devLabel = getInputDeviceLabel(track.inputDeviceId)
+    const chLabel = getChannelLabel(track.inputChannel)
+    ctx.font = "9px monospace"
+    // Device name (truncated)
+    ctx.fillStyle = track.armed ? C.red : C.fgDim
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(infoX, msrY, infoMaxW, 14)
+    ctx.clip()
+    ctx.fillText(devLabel, infoX, msrY + 10)
+    ctx.restore()
+    // Channel badge
+    ctx.fillStyle = track.armed ? C.red : C.fgDim
+    ctx.font = "bold 9px monospace"
+    ctx.fillText(chLabel, infoX, msrY + 24)
   } else {
-    ctx.fillText("(empty)", pad + (MSR_BTN_W + 6) * 3 + 8, msrY + 18)
+    // Duration info (when not armed/selected)
+    ctx.fillStyle = C.fgDim
+    ctx.font = "10px monospace"
+    if (track.samples && track.samples.length > 0) {
+      const dur = (track.samples.length / SAMPLE_RATE).toFixed(1)
+      ctx.fillText(`${dur}s`, infoX, msrY + 18)
+    } else {
+      ctx.fillText("(empty)", infoX, msrY + 18)
+    }
   }
 
   // Row 3 (y+62..y+82): Volume slider
@@ -989,6 +1023,29 @@ function formatPan(pan: number): string {
   return `R${Math.round(pan * 100)}`
 }
 
+/** Get short label for an input device ID (null = system default) */
+function getInputDeviceLabel(deviceId: string | null): string {
+  if (!deviceId) return "Default"
+  const dev = inputDevices.find(d => d.deviceId === deviceId)
+  return dev ? dev.label : "Unknown"
+}
+
+/** Get label for a channel number (0 = Mix, 1+ = Ch N) */
+function getChannelLabel(ch: number): string {
+  return ch === 0 ? "Mix" : `Ch ${ch}`
+}
+
+/** Get the max known channel count for a device */
+function getDeviceChannelCount(deviceId: string | null): number {
+  if (!deviceId) {
+    // Default device — find the default in the list or return 1
+    const def = inputDevices.find(d => d.channelCount > 0)
+    return def ? def.channelCount : 1
+  }
+  const dev = inputDevices.find(d => d.deviceId === deviceId)
+  return dev && dev.channelCount > 0 ? dev.channelCount : 1
+}
+
 function getSamplesPerCol(canvasWidth: number): number {
   return Math.max(1, Math.floor(SAMPLE_RATE / (canvasWidth * 2) * 10) * 2)
 }
@@ -1164,7 +1221,7 @@ async function startRecording(armedTracks: WebTrack[]) {
   // Start getUserMedia recording on each armed track
   for (const track of armedTracks) {
     try {
-      await audio.startRecording(track.id)
+      await audio.startRecording(track.id, track.inputDeviceId, track.inputChannel)
     } catch (err) {
       showStatus(`Mic access denied for "${track.name}"`)
       console.error("Recording start failed:", err)
@@ -1184,7 +1241,7 @@ async function punchInTrack(track: WebTrack, startPosition: number) {
   audio.setTrackMuted(track.id, true)
 
   try {
-    await audio.startRecording(track.id)
+    await audio.startRecording(track.id, track.inputDeviceId, track.inputChannel)
   } catch (err) {
     showStatus(`Mic access denied for "${track.name}"`)
     console.error("Punch-in failed:", err)
@@ -1388,6 +1445,7 @@ function ensurePlayheadVisible() {
 // ── Hit zones for mouse (canvas only — topbar is DOM) ───────────────────
 type Zone = "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
            | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
+           | "sidebar-input-device" | "sidebar-input-channel"
            | "timeline" | "waveform" | "waveform-nudge" | "statusbar" | "none"
 
 interface HitResult {
@@ -1464,6 +1522,20 @@ function hitTest(cx: number, cy: number): HitResult {
           result.zone = "sidebar-btn"; result.btnAction = "solo"; return result
         } else if (lx >= (MSR_BTN_W + 6) * 2 && lx < (MSR_BTN_W + 6) * 3) {
           result.zone = "sidebar-btn"; result.btnAction = "arm"; return result
+        }
+      }
+
+      // Input device/channel zone (right of MSR buttons, same row area y+28..y+56)
+      const infoX = pad + (MSR_BTN_W + 6) * 3 + 8
+      if (localY >= 28 && localY < 56 && cx >= infoX) {
+        const track = state.tracks[trackIdx]
+        if (track && (track.armed || trackIdx === state.selectedTrackIndex)) {
+          // Top half = device selector, bottom half = channel selector
+          if (localY < 42) {
+            result.zone = "sidebar-input-device"; return result
+          } else {
+            result.zone = "sidebar-input-channel"; return result
+          }
         }
       }
 
@@ -1655,6 +1727,51 @@ function setupMouse() {
             }
           }
           render()
+        }
+        break
+
+      case "sidebar-input-device":
+        if (hit.trackIndex >= 0) {
+          const track = state.tracks[hit.trackIndex]
+          if (track) {
+            state.selectedTrackIndex = hit.trackIndex
+            // Cycle through available input devices (null -> dev0 -> dev1 -> ... -> null)
+            if (inputDevices.length === 0) {
+              showStatus("No input devices found — tap Play to initialize audio")
+            } else {
+              const currentIdx = track.inputDeviceId
+                ? inputDevices.findIndex(d => d.deviceId === track.inputDeviceId)
+                : -1
+              if (currentIdx < 0) {
+                // Currently default → go to first device
+                track.inputDeviceId = inputDevices[0].deviceId
+              } else if (currentIdx >= inputDevices.length - 1) {
+                // Last device → go back to default
+                track.inputDeviceId = null
+                track.inputChannel = 0 // reset channel
+              } else {
+                track.inputDeviceId = inputDevices[currentIdx + 1].deviceId
+                track.inputChannel = 0 // reset channel when device changes
+              }
+              const label = getInputDeviceLabel(track.inputDeviceId)
+              showStatus(`Input: ${label}`)
+            }
+            render()
+          }
+        }
+        break
+
+      case "sidebar-input-channel":
+        if (hit.trackIndex >= 0) {
+          const track = state.tracks[hit.trackIndex]
+          if (track) {
+            state.selectedTrackIndex = hit.trackIndex
+            const maxCh = getDeviceChannelCount(track.inputDeviceId)
+            // Cycle: 0 (Mix) -> 1 -> 2 -> ... -> maxCh -> 0 (Mix)
+            track.inputChannel = (track.inputChannel + 1) % (maxCh + 1)
+            showStatus(`Channel: ${getChannelLabel(track.inputChannel)}`)
+            render()
+          }
         }
         break
 
@@ -2548,6 +2665,8 @@ function openProject() {
           armed: td.armed,
           samples,
           sampleRate: td.sampleRate,
+          inputDeviceId: null,
+          inputChannel: 0,
         })
       }
 

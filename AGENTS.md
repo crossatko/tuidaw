@@ -309,6 +309,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 85. **Track nudge in Web UI**: Touch-friendly `◀` `▶` nudge buttons rendered on the right side of the selected track's waveform area (only shown when stopped and track has audio). Buttons shift track position by 1/16 beat (same as TUI `{`/`}` keys). `◀` trims from start (shift earlier), `▶` prepends silence (shift later). Hit zone `"waveform-nudge"` with `btnAction: "nudge-left" | "nudge-right"`. Keyboard `{`/`}` shortcuts also implemented. Shared `nudgeTrack()` function handles both button and keyboard input. Updates WASM engine via `audio.setTrackSamples()`.
 86. **Full-width volume/pan sliders in Web UI**: Regular track sliders widened from half-width (107px total / 83px rail) to full sidebar width (`FULL_SLIDER_W = SIDEBAR_W - SLIDER_PAD * 2 = 244px` total / 184px rail). `drawMiniSlider()` and `getSliderGeometry()` now accept optional `totalW` parameter — click track sliders remain side-by-side using the default half-width formula. Value text made more prominent: bold 11px font, white color (was dim 9px). Hit testing and drag handlers updated to use matching wider geometry.
 87. **Web recording support**: Full getUserMedia-based recording in the browser. Uses `ScriptProcessorNode` (4096 buffer, mono, 48kHz) for capture — bypasses WASM/native recording path (miniaudio Emscripten capture unreliable). Armed tracks auto-record when Space starts transport. Live punch-in/out via R key or sidebar R button during playback. Recording data polled every animation frame, live-merged into track samples for real-time waveform display. Play button shows red "Rec" indicator during recording. Armed tracks muted during recording (own capture, not playback). Recorded audio written from playhead position forward, preserving existing audio before/after. Multi-track simultaneous recording supported. `web/audio-bridge.ts` has `requestMicAccess()`, `startRecording()`, `pollRecording()`, `stopRecording()` methods.
+88. **Per-track input device and channel selection (Web UI)**: Each track has `inputDeviceId` (string|null, null="Default") and `inputChannel` (0=mono mix, 1..N=specific channel). Multi-channel recording via shared `getUserMedia` streams per unique device (reference-counted `DeviceCapture` with `ChannelSplitterNode`). Tappable input device label and channel badge in sidebar (visible when track is armed or selected). Device label cycles through available devices on tap. Channel badge cycles through Mix → Ch 1 → Ch N → Mix. Hit zones: `sidebar-input-device` and `sidebar-input-channel`. `InputDeviceInfo` interface with `deviceId`, `label`, `channelCount`. Device enumeration via `enumerateInputDevices()` with `devicechange` listener. Shared stream architecture: one `getUserMedia` per unique deviceId, `ChannelSplitterNode` routes to per-track `ScriptProcessorNode`. Channel 0 = GainNode averaging all channels (mono mix). Channel 1..N = specific splitter output (1-indexed for UI, 0-indexed internally).
 
 ## File structure
 
@@ -402,7 +403,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   ├── icon-192.svg          # PWA icon 192x192: waveform bars (cyan) + playhead (green)
 │   │                          # on black rounded rect. SVG scales to any size.
 │   ├── icon-512.svg          # PWA icon 512x512: same design as icon-192.svg.
-│   ├── app.ts                # Main browser app (~2100 lines): Canvas 2D rendering
+│   ├── app.ts                # Main browser app (~2800 lines): Canvas 2D rendering
 │   │                          # of sidebar, timeline, waveforms, statusbar (NOT topbar).
 │   │                          # OLED theme (true black bg, white fg, color accents for active states).
 │   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
@@ -417,9 +418,16 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # compatible with TUI .tuidaw format (gzipped tarball).
 │   │                          # Sidebar vertical scrolling: trackScrollY state, pinned click
 │   │                          # track, touch swipe with 5px threshold, ensureTrackVisible().
-│   ├── audio-bridge.ts       # Typed wrapper (~270 lines) around WASM tuidaw_* exports.
+│   │                          # Per-track input device/channel selection: tappable device
+│   │                          # label + channel badge, hit zones sidebar-input-device/channel.
+│   ├── audio-bridge.ts       # Typed wrapper (~540 lines) around WASM tuidaw_* exports.
 │   │                          # Track ID mapping (string→numeric), WASM heap memory
 │   │                          # management for sample buffers, transport/click/loop/speed.
+│   │                          # Multi-channel recording: shared DeviceCapture per device
+│   │                          # (getUserMedia + ChannelSplitterNode, ref-counted),
+│   │                          # per-track ScriptProcessorNode with channel routing.
+│   │                          # InputDeviceInfo interface, enumerateInputDevices(),
+│   │                          # onDeviceChange listener, requestMicAccess().
 │   ├── tsconfig.json         # Extends root, adds DOM/DOM.Iterable libs. Includes only
 │   │                          # app.ts and audio-bridge.ts (browser files).
 │   ├── wasm/                 # WASM build output (gitignored):
