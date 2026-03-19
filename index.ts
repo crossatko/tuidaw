@@ -120,9 +120,9 @@ async function main() {
   // Playhead update interval
   let playheadInterval: ReturnType<typeof setInterval> | null = null
 
-  // Helper: compute click buffer duration in frames.
-  // Match the logic in AudioEngine.playAll() — enough for the project at
-  // the current speed, plus 60s margin, minimum 10 minutes.
+  // Helper: compute click buffer duration in output-space frames.
+  // The click buffer is generated at display BPM and indexed by output-space
+  // counter. Duration = projectDuration / speed + margin, minimum 10 minutes.
   function getClickDuration(): number {
     const projectDuration = getProjectDurationSamples(state)
     const speed = state.bpm / state.originalBpm
