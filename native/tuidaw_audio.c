@@ -489,22 +489,38 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         }
     }
 
-    // Advance click counter and handle loop-wrap reset.
+    // Advance click counter with loop-wrap handling.
     // The click counter is output-space (wall-clock frames since play start).
-    // When a loop wrap occurs (new_playhead jumped backward), reset the counter
-    // to the output-space time corresponding to the new content position.
-    // This ensures click stays aligned with content across loop boundaries.
+    // The click buffer contains tones at GCD-exact beat positions in output-space.
+    //
+    // On loop: the click counter wraps when it reaches the output-space position
+    // corresponding to loop_end in content-space. This is computed as:
+    //   output_end = (loop_end - transport_start_pos) / speed
+    //   output_start = (loop_start - transport_start_pos) / speed
+    // The counter wraps from output_end back to output_start, so the click
+    // re-aligns with the content beat grid on each loop iteration.
+    //
+    // We detect the wrap from the counter itself (not from playhead comparison),
+    // because WSOLA look-ahead can cause the playhead to wrap before the output
+    // actually reaches the loop boundary.
     if (click_enabled) {
-        if (new_playhead < playhead && loop_start >= 0 && loop_end > loop_start) {
-            // Loop wrap detected — reset click counter to align with loop_start.
-            // Output time at content position P: (P - transport_start) / speed
-            double content_offset = (double)(new_playhead - g_engine.transport_start_pos);
-            double output_time = (speed > 0.01f) ? content_offset / (double)speed : content_offset;
-            atomic_store(&g_engine.click_frame_counter, (long)(output_time + 0.5));
-        } else {
-            long old_counter = atomic_load(&g_engine.click_frame_counter);
-            atomic_store(&g_engine.click_frame_counter, old_counter + (long)frameCount);
+        long old_counter = atomic_load(&g_engine.click_frame_counter);
+        long new_counter = old_counter + (long)frameCount;
+
+        if (loop_start >= 0 && loop_end > loop_start && speed > 0.01f) {
+            double loop_output_end = (double)(loop_end - g_engine.transport_start_pos) / (double)speed;
+            double loop_output_start = (double)(loop_start - g_engine.transport_start_pos) / (double)speed;
+            double loop_output_len = loop_output_end - loop_output_start;
+
+            if (loop_output_len > 0 && (double)new_counter >= loop_output_end) {
+                // Wrap counter to loop start, preserving fractional overshoot
+                double overshoot = (double)new_counter - loop_output_end;
+                double wrapped = loop_output_start + fmod(overshoot, loop_output_len);
+                new_counter = (long)(wrapped + 0.5);
+            }
         }
+
+        atomic_store(&g_engine.click_frame_counter, new_counter);
     }
 
     atomic_store(&g_engine.playhead_samples, new_playhead);
