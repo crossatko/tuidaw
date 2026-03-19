@@ -85,10 +85,9 @@
     /* ── Canvas ─────────────────────────────────────────────────────── */
     canvas {
       display: block;
-      /* CSS fallback — JS resize() overrides with inline styles for
-         iOS Safari where 100vh != window.innerHeight */
       width: 100vw;
-      height: calc(100vh - 56px);
+      /* height set programmatically in resize() — CSS 100vh can differ
+         from window.innerHeight on iOS Safari and some Wayland compositors */
     }
     /* ── Error log ──────────────────────────────────────────────────── */
     #error-log {
