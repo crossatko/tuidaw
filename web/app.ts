@@ -416,7 +416,8 @@ function drawMSRButton(x: number, y: number, label: string, active: boolean, act
 // `totalW` overrides the default half-width formula when provided (for full-width track sliders).
 function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, max: number, accentColor: string, totalW?: number) {
   const sliderW = totalW ?? (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
-  const trackW = sliderW - 24
+  const valueMargin = totalW ? 40 : 0  // reserve right margin for value text on full-width sliders
+  const trackW = sliderW - 24 - valueMargin
   const trackH = 6
   const trackX = x + 24
   const trackY = y + (SLIDER_H - trackH) / 2
@@ -499,7 +500,8 @@ function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, 
 // `totalW` overrides the default half-width formula when provided (must match drawMiniSlider call).
 function getSliderGeometry(sliderX: number, totalW?: number): { trackX: number; trackW: number } {
   const sliderW = totalW ?? (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
-  const trackW = sliderW - 24
+  const valueMargin = totalW ? 40 : 0
+  const trackW = sliderW - 24 - valueMargin
   const trackX = sliderX + 24
   return { trackX, trackW }
 }
