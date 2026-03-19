@@ -58,6 +58,12 @@ const SLIDER_KNOB_W = 12 // slider knob width
 const SLIDER_KNOB_H = 24 // slider knob height (taller than track for easy grab)
 const SLIDER_PAD = 8     // left padding for sliders
 
+// Nudge button dimensions (on right side of selected track waveform)
+const NUDGE_BTN_W = 36
+const NUDGE_BTN_H = 36
+const NUDGE_BTN_GAP = 4   // gap between < and > buttons
+const NUDGE_BTN_PAD = 8   // padding from right edge of waveform area
+
 // ── Default values for double-click reset ───────────────────────────────
 const DEFAULT_VOLUME = 0.8
 const DEFAULT_PAN = 0
@@ -753,6 +759,38 @@ function drawWaveformArea() {
       ctx.strokeStyle = C.blue
       ctx.lineWidth = 2
       ctx.strokeRect(x0, ty + 1, w - 1, TRACK_H - 2)
+
+      // Nudge buttons (< >) on right side of selected track
+      if (track.samples && track.samples.length > 0 && state.transportState === "stopped") {
+        const btnY = ty + Math.round(TRACK_H / 2 - NUDGE_BTN_H / 2)
+        const rightEdge = x0 + w - NUDGE_BTN_PAD
+        const rightBtnX = rightEdge - NUDGE_BTN_W
+        const leftBtnX = rightBtnX - NUDGE_BTN_GAP - NUDGE_BTN_W
+
+        // Left nudge button (<)
+        ctx.fillStyle = C.bgHighlight
+        ctx.fillRect(leftBtnX, btnY, NUDGE_BTN_W, NUDGE_BTN_H)
+        ctx.strokeStyle = C.fgDim
+        ctx.lineWidth = 1
+        ctx.strokeRect(leftBtnX, btnY, NUDGE_BTN_W, NUDGE_BTN_H)
+        ctx.fillStyle = C.fg
+        ctx.font = "bold 16px monospace"
+        ctx.textAlign = "center"
+        ctx.textBaseline = "middle"
+        ctx.fillText("◀", leftBtnX + NUDGE_BTN_W / 2, btnY + NUDGE_BTN_H / 2)
+
+        // Right nudge button (>)
+        ctx.fillStyle = C.bgHighlight
+        ctx.fillRect(rightBtnX, btnY, NUDGE_BTN_W, NUDGE_BTN_H)
+        ctx.strokeStyle = C.fgDim
+        ctx.lineWidth = 1
+        ctx.strokeRect(rightBtnX, btnY, NUDGE_BTN_W, NUDGE_BTN_H)
+        ctx.fillStyle = C.fg
+        ctx.fillText("▶", rightBtnX + NUDGE_BTN_W / 2, btnY + NUDGE_BTN_H / 2)
+
+        ctx.textAlign = "left"
+        ctx.textBaseline = "alphabetic"
+      }
     }
   }
 
@@ -975,6 +1013,35 @@ function showStatus(msg: string) {
   render()
 }
 
+// ── Track nudge (shift position earlier/later by 1/16 beat) ─────────────
+function nudgeTrack(direction: "left" | "right") {
+  if (state.selectedTrackIndex < 0) return
+  const track = state.tracks[state.selectedTrackIndex]
+  if (!track || !track.samples || track.samples.length === 0) return
+  if (state.transportState !== "stopped") {
+    showStatus("Stop transport first (Space)")
+    return
+  }
+
+  const samplesPerBeat = (60 / state.originalBpm) * SAMPLE_RATE
+  const nudgeAmount = Math.round(samplesPerBeat / 16) // 1/16 beat
+
+  if (direction === "left") {
+    // Trim from start (shift earlier)
+    if (track.samples.length <= nudgeAmount) return
+    track.samples = track.samples.slice(nudgeAmount)
+  } else {
+    // Prepend silence (shift later)
+    const newSamples = new Float32Array(track.samples.length + nudgeAmount)
+    newSamples.set(track.samples, nudgeAmount)
+    track.samples = newSamples
+  }
+
+  if (audio.isReady) audio.setTrackSamples(track.id, track.samples)
+  const ms = (nudgeAmount / SAMPLE_RATE * 1000).toFixed(1)
+  showStatus(`Nudged "${track.name}" ${direction === "left" ? "earlier" : "later"} by 1/16 beat (${ms}ms)`)
+}
+
 // ── Loop ────────────────────────────────────────────────────────────────
 function toggleLoop() {
   if (state.transportState !== "stopped") {
@@ -1131,12 +1198,12 @@ function ensurePlayheadVisible() {
 // ── Hit zones for mouse (canvas only — topbar is DOM) ───────────────────
 type Zone = "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
            | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
-           | "timeline" | "waveform" | "statusbar" | "none"
+           | "timeline" | "waveform" | "waveform-nudge" | "statusbar" | "none"
 
 interface HitResult {
   zone: Zone
   trackIndex: number
-  btnAction?: "mute" | "solo" | "arm" | "delete"
+  btnAction?: "mute" | "solo" | "arm" | "delete" | "nudge-left" | "nudge-right"
   localX: number
   localY: number
   sliderFrac?: number  // 0-1 position within slider
@@ -1243,11 +1310,39 @@ function hitTest(cx: number, cy: number): HitResult {
   }
 
   // Waveform area (apply vertical scroll offset)
-  result.zone = "waveform"
   result.localX = cx - SIDEBAR_W
   result.localY = cy - TIMELINE_H + state.trackScrollY
   result.trackIndex = Math.floor(result.localY / TRACK_H)
   if (result.trackIndex < 0 || result.trackIndex >= state.tracks.length) result.trackIndex = -1
+
+  // Nudge buttons on the selected track (only when stopped and track has audio)
+  if (result.trackIndex >= 0 && result.trackIndex === state.selectedTrackIndex
+      && state.transportState === "stopped") {
+    const track = state.tracks[result.trackIndex]
+    if (track && track.samples && track.samples.length > 0) {
+      const w = W - SIDEBAR_W
+      const trackLocalY = result.localY - result.trackIndex * TRACK_H
+      const btnY = Math.round(TRACK_H / 2 - NUDGE_BTN_H / 2)
+      if (trackLocalY >= btnY && trackLocalY < btnY + NUDGE_BTN_H) {
+        const rightEdge = w - NUDGE_BTN_PAD
+        const rightBtnX = rightEdge - NUDGE_BTN_W
+        const leftBtnX = rightBtnX - NUDGE_BTN_GAP - NUDGE_BTN_W
+        const lx = result.localX
+        if (lx >= leftBtnX && lx < leftBtnX + NUDGE_BTN_W) {
+          result.zone = "waveform-nudge"
+          result.btnAction = "nudge-left"
+          return result
+        }
+        if (lx >= rightBtnX && lx < rightBtnX + NUDGE_BTN_W) {
+          result.zone = "waveform-nudge"
+          result.btnAction = "nudge-right"
+          return result
+        }
+      }
+    }
+  }
+
+  result.zone = "waveform"
   return result
 }
 
@@ -1405,6 +1500,14 @@ function setupMouse() {
         render()
         break
       }
+
+      case "waveform-nudge":
+        if (hit.btnAction === "nudge-left") {
+          nudgeTrack("left")
+        } else if (hit.btnAction === "nudge-right") {
+          nudgeTrack("right")
+        }
+        break
 
       case "waveform":
         if (hit.trackIndex >= 0) {
@@ -1815,6 +1918,14 @@ function setupKeyboard() {
         render()
         break
       }
+
+      case "{":
+        nudgeTrack("left")
+        break
+
+      case "}":
+        nudgeTrack("right")
+        break
 
       case "i":
       case "I":
