@@ -18,6 +18,14 @@ const CHANNELS = 1
 const BYTES_PER_SAMPLE = 2
 const RECORDINGS_DIR = "./recordings"
 
+// Greatest common divisor (Euclidean algorithm)
+function gcd(a: number, b: number): number {
+  a = Math.abs(a)
+  b = Math.abs(b)
+  while (b) { const t = b; b = a % b; a = t }
+  return a
+}
+
 // ── Load Native Library ─────────────────────────────────────────────────────
 
 function findLibrary(): string {
@@ -387,16 +395,14 @@ export class AudioEngine {
   async playAll(state: ProjectState): Promise<void> {
     this.syncAllTracks(state)
 
-    // Set click state — pass originalBpm so beat grid is in content-space.
-    // Click timing uses pos % samples_per_beat in the native callback,
-    // where pos is the content-space playhead (same coordinate as samples[pos]).
+    // Set click state — native just stores enabled flag.
+    // BPM is baked into the click buffer length.
     lib.symbols.tuidaw_set_click(state.clickEnabled ? 1 : 0, state.bpm)
     lib.symbols.tuidaw_set_click_volume(state.clickVolume)
     lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
-    // Set click tone buffer (BPM-independent — just the 20ms click tone).
-    // Beat timing is handled in native via click_displayed_bpm.
-    this.updateClickBuffer(state.sampleRate)
+    // Set click buffer (one full beat: tone + silence, length encodes BPM).
+    this.updateClickBuffer(state.bpm, state.sampleRate)
 
     // Set loop state — always pass loop region to native engine if it exists.
     // The native callback handles all cases correctly:
@@ -537,18 +543,57 @@ export class AudioEngine {
   }
   spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
 
-  // Generate the click TONE: 1kHz sine wave with 20ms linear decay at 48kHz.
-  // This is just the tone waveform (960 samples at 48kHz), NOT a full beat.
-  // Beat timing is handled in the native engine via click_displayed_bpm +
-  // click_frame_counter, so this buffer is BPM-independent.
-  generateClickBuffer(sampleRate: number = 48000): Float32Array {
-    const clickLen = Math.round(sampleRate * 0.02) // 20ms = 960 samples at 48kHz
-    const buf = new Float32Array(clickLen)
-    for (let i = 0; i < clickLen; i++) {
-      const t = i / sampleRate
-      const envelope = 1.0 - i / clickLen
-      buf[i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
+  // Generate a pre-baked click buffer: N beats (tone + silence per beat), where
+  // N is chosen so the total length in samples is an EXACT INTEGER.
+  // This eliminates cumulative drift entirely — the native callback reads
+  // click_samples[counter % click_samples_len] with pure integer modulo.
+  //
+  // Math: samples_per_beat = sampleRate * 60 / bpm = totalSamplesPerMinute / bpm.
+  // For integer BPM: find N = bpm / gcd(bpm, sampleRate * 60) so that
+  // N * sampleRate * 60 / bpm is an exact integer. This gives a buffer of
+  // N beats with zero drift over any duration.
+  //
+  // Beat positions within the buffer are computed using pure integer arithmetic:
+  // beat k starts at floor(k * bufLen / N), using integer division. Since
+  // k * bufLen and N are all integers, there is zero floating-point error.
+  // Click tone: 1kHz sine wave with 20ms linear decay at each beat start.
+  generateClickBuffer(bpm: number, sampleRate: number = 48000): Float32Array {
+    const toneLen = Math.round(sampleRate * 0.02) // 20ms = 960 samples at 48kHz
+    const totalPerMinute = sampleRate * 60 // 2,880,000 at 48kHz
+
+    // Find N beats where N * totalPerMinute / bpm is an exact integer.
+    // For integer BPM: N = bpm / gcd(bpm, totalPerMinute).
+    // For fractional BPM: scale to integer first (multiply by 100 for 2 decimal places).
+    const bpmScaled = Math.round(bpm * 100)
+    const totalScaled = totalPerMinute * 100 // scale to match
+    const d = gcd(bpmScaled, totalScaled)
+    let numBeats = bpmScaled / d
+
+    // Cap buffer size to something reasonable (max ~4 MB / ~20 seconds).
+    // If numBeats is too large, fall back to a single beat (tiny drift is OK
+    // for exotic BPMs like 127.33). Common BPMs like 155 need N=31 (2.25 MB),
+    // 212 needs N=53 (2.8 MB), so the cap must be generous enough.
+    const maxBufLen = sampleRate * 20 // ~20 seconds = 960,000 samples = 3.75 MB
+    const tentativeBufLen = Math.round(numBeats * totalPerMinute / bpm)
+    if (tentativeBufLen > maxBufLen) {
+      numBeats = 1
     }
+
+    const bufLen = Math.round(numBeats * totalPerMinute / bpm)
+    const buf = new Float32Array(bufLen) // zero-initialized
+
+    // Compute beat start positions using pure integer arithmetic.
+    // Beat k starts at floor(k * bufLen / numBeats). Since k, bufLen, numBeats
+    // are all integers (and k * bufLen < 2^53), this is exact.
+    for (let beat = 0; beat < numBeats; beat++) {
+      const beatStart = Math.floor(beat * bufLen / numBeats)
+      for (let i = 0; i < toneLen && beatStart + i < bufLen; i++) {
+        const t = i / sampleRate
+        const envelope = 1.0 - i / toneLen
+        buf[beatStart + i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
+      }
+    }
+
     return buf
   }
 
@@ -558,11 +603,11 @@ export class AudioEngine {
     lib.symbols.tuidaw_set_click_samples(ptr(buf), buf.length)
   }
 
-  // Regenerate and set the click tone buffer.
-  // Call this once (tone is BPM-independent). For BPM changes, just call
-  // startClick(bpm) which updates the displayed BPM in the native engine.
-  updateClickBuffer(_sampleRate: number = 48000): void {
-    const buf = this.generateClickBuffer(_sampleRate)
+  // Regenerate and set the click buffer for a given BPM.
+  // Must be called whenever BPM changes (buffer length encodes the BPM).
+  updateClickBuffer(bpm: number, sampleRate: number = 48000): void {
+    if (bpm <= 0) return
+    const buf = this.generateClickBuffer(bpm, sampleRate)
     this.setClickSamples(buf)
   }
 
