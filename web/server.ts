@@ -1,15 +1,22 @@
 // ============================================================================
-// tuidaw Web Server — serves the web UI on port 3666
+// tuidaw Web Server — serves the web UI on port 3666 (HTTPS)
 // ============================================================================
 // Launched via: bun run index.ts --host
+//
+// Serves over HTTPS with a self-signed cert so that crossOriginIsolated = true
+// on mobile devices over LAN (required for SharedArrayBuffer / WASM pthreads).
+// Browser will show a security warning — accept it once.
 //
 // Required headers for SharedArrayBuffer (WASM pthreads):
 //   Cross-Origin-Opener-Policy: same-origin
 //   Cross-Origin-Embedder-Policy: require-corp
 
 import { join, extname } from "path"
+import { tmpdir } from "os"
+import { existsSync } from "fs"
 
 const PORT = 3666
+const CERT_DIR = join(tmpdir(), "tuidaw-certs")
 const WEB_DIR = join(import.meta.dir, "../web")
 const WASM_DIR = join(WEB_DIR, "wasm")
 
@@ -34,6 +41,26 @@ const COOP_COEP_HEADERS: Record<string, string> = {
 }
 
 export async function startWebServer() {
+  // Generate self-signed TLS cert (needed for crossOriginIsolated on mobile LAN)
+  const certFile = join(CERT_DIR, "cert.pem")
+  const keyFile = join(CERT_DIR, "key.pem")
+  if (!existsSync(certFile) || !existsSync(keyFile)) {
+    const { mkdirSync } = await import("fs")
+    mkdirSync(CERT_DIR, { recursive: true })
+    const proc = Bun.spawn([
+      "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", keyFile, "-out", certFile,
+      "-days", "365", "-subj", "/CN=tuidaw",
+      "-addext", "subjectAltName=IP:0.0.0.0,IP:127.0.0.1",
+    ], { stderr: "pipe" })
+    await proc.exited
+    if (proc.exitCode !== 0) {
+      console.error("Warning: failed to generate TLS cert, falling back to HTTP")
+      console.error("  SharedArrayBuffer may not work on mobile devices over LAN")
+    }
+  }
+  const hasTLS = existsSync(certFile) && existsSync(keyFile)
+
   // Build web/app.ts on the fly using Bun.build (bundles for browser)
   const buildResult = await Bun.build({
     entrypoints: [join(WEB_DIR, "app.ts")],
@@ -54,6 +81,12 @@ export async function startWebServer() {
 
   const server = Bun.serve({
     port: PORT,
+    ...(hasTLS ? {
+      tls: {
+        cert: Bun.file(certFile),
+        key: Bun.file(keyFile),
+      },
+    } : {}),
     async fetch(req) {
       const url = new URL(req.url)
       let pathname = url.pathname
@@ -110,6 +143,21 @@ export async function startWebServer() {
     },
   })
 
-  console.log(`tuidaw web UI running at http://localhost:${server.port}`)
+  const proto = hasTLS ? "https" : "http"
+  console.log(`tuidaw web UI running at ${proto}://localhost:${server.port}`)
+
+  // Show LAN addresses for mobile access
+  const { networkInterfaces } = await import("os")
+  const nets = networkInterfaces()
+  for (const name in nets) {
+    for (const net of nets[name] || []) {
+      if (net.family === "IPv4" && !net.internal) {
+        console.log(`  LAN: ${proto}://${net.address}:${server.port}`)
+      }
+    }
+  }
+  if (hasTLS) {
+    console.log(`  (accept the self-signed certificate warning in your browser)`)
+  }
   console.log(`Press Ctrl+C to stop`)
 }
