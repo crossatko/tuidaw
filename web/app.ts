@@ -1452,6 +1452,7 @@ function setupMouse() {
           } else if (track && hit.btnAction === "arm") {
             track.armed = !track.armed
           } else if (track && hit.btnAction === "delete") {
+            state.selectedTrackIndex = hit.trackIndex
             if (state.transportState !== "stopped") {
               showStatus("Stop transport first (Space)")
             } else if (track.samples && track.samples.length > 0) {
@@ -1465,6 +1466,8 @@ function setupMouse() {
                 state.selectedTrackIndex = state.tracks.length - 1
               }
               showStatus(`Deleted "${track.name}"`)
+            } else {
+              showStatus("Last track — nothing to delete")
             }
           }
           render()
