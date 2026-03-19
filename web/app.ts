@@ -1305,6 +1305,15 @@ function inRect(x: number, y: number, r: { x: number; y: number; w: number; h: n
   return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
 }
 
+/** Convert a pointer/mouse event's clientX/clientY to canvas-relative logical coords */
+function canvasCoords(e: { clientX: number; clientY: number }): { cx: number; cy: number } {
+  const rect = canvas.getBoundingClientRect()
+  return {
+    cx: e.clientX - rect.left,
+    cy: e.clientY - rect.top,
+  }
+}
+
 // ── Double-click detection ──────────────────────────────────────────────
 function checkDoubleClick(zone: string, trackIndex: number): boolean {
   const now = performance.now()
@@ -1319,7 +1328,8 @@ function checkDoubleClick(zone: string, trackIndex: number): boolean {
 function setupMouse() {
   // Pointer down (for click + drag start)
   canvas.addEventListener("pointerdown", (e) => {
-    const hit = hitTest(e.clientX, e.clientY)
+    const { cx, cy } = canvasCoords(e)
+    const hit = hitTest(cx, cy)
 
     switch (hit.zone) {
       case "topbar-play":
@@ -1530,7 +1540,7 @@ function setupMouse() {
         if (hit.trackIndex >= 0) {
           state.selectedTrackIndex = hit.trackIndex
         }
-        drag = { type: "waveform-scroll", trackIndex: -2, startValue: e.clientX }
+        drag = { type: "waveform-scroll", trackIndex: -2, startValue: cx }
         render()
         break
     }
@@ -1538,9 +1548,11 @@ function setupMouse() {
 
   // Pointer move (drag handling)
   canvas.addEventListener("pointermove", (e) => {
+    const { cx, cy } = canvasCoords(e)
+
     if (!drag) {
       // Cursor style
-      const hit = hitTest(e.clientX, e.clientY)
+      const hit = hitTest(cx, cy)
       if (hit.zone !== "none" && hit.zone !== "topbar" && hit.zone !== "statusbar" && hit.zone !== "waveform") {
         canvas.style.cursor = "pointer"
       } else {
@@ -1553,7 +1565,7 @@ function setupMouse() {
       const track = state.tracks[drag.trackIndex]
       if (track) {
         const geo = getSliderGeometry(SLIDER_PAD)
-        const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+        const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
         track.volume = frac
         if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
         render()
@@ -1562,28 +1574,28 @@ function setupMouse() {
       const track = state.tracks[drag.trackIndex]
       if (track) {
         const geo = getSliderGeometry(SLIDER_PAD)
-        const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+        const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
         track.pan = frac * 2 - 1
         if (audio.isReady) audio.setTrackPan(track.id, track.pan)
         render()
       }
     } else if (drag.type === "click-volume") {
       const geo = getSliderGeometry(SLIDER_PAD)
-      const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+      const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
       state.clickVolume = frac * 2
       if (audio.isReady) audio.setClickVolume(state.clickVolume)
       render()
     } else if (drag.type === "click-pan") {
       const panX = SLIDER_PAD + (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2 + 16
       const geo = getSliderGeometry(panX)
-      const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+      const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
       state.clickPan = frac * 2 - 1
       if (audio.isReady) audio.setClickPan(state.clickPan)
       render()
     } else if (drag.type === "timeline") {
       const w = W - SIDEBAR_W
       const samplesPerCol = getSamplesPerCol(w)
-      const lx = e.clientX - SIDEBAR_W
+      const lx = cx - SIDEBAR_W
       state.playheadPosition = Math.max(0, Math.floor(state.scrollOffset + lx * samplesPerCol))
       if (state.transportState !== "stopped") {
         audio.setPlayhead(state.playheadPosition)
@@ -1591,13 +1603,13 @@ function setupMouse() {
       }
       render()
     } else if (drag.type === "waveform-scroll") {
-      const dx = drag.startValue - e.clientX
+      const dx = drag.startValue - cx
       const w = W - SIDEBAR_W
       const samplesPerCol = getSamplesPerCol(w)
       const deltaSamples = dx * samplesPerCol
       state.scrollOffset = Math.max(0, state.scrollOffset + deltaSamples)
       if (state.transportState !== "stopped") state.freeScroll = true
-      drag.startValue = e.clientX
+      drag.startValue = cx
       render()
     }
   })
@@ -1615,7 +1627,8 @@ function setupMouse() {
   // Scroll
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault()
-    const hit = hitTest(e.clientX, e.clientY)
+    const { cx, cy } = canvasCoords(e)
+    const hit = hitTest(cx, cy)
 
     if (hit.zone === "waveform" || hit.zone === "timeline") {
       const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
@@ -1915,12 +1928,18 @@ function setupKeyboard() {
 
 // ── WAV Import ──────────────────────────────────────────────────────────
 async function importWav() {
+  // Safari requires the input to be in the DOM and uses 'change' event
   const input = document.createElement("input")
   input.type = "file"
-  input.accept = ".wav,audio/wav"
+  input.accept = ".wav,audio/wav,audio/x-wav,audio/*"
+  input.style.display = "none"
+  document.body.appendChild(input)
 
-  input.onchange = async () => {
+  const cleanup = () => { if (input.parentNode) input.parentNode.removeChild(input) }
+
+  input.addEventListener("change", async () => {
     const file = input.files?.[0]
+    cleanup()
     if (!file) return
 
     showStatus(`Importing: ${file.name}...`)
@@ -1969,7 +1988,7 @@ async function importWav() {
       showStatus(`Import error: ${err}`)
       console.error("WAV import failed:", err)
     }
-  }
+  })
 
   input.click()
 }
@@ -2211,12 +2230,18 @@ async function openProject() {
     return
   }
 
+  // Safari requires the input to be in the DOM and uses 'change' event
   const input = document.createElement("input")
   input.type = "file"
   input.accept = ".tuidaw"
+  input.style.display = "none"
+  document.body.appendChild(input)
 
-  input.onchange = async () => {
+  const cleanup = () => { if (input.parentNode) input.parentNode.removeChild(input) }
+
+  input.addEventListener("change", async () => {
     const file = input.files?.[0]
+    cleanup()
     if (!file) return
 
     showStatus(`Opening: ${file.name}...`)
@@ -2315,7 +2340,7 @@ async function openProject() {
       showStatus(`Open error: ${err}`)
       console.error("Project open failed:", err)
     }
-  }
+  })
 
   input.click()
 }
