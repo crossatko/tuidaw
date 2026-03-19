@@ -818,6 +818,8 @@ async function main() {
 
       ui.openDeviceSelector("output", state.availableOutputDevices, state.outputDeviceId, (device) => {
         state.outputDeviceId = device ? device.id : null
+        // Apply immediately — restart playback device with new output
+        audioEngine.setOutputDevice(state.outputDeviceId)
       })
       render()
       return

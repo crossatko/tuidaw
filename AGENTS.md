@@ -178,6 +178,8 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **`updateClickBuffer` called on C toggle**: Ensures click tone buffer is set. Tone is BPM-independent (960 samples). BPM changes are handled by `startClick(bpm)` which updates `click_displayed_bpm` in native.
 - **`updateClickBuffer(bpm, durationFrames)` calls native `tuidaw_generate_click`**: Called on BPM change, C toggle, M toggle (click track), WAV import, and transport start. Duration is `max(projectDuration/speed + 60s, 10min)` (output-space). Buffer is C-owned (no JS pinning needed).
 
+- **Output device selection was broken**: `tuidaw_set_output_device()` only stores the device index — it does NOT restart the playback device. The playback device is created once in the constructor and never restarted. To switch devices, must call `tuidaw_stop_playback_device()` + `tuidaw_start_playback_device()` after setting the index. Input devices worked because each recording creates a new `ma_device`.
+
 ### OpenTUI Mouse Event API:
 
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -251,6 +253,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 57. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
 58. **Automatic beat-phase alignment on import**: `findBeatOffset()` trims audio so beat 1 sits at sample 0. Uses multi-window contrast scoring (8-bar overlapping windows, later windows weighted higher) + median/IQR sample-level refinement. Handles intros with guitar slides, non-matching percussion, count-ins.
 59. **Pre-baked click buffer (GCD-exact, native C generation)**: Click buffer generated natively by `tuidaw_generate_click(bpm, duration_frames)` in C. Long buffer (10min+ project duration) with click tones at GCD-exact beat positions. Native callback indexes buffer by `click_frame_counter` (output-space wall-clock counter). On loop, counter wraps when it reaches the output-space position of `loop_end`, resetting to `loop_start`'s output-space position — independent of WSOLA look-ahead. Buffer is C-owned (malloc/realloc). JS-side `generateClickBuffer`, `setClickSamples`, `pinnedClickBuffer`, `gcd()` removed. `updateClickBuffer(bpm, durationFrames)` calls native. Duration computed as `max(projectDuration/speed + 60s, 10min)` (output-space). Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). 12 click precision tests pass (120/145/155/212 BPM, single/chunked render, with-track, non-zero start, 5-min drift, 3-min stress, loop on-beat/off-beat/fractional/speed).
+60. **Fix output device selection (F3)**: F3 device selection now actually switches the audio output device. Added `AudioEngine.setOutputDevice()` method that calls `tuidaw_set_output_device` + `tuidaw_stop_playback_device` + `tuidaw_start_playback_device` to restart the playback device with the new output. F3 callback calls it immediately on selection. `playAll()` also calls it to ensure correct device on each play.
 
 ## File structure
 
