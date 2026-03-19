@@ -57,6 +57,13 @@ interface TuidawWasmModule {
 // Global factory function injected by Emscripten glue
 declare function TuidawAudio(config?: object): Promise<TuidawWasmModule>
 
+function gcd(a: number, b: number): number {
+  a = Math.abs(a)
+  b = Math.abs(b)
+  while (b) { const t = b; b = a % b; a = t }
+  return a
+}
+
 export interface WebAudioDevice {
   id: string
   description: string
@@ -68,6 +75,8 @@ export class WebAudioBridge {
   private trackIdMap: Map<string, number> = new Map()
   private nextTrackId = 1
   private allocatedBuffers: Map<number, number> = new Map() // trackNativeId -> wasmPtr
+  private clickBufferPtr: number = 0 // WASM pointer for click buffer
+  private clickBufferLen: number = 0 // current click buffer length
 
   /** Initialize the WASM audio engine. Call once before any other method. */
   async init(): Promise<void> {
@@ -189,10 +198,62 @@ export class WebAudioBridge {
     this.m._tuidaw_set_click(enabled ? 1 : 0, bpm)
   }
 
+  /** Generate click buffer in JS and upload to WASM via set_click_samples.
+   *  Avoids C realloc which causes OOB crashes in WASM with large buffers.
+   *  Uses the same GCD-exact beat positioning algorithm as the native C version. */
   generateClick(bpm: number, durationFrames: number): boolean {
+    if (bpm <= 0 || durationFrames <= 0) return false
+
     try {
-      const result = this.m._tuidaw_generate_click(bpm, durationFrames)
-      return result === 0
+      // Generate click buffer in JS
+      const buffer = new Float32Array(durationFrames)
+
+      // Click tone: 960 samples of 1kHz sine + 20ms linear decay (matches native engine)
+      const SAMPLE_RATE = 48000
+      const toneLen = Math.round(SAMPLE_RATE * 0.02) // 960 samples
+
+      // GCD-exact beat position math (same algorithm as C tuidaw_generate_click)
+      const bpmScaled = Math.round(bpm * 100)
+      const totalPerMinute = SAMPLE_RATE * 60
+      const totalScaled = totalPerMinute * 100
+      const d = gcd(bpmScaled, totalScaled)
+      const N = bpmScaled / d
+      const samplesPerN = Math.round(N * totalPerMinute * 100 / bpmScaled)
+
+      for (let beat = 0; ; beat++) {
+        const group = Math.floor(beat / N)
+        const local = beat % N
+        const beatStart = group * samplesPerN + Math.floor(local * samplesPerN / N)
+
+        if (beatStart >= durationFrames) break
+
+        for (let i = 0; i < toneLen && (beatStart + i) < durationFrames; i++) {
+          const t = i / SAMPLE_RATE
+          const envelope = 1.0 - i / toneLen
+          buffer[beatStart + i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
+        }
+      }
+
+      // Free previous click buffer in WASM
+      if (this.clickBufferPtr) {
+        this.m._free(this.clickBufferPtr)
+        this.clickBufferPtr = 0
+        this.clickBufferLen = 0
+      }
+
+      // Allocate in WASM heap and copy
+      const byteLen = durationFrames * 4
+      const ptr = this.m._malloc(byteLen)
+      if (!ptr) {
+        console.error("generateClick: WASM malloc failed for", byteLen, "bytes")
+        return false
+      }
+
+      this.m.HEAPF32.set(buffer, ptr / 4)
+      this.m._tuidaw_set_click_samples(ptr, durationFrames)
+      this.clickBufferPtr = ptr
+      this.clickBufferLen = durationFrames
+      return true
     } catch (e) {
       console.error("generateClick failed:", e, `(bpm=${bpm}, frames=${durationFrames})`)
       return false
@@ -236,6 +297,12 @@ export class WebAudioBridge {
       this.m._free(ptr)
     }
     this.allocatedBuffers.clear()
+    // Free click buffer
+    if (this.clickBufferPtr) {
+      this.m._free(this.clickBufferPtr)
+      this.clickBufferPtr = 0
+      this.clickBufferLen = 0
+    }
     this.m._tuidaw_stop_playback_device()
     this.m._tuidaw_deinit()
     this.module = null
