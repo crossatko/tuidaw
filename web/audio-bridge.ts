@@ -70,6 +70,13 @@ export interface WebAudioDevice {
   isDefault: boolean
 }
 
+/** Input device info with channel count */
+export interface InputDeviceInfo {
+  deviceId: string
+  label: string
+  channelCount: number  // discovered after opening the device; 0 = unknown
+}
+
 export class WebAudioBridge {
   private module: TuidawWasmModule | null = null
   private trackIdMap: Map<string, number> = new Map()
@@ -289,16 +296,62 @@ export class WebAudioBridge {
     return this.m._tuidaw_get_speed()
   }
 
-  // ── Recording (getUserMedia + ScriptProcessorNode) ─────────────────────
-  // Recording is done entirely in JS — we capture audio from the browser's
-  // getUserMedia API and accumulate samples in a Float32Array buffer.
-  // The WASM recording path (tuidaw_start_recording) is NOT used because
-  // miniaudio's Emscripten capture device support is unreliable across browsers.
+  // ── Recording (getUserMedia + ChannelSplitter + ScriptProcessorNode) ────
+  // One shared MediaStream per unique input device. Each armed track selects
+  // a specific channel (or mono mix) via ChannelSplitterNode routing.
 
-  private recStreams: Map<string, MediaStream> = new Map()
-  private recContexts: Map<string, { ctx: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode }> = new Map()
-  private recBuffers: Map<string, Float32Array[]> = new Map() // trackId -> chunks
-  private recLengths: Map<string, number> = new Map() // trackId -> total samples so far
+  /** Per-device shared capture state */
+  private deviceCaptures: Map<string, {
+    stream: MediaStream
+    ctx: AudioContext
+    source: MediaStreamAudioSourceNode
+    splitter: ChannelSplitterNode
+    channelCount: number
+    refCount: number  // number of tracks using this device capture
+  }> = new Map()
+
+  /** Per-track recording state */
+  private recTracks: Map<string, {
+    deviceId: string
+    processor: ScriptProcessorNode
+    merger?: ChannelMergerNode  // used for mono-mix mode
+  }> = new Map()
+  private recBuffers: Map<string, Float32Array[]> = new Map()
+  private recLengths: Map<string, number> = new Map()
+
+  /** Cached list of input devices */
+  private _inputDevices: InputDeviceInfo[] = []
+  private _deviceChangeListeners: (() => void)[] = []
+
+  /** Enumerate available audio input devices. Returns device list.
+   *  Call after requestMicAccess() for full labels. */
+  async enumerateInputDevices(): Promise<InputDeviceInfo[]> {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    this._inputDevices = devices
+      .filter(d => d.kind === "audioinput")
+      .map(d => ({
+        deviceId: d.deviceId,
+        label: d.label || `Mic ${d.deviceId.slice(0, 8)}`,
+        channelCount: 0, // discovered when device is opened
+      }))
+    return this._inputDevices
+  }
+
+  /** Get cached input device list */
+  get inputDevices(): InputDeviceInfo[] {
+    return this._inputDevices
+  }
+
+  /** Register a callback for device list changes */
+  onDeviceChange(cb: () => void): void {
+    this._deviceChangeListeners.push(cb)
+    if (this._deviceChangeListeners.length === 1) {
+      navigator.mediaDevices.addEventListener("devicechange", async () => {
+        await this.enumerateInputDevices()
+        for (const listener of this._deviceChangeListeners) listener()
+      })
+    }
+  }
 
   /** Request microphone access. Call early (on user gesture) to prime the permission.
    *  Returns true if permission was granted. */
@@ -309,35 +362,94 @@ export class WebAudioBridge {
       })
       // Stop tracks immediately — we just wanted the permission
       for (const t of stream.getTracks()) t.stop()
+      // Enumerate devices now that we have permission (labels are available)
+      await this.enumerateInputDevices()
       return true
     } catch {
       return false
     }
   }
 
-  /** Start recording on a track. Opens getUserMedia and captures samples. */
-  async startRecording(trackId: string): Promise<void> {
-    // Get mic stream
-    const stream = await navigator.mediaDevices.getUserMedia({
+  /** Get or create a shared capture for a device. Returns the capture state. */
+  private async getOrCreateDeviceCapture(deviceId: string | null): Promise<{
+    stream: MediaStream
+    ctx: AudioContext
+    source: MediaStreamAudioSourceNode
+    splitter: ChannelSplitterNode
+    channelCount: number
+    refCount: number
+    resolvedDeviceId: string
+  }> {
+    // Resolve null to "default" key
+    const key = deviceId || "default"
+
+    const existing = this.deviceCaptures.get(key)
+    if (existing) {
+      existing.refCount++
+      return { ...existing, resolvedDeviceId: key }
+    }
+
+    // Open stream with max channels
+    const constraints: MediaStreamConstraints = {
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
         sampleRate: 48000,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        // Request max channels — browser may cap at what the device supports
+        channelCount: { ideal: 32 },
       }
-    })
-    this.recStreams.set(trackId, stream)
+    }
 
-    // Create an AudioContext at 48kHz for capture
+    const stream = await navigator.mediaDevices.getUserMedia(constraints)
+    const audioTrack = stream.getAudioTracks()[0]
+    const settings = audioTrack.getSettings()
+    const channelCount = settings.channelCount ?? 1
+
+    // Create AudioContext and splitter
     const ctx = new AudioContext({ sampleRate: 48000 })
     const source = ctx.createMediaStreamSource(stream)
+    const splitter = ctx.createChannelSplitter(channelCount)
+    source.connect(splitter)
 
-    // Use ScriptProcessorNode (widely supported, simpler than AudioWorklet for capture)
-    // Buffer size 4096 = ~85ms at 48kHz — good balance of latency vs overhead
-    const processor = ctx.createScriptProcessor(4096, 1, 1)
+    const capture = { stream, ctx, source, splitter, channelCount, refCount: 1 }
+    this.deviceCaptures.set(key, capture)
+
+    // Update the device info with discovered channel count
+    const devInfo = this._inputDevices.find(d => d.deviceId === deviceId)
+    if (devInfo) devInfo.channelCount = channelCount
+
+    return { ...capture, resolvedDeviceId: key }
+  }
+
+  /** Release a reference to a device capture. Closes when refCount hits 0. */
+  private releaseDeviceCapture(deviceKey: string) {
+    const capture = this.deviceCaptures.get(deviceKey)
+    if (!capture) return
+    capture.refCount--
+    if (capture.refCount <= 0) {
+      capture.splitter.disconnect()
+      capture.source.disconnect()
+      capture.ctx.close().catch(() => {})
+      for (const t of capture.stream.getTracks()) t.stop()
+      this.deviceCaptures.delete(deviceKey)
+    }
+  }
+
+  /** Start recording on a track. Uses the track's inputDeviceId and inputChannel.
+   *  inputChannel: 0 = mono mix of all channels, 1..N = specific channel (1-indexed). */
+  async startRecording(trackId: string, inputDeviceId: string | null = null, inputChannel: number = 0): Promise<void> {
+    const { ctx, splitter, channelCount, resolvedDeviceId } =
+      await this.getOrCreateDeviceCapture(inputDeviceId)
+
     const chunks: Float32Array[] = []
     this.recBuffers.set(trackId, chunks)
     this.recLengths.set(trackId, 0)
+
+    // Create a ScriptProcessorNode to capture audio
+    // Buffer size 4096 = ~85ms at 48kHz — good balance of latency vs overhead
+    const processor = ctx.createScriptProcessor(4096, 1, 1)
 
     processor.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0)
@@ -347,10 +459,32 @@ export class WebAudioBridge {
       this.recLengths.set(trackId, (this.recLengths.get(trackId) ?? 0) + copy.length)
     }
 
-    source.connect(processor)
-    processor.connect(ctx.destination) // ScriptProcessorNode requires output connection
+    let merger: ChannelMergerNode | undefined
 
-    this.recContexts.set(trackId, { ctx, source, processor })
+    if (inputChannel === 0) {
+      // Mono mix: sum all channels into one
+      // Create a merger that combines all splitter outputs into mono
+      if (channelCount === 1) {
+        // Only one channel — connect directly
+        splitter.connect(processor, 0, 0)
+      } else {
+        // Mix all channels: use a GainNode to sum
+        const mixGain = ctx.createGain()
+        mixGain.gain.value = 1 / channelCount  // normalize
+        for (let ch = 0; ch < channelCount; ch++) {
+          splitter.connect(mixGain, ch, 0)
+        }
+        mixGain.connect(processor, 0, 0)
+      }
+    } else {
+      // Specific channel (1-indexed)
+      const chIdx = Math.min(inputChannel - 1, channelCount - 1)
+      splitter.connect(processor, chIdx, 0)
+    }
+
+    processor.connect(ctx.destination)  // ScriptProcessorNode requires output connection
+
+    this.recTracks.set(trackId, { deviceId: resolvedDeviceId, processor, merger })
   }
 
   /** Poll new recording samples since last poll. Returns new samples or null. */
@@ -379,19 +513,13 @@ export class WebAudioBridge {
     // Drain remaining chunks
     const remaining = this.pollRecording(trackId)
 
-    // Close audio nodes and stream
-    const nodes = this.recContexts.get(trackId)
-    if (nodes) {
-      nodes.processor.disconnect()
-      nodes.source.disconnect()
-      nodes.ctx.close().catch(() => {})
-      this.recContexts.delete(trackId)
-    }
-
-    const stream = this.recStreams.get(trackId)
-    if (stream) {
-      for (const t of stream.getTracks()) t.stop()
-      this.recStreams.delete(trackId)
+    // Close per-track audio nodes
+    const recTrack = this.recTracks.get(trackId)
+    if (recTrack) {
+      recTrack.processor.disconnect()
+      if (recTrack.merger) recTrack.merger.disconnect()
+      this.releaseDeviceCapture(recTrack.deviceId)
+      this.recTracks.delete(trackId)
     }
 
     this.recBuffers.delete(trackId)
@@ -402,7 +530,7 @@ export class WebAudioBridge {
 
   /** Check if any tracks are currently recording */
   get isRecording(): boolean {
-    return this.recContexts.size > 0
+    return this.recTracks.size > 0
   }
 
   // ── Cleanup ───────────────────────────────────────────────────────────
@@ -411,7 +539,7 @@ export class WebAudioBridge {
     if (!this.module) return
 
     // Stop all recordings
-    for (const trackId of [...this.recContexts.keys()]) {
+    for (const trackId of [...this.recTracks.keys()]) {
       this.stopRecording(trackId)
     }
 
@@ -465,4 +593,6 @@ export interface WebTrack {
   armed: boolean
   samples: Float32Array | null
   sampleRate: number
+  inputDeviceId: string | null   // selected input device ID (null = system default)
+  inputChannel: number           // 0 = mono mix, 1..N = specific channel
 }
