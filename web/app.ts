@@ -57,6 +57,7 @@ const SLIDER_H = 20      // slider track height
 const SLIDER_KNOB_W = 12 // slider knob width
 const SLIDER_KNOB_H = 24 // slider knob height (taller than track for easy grab)
 const SLIDER_PAD = 8     // left padding for sliders
+const FULL_SLIDER_W = SIDEBAR_W - SLIDER_PAD * 2  // full-width slider for regular tracks
 
 // Nudge button dimensions (on right side of selected track waveform)
 const NUDGE_BTN_W = 36
@@ -381,11 +382,11 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
 
   // Row 3 (y+62..y+82): Volume slider
   const volSliderY = y + 62
-  drawMiniSlider(SLIDER_PAD, volSliderY, "V", track.volume, 0, 1, track.color)
+  drawMiniSlider(SLIDER_PAD, volSliderY, "V", track.volume, 0, 1, track.color, FULL_SLIDER_W)
 
   // Row 4 (y+88..y+108): Pan slider
   const panSliderY = y + 90
-  drawMiniSlider(SLIDER_PAD, panSliderY, "P", (track.pan + 1) / 2, 0, 1, track.color)
+  drawMiniSlider(SLIDER_PAD, panSliderY, "P", (track.pan + 1) / 2, 0, 1, track.color, FULL_SLIDER_W)
 }
 
 function drawMSRButton(x: number, y: number, label: string, active: boolean, activeColor: string) {
@@ -412,11 +413,13 @@ function drawMSRButton(x: number, y: number, label: string, active: boolean, act
 }
 
 // Draw a mini slider with label. `value` is normalized fraction of range [min, max].
-function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, max: number, accentColor: string) {
-  const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
-  const trackW = sliderW - 24
+// `totalW` overrides the default half-width formula when provided (for full-width track sliders).
+function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, max: number, accentColor: string, totalW?: number) {
+  const sliderW = totalW ?? (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
+  const labelW = 16
+  const trackW = sliderW - labelW - 44 // 44 = labelW gap + right margin for value text
   const trackH = 6
-  const trackX = x + 24
+  const trackX = x + labelW
   const trackY = y + (SLIDER_H - trackH) / 2
 
   // Label
@@ -433,10 +436,10 @@ function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, 
     const pan = valueFrac * 2 - 1
     valueText = formatPan(pan)
   }
-  ctx.fillStyle = C.fgDim
-  ctx.font = "9px monospace"
+  ctx.fillStyle = C.fg
+  ctx.font = "bold 11px monospace"
   ctx.textAlign = "right"
-  ctx.fillText(valueText, x + sliderW, y + SLIDER_H / 2 + 3)
+  ctx.fillText(valueText, x + sliderW, y + SLIDER_H / 2 + 4)
   ctx.textAlign = "left"
 
   // Track background
@@ -494,10 +497,12 @@ function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, 
 }
 
 // Get slider geometry for hit testing (returns { trackX, trackW } given the same params as drawMiniSlider)
-function getSliderGeometry(sliderX: number): { trackX: number; trackW: number } {
-  const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
-  const trackW = sliderW - 24
-  const trackX = sliderX + 24
+// `totalW` overrides the default half-width formula when provided (must match drawMiniSlider call).
+function getSliderGeometry(sliderX: number, totalW?: number): { trackX: number; trackW: number } {
+  const sliderW = totalW ?? (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
+  const labelW = 16
+  const trackW = sliderW - labelW - 44
+  const trackX = sliderX + labelW
   return { trackX, trackW }
 }
 
@@ -1279,7 +1284,7 @@ function hitTest(cx: number, cy: number): HitResult {
 
       // Volume slider (y+62)
       if (localY >= 58 && localY <= 62 + SLIDER_H + 4) {
-        const volGeo = getSliderGeometry(SLIDER_PAD)
+        const volGeo = getSliderGeometry(SLIDER_PAD, FULL_SLIDER_W)
         if (cx >= volGeo.trackX - 8 && cx <= volGeo.trackX + volGeo.trackW + 8) {
           result.zone = "sidebar-vol-slider"
           result.sliderFrac = Math.max(0, Math.min(1, (cx - volGeo.trackX) / volGeo.trackW))
@@ -1289,7 +1294,7 @@ function hitTest(cx: number, cy: number): HitResult {
 
       // Pan slider (y+90)
       if (localY >= 86 && localY <= 90 + SLIDER_H + 4) {
-        const panGeo = getSliderGeometry(SLIDER_PAD)
+        const panGeo = getSliderGeometry(SLIDER_PAD, FULL_SLIDER_W)
         if (cx >= panGeo.trackX - 8 && cx <= panGeo.trackX + panGeo.trackW + 8) {
           result.zone = "sidebar-pan-slider"
           result.sliderFrac = Math.max(0, Math.min(1, (cx - panGeo.trackX) / panGeo.trackW))
@@ -1537,7 +1542,7 @@ function setupMouse() {
     if (drag.type === "volume" && drag.trackIndex >= 0) {
       const track = state.tracks[drag.trackIndex]
       if (track) {
-        const geo = getSliderGeometry(SLIDER_PAD)
+        const geo = getSliderGeometry(SLIDER_PAD, FULL_SLIDER_W)
         const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
         track.volume = frac
         if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
@@ -1546,7 +1551,7 @@ function setupMouse() {
     } else if (drag.type === "pan" && drag.trackIndex >= 0) {
       const track = state.tracks[drag.trackIndex]
       if (track) {
-        const geo = getSliderGeometry(SLIDER_PAD)
+        const geo = getSliderGeometry(SLIDER_PAD, FULL_SLIDER_W)
         const frac = Math.max(0, Math.min(1, (cx - geo.trackX) / geo.trackW))
         track.pan = frac * 2 - 1
         if (audio.isReady) audio.setTrackPan(track.id, track.pan)
