@@ -1,15 +1,16 @@
 // ============================================================================
-// tuidaw Web App — Canvas 2D DAW interface
+// tuidaw Web App — Full-canvas DAW interface
 // ============================================================================
-// Entry point for the browser. Loaded as a bundled ES module.
-// Uses Canvas 2D for waveform rendering and the WASM audio engine.
+// Single <canvas> renders everything: topbar, sidebar, waveforms, statusbar.
+// No DOM elements besides the canvas itself (+ hidden file input for import).
 
 import { WebAudioBridge, type WebTrack } from "./audio-bridge"
 import { detectBPM, findBeatOffset } from "../src/utils/bpm"
 import { resample } from "../src/utils/dsp"
+import { parseWav } from "../src/utils/wav"
 
 // ── Tokyo Night Colors ──────────────────────────────────────────────────
-const Colors = {
+const C = {
   bg: "#1a1b26",
   bgDark: "#16161e",
   bgHighlight: "#292e42",
@@ -31,6 +32,14 @@ const TRACK_COLORS = [
 
 const SAMPLE_RATE = 48000
 
+// ── Layout Constants ────────────────────────────────────────────────────
+const SIDEBAR_W = 220
+const TOPBAR_H = 44
+const STATUSBAR_H = 28
+const TIMELINE_H = 24
+const TRACK_H = 80
+const CLICK_ROW_H = 32
+
 // ── App State ───────────────────────────────────────────────────────────
 interface AppState {
   tracks: WebTrack[]
@@ -38,6 +47,7 @@ interface AppState {
   transportState: "stopped" | "playing" | "recording"
   playheadPosition: number
   scrollOffset: number
+  freeScroll: boolean
   bpm: number
   originalBpm: number
   clickEnabled: boolean
@@ -57,6 +67,7 @@ function createDefaultState(): AppState {
     transportState: "stopped",
     playheadPosition: 0,
     scrollOffset: 0,
+    freeScroll: false,
     bpm: 120,
     originalBpm: 120,
     clickEnabled: false,
@@ -86,337 +97,399 @@ function createTrack(name: string, colorIndex: number): WebTrack {
   }
 }
 
-// ── DOM Elements ────────────────────────────────────────────────────────
-const $ = (id: string) => document.getElementById(id)!
-const loadingEl = $("loading") as HTMLDivElement
-const loadingStatus = $("loading-status") as HTMLParagraphElement
-const btnPlay = $("btn-play") as HTMLButtonElement
-const bpmDisplay = $("bpm-display") as HTMLDivElement
-const speedDisplay = $("speed-display") as HTMLDivElement
-const timeDisplay = $("time-display") as HTMLDivElement
-const statusMessage = $("status-message") as HTMLDivElement
-const sidebar = $("sidebar") as HTMLDivElement
-const timelineCanvas = $("timeline-canvas") as HTMLCanvasElement
-const waveformCanvas = $("waveform-canvas") as HTMLCanvasElement
-const timelineCtx = timelineCanvas.getContext("2d")!
-const waveformCtx = waveformCanvas.getContext("2d")!
+// ── Canvas Setup ────────────────────────────────────────────────────────
+const canvas = document.getElementById("app") as HTMLCanvasElement
+const ctx = canvas.getContext("2d")!
+let dpr = window.devicePixelRatio || 1
+let W = 0  // logical width
+let H = 0  // logical height
 
-// ── Initialize ──────────────────────────────────────────────────────────
+function resize() {
+  dpr = window.devicePixelRatio || 1
+  W = window.innerWidth
+  H = window.innerHeight
+  canvas.width = W * dpr
+  canvas.height = H * dpr
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  render()
+}
+
+// ── Audio Engine ────────────────────────────────────────────────────────
 const audio = new WebAudioBridge()
 const state = createDefaultState()
-let playheadInterval: ReturnType<typeof setInterval> | null = null
 let animFrameId: number | null = null
 let audioInitPromise: Promise<void> | null = null
 let audioInitStarted = false
 
-async function init() {
-  loadingStatus.textContent = "Loading WASM audio engine..."
-
-  try {
-    // Load the Emscripten glue script (defines TuidawAudio global)
-    await loadScript("/wasm/tuidaw_audio.js")
-    loadingStatus.textContent = "Ready — press any key or click to start"
-  } catch (err) {
-    loadingStatus.textContent = `Failed to load WASM: ${err}`
-    console.error("WASM load failed:", err)
-  }
-
-  // Hide loading overlay
-  setTimeout(() => loadingEl.classList.add("hidden"), 300)
-
-  // Setup UI
-  resizeCanvases()
-  window.addEventListener("resize", resizeCanvases)
-  setupTransportButtons()
-  setupKeyboard()
-  setupCanvasMouse()
-  renderSidebar()
-  renderFrame()
-}
-
-/** Initialize audio on first user gesture (required by browsers) */
 async function ensureAudioReady(): Promise<boolean> {
   if (audio.isReady) return true
-
   if (audioInitStarted) {
-    // Already initializing — wait for it
     if (audioInitPromise) await audioInitPromise
     return audio.isReady
   }
-
   audioInitStarted = true
   audioInitPromise = (async () => {
     try {
       await audio.init()
-      // Sync initial tracks to native engine
-      for (const track of state.tracks) {
-        audio.syncTrack(track)
-      }
+      for (const track of state.tracks) audio.syncTrack(track)
     } catch (err) {
       console.error("Audio init failed:", err)
       showStatus(`Audio init failed: ${err}`)
     }
   })()
-
   await audioInitPromise
   return audio.isReady
 }
 
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script")
-    script.src = src
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error(`Failed to load ${src}`))
-    document.head.appendChild(script)
-  })
+// ── Rendering ───────────────────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0, 0, W, H)
+  drawTopbar()
+  drawSidebar()
+  drawTimeline()
+  drawWaveformArea()
+  drawStatusbar()
 }
 
-// ── Canvas Sizing ───────────────────────────────────────────────────────
-function resizeCanvases() {
-  const container = $("canvas-container")
-  const rect = container.getBoundingClientRect()
-  const dpr = window.devicePixelRatio || 1
+// ── Topbar ──────────────────────────────────────────────────────────────
+function drawTopbar() {
+  ctx.fillStyle = C.bgDark
+  ctx.fillRect(0, 0, W, TOPBAR_H)
 
-  timelineCanvas.width = rect.width * dpr
-  timelineCanvas.height = 24 * dpr
-  timelineCanvas.style.width = `${rect.width}px`
-  timelineCanvas.style.height = "24px"
-  timelineCtx.scale(dpr, dpr)
+  // Bottom border
+  ctx.fillStyle = C.bgHighlight
+  ctx.fillRect(0, TOPBAR_H - 1, W, 1)
 
-  waveformCanvas.width = rect.width * dpr
-  waveformCanvas.height = (rect.height - 24) * dpr
-  waveformCanvas.style.width = `${rect.width}px`
-  waveformCanvas.style.height = `${rect.height - 24}px`
-  waveformCtx.scale(dpr, dpr)
+  const textY = TOPBAR_H / 2 + 5
+  let x = 16
 
-  renderFrame()
-}
+  // Play button
+  const btnW = 80
+  const btnH = 28
+  const btnY = (TOPBAR_H - btnH) / 2
+  const isPlaying = state.transportState !== "stopped"
 
-// ── Sidebar Rendering ───────────────────────────────────────────────────
-function renderSidebar() {
-  sidebar.innerHTML = ""
+  ctx.fillStyle = isPlaying ? C.green : C.bgHighlight
+  roundRect(ctx, x, btnY, btnW, btnH, 4)
+  ctx.fill()
 
-  // Click track row
-  const clickRow = document.createElement("div")
-  clickRow.className = `track-row click-track${state.selectedTrackIndex === -1 ? " selected" : ""}`
-  clickRow.innerHTML = `
-    <div class="track-name">
-      <span style="color: ${state.clickEnabled ? Colors.cyan : Colors.fgDim}">&#9833;</span>
-      <span style="color: ${state.clickEnabled ? Colors.fg : Colors.fgDim}">Click</span>
-      <span class="track-params" style="margin-left: auto">
-        V:${Math.round(state.clickVolume * 100)}%
-        ${formatPan(state.clickPan)}
-      </span>
-    </div>
-  `
-  clickRow.onclick = () => {
-    state.selectedTrackIndex = -1
-    renderSidebar()
-    renderFrame()
+  ctx.fillStyle = isPlaying ? C.bgDark : C.fg
+  ctx.font = "bold 12px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + btnW / 2, textY)
+  ctx.textAlign = "left"
+  x += btnW + 16
+
+  // BPM
+  ctx.fillStyle = C.cyan
+  ctx.font = "bold 14px monospace"
+  ctx.fillText(`${state.bpm} BPM`, x, textY)
+  x += 90
+
+  // Speed
+  const speed = state.bpm / state.originalBpm
+  if (Math.abs(speed - 1) > 0.001) {
+    ctx.fillStyle = C.orange
+    ctx.font = "12px monospace"
+    ctx.fillText(`${Math.round(speed * 100)}%`, x, textY)
+    x += 50
   }
-  sidebar.appendChild(clickRow)
 
-  // Regular tracks
+  // Time
+  const seconds = state.playheadPosition / SAMPLE_RATE
+  const mins = Math.floor(seconds / 60)
+  const secs = (seconds % 60).toFixed(1)
+  ctx.fillStyle = C.fgDim
+  ctx.font = "13px monospace"
+  ctx.fillText(`${mins}:${secs.padStart(4, "0")}`, x, textY)
+
+  // Status message (right-aligned)
+  if (state.statusMessage) {
+    ctx.fillStyle = C.yellow
+    ctx.font = "12px monospace"
+    ctx.textAlign = "right"
+    ctx.fillText(state.statusMessage, W - 16, textY)
+    ctx.textAlign = "left"
+  }
+}
+
+// ── Sidebar ─────────────────────────────────────────────────────────────
+function drawSidebar() {
+  const sidebarH = H - TOPBAR_H - STATUSBAR_H
+  ctx.fillStyle = C.bgDark
+  ctx.fillRect(0, TOPBAR_H, SIDEBAR_W, sidebarH)
+
+  // Right border
+  ctx.fillStyle = C.bgHighlight
+  ctx.fillRect(SIDEBAR_W - 1, TOPBAR_H, 1, sidebarH)
+
+  let y = TOPBAR_H
+
+  // ── Click track row ───────────────────────────────────────────────────
+  const isClickSelected = state.selectedTrackIndex === -1
+
+  if (isClickSelected) {
+    ctx.fillStyle = C.bgHighlight
+    ctx.fillRect(0, y, SIDEBAR_W - 1, CLICK_ROW_H)
+    // Selection indicator
+    ctx.fillStyle = C.blue
+    ctx.fillRect(0, y, 3, CLICK_ROW_H)
+  }
+
+  // Bottom border
+  ctx.fillStyle = C.bgHighlight
+  ctx.fillRect(0, y + CLICK_ROW_H - 1, SIDEBAR_W - 1, 1)
+
+  const clickTextY = y + CLICK_ROW_H / 2 + 4
+  const clickColor = state.clickEnabled ? C.cyan : C.fgDim
+  const fgColor = state.clickEnabled ? C.fg : C.fgDim
+
+  ctx.font = "12px monospace"
+  ctx.fillStyle = clickColor
+  ctx.fillText("\u2669", 8, clickTextY)  // ♩ icon
+
+  ctx.fillStyle = fgColor
+  ctx.fillText("Click", 22, clickTextY)
+
+  ctx.fillStyle = C.fgDim
+  ctx.font = "10px monospace"
+  const clickInfo = `V:${Math.round(state.clickVolume * 100)}% ${formatPan(state.clickPan)}`
+  ctx.fillText(clickInfo, 70, clickTextY)
+
+  y += CLICK_ROW_H
+
+  // ── Regular tracks ────────────────────────────────────────────────────
   for (let i = 0; i < state.tracks.length; i++) {
     const track = state.tracks[i]
-    const row = document.createElement("div")
-    row.className = `track-row${i === state.selectedTrackIndex ? " selected" : ""}`
-    row.innerHTML = `
-      <div class="track-name">
-        <span class="track-color-dot" style="background: ${track.color}"></span>
-        <span>${track.name}</span>
-      </div>
-      <div class="track-controls">
-        <button class="track-btn${track.muted ? " muted" : ""}" data-action="mute" data-idx="${i}">M</button>
-        <button class="track-btn${track.solo ? " solo" : ""}" data-action="solo" data-idx="${i}">S</button>
-        <button class="track-btn${track.armed ? " armed" : ""}" data-action="arm" data-idx="${i}">R</button>
-      </div>
-      <div class="track-params">
-        V:${Math.round(track.volume * 100)}%
-        ${formatPan(track.pan)}
-        ${track.samples ? `${(track.samples.length / SAMPLE_RATE).toFixed(1)}s` : "(empty)"}
-      </div>
-    `
-    row.onclick = (e) => {
-      // Don't select if clicking a button
-      if ((e.target as HTMLElement).tagName === "BUTTON") return
-      state.selectedTrackIndex = i
-      renderSidebar()
-      renderFrame()
+    const isSelected = i === state.selectedTrackIndex
+
+    // Selected background
+    if (isSelected) {
+      ctx.fillStyle = C.bgHighlight
+      ctx.fillRect(0, y, SIDEBAR_W - 1, TRACK_H)
+      // Selection indicator
+      ctx.fillStyle = C.blue
+      ctx.fillRect(0, y, 3, TRACK_H)
     }
-    sidebar.appendChild(row)
+
+    // Bottom border
+    ctx.fillStyle = C.bgHighlight
+    ctx.fillRect(0, y + TRACK_H - 1, SIDEBAR_W - 1, 1)
+
+    const pad = 8
+
+    // Row 1: color dot + name
+    ctx.fillStyle = track.color
+    ctx.beginPath()
+    ctx.arc(pad + 4, y + 14, 4, 0, Math.PI * 2)
+    ctx.fill()
+
+    ctx.fillStyle = C.fg
+    ctx.font = "bold 12px monospace"
+    const maxNameW = SIDEBAR_W - 24
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(pad + 12, y, maxNameW, 24)
+    ctx.clip()
+    ctx.fillText(track.name, pad + 12, y + 18)
+    ctx.restore()
+
+    // Row 2: M S R buttons
+    const btnY = y + 28
+    drawSmallButton(ctx, pad, btnY, "M", track.muted, C.orange)
+    drawSmallButton(ctx, pad + 26, btnY, "S", track.solo, C.yellow)
+    drawSmallButton(ctx, pad + 52, btnY, "R", track.armed, C.red)
+
+    // Row 3: Volume + Pan
+    const paramY = y + 52
+    ctx.fillStyle = C.fgDim
+    ctx.font = "10px monospace"
+    ctx.fillText(`V:${Math.round(track.volume * 100)}%`, pad, paramY)
+    ctx.fillText(formatPan(track.pan), pad + 60, paramY)
+
+    // Row 4: Duration or (empty)
+    const infoY = y + 68
+    ctx.fillStyle = C.fgDim
+    ctx.font = "10px monospace"
+    if (track.samples && track.samples.length > 0) {
+      const dur = (track.samples.length / SAMPLE_RATE).toFixed(1)
+      ctx.fillText(`${dur}s`, pad, infoY)
+    } else {
+      ctx.fillText("(empty)", pad, infoY)
+    }
+
+    y += TRACK_H
+  }
+}
+
+function drawSmallButton(ctx: CanvasRenderingContext2D, x: number, y: number, label: string, active: boolean, activeColor: string) {
+  const w = 22
+  const h = 16
+
+  if (active) {
+    ctx.fillStyle = activeColor
+    roundRect(ctx, x, y, w, h, 2)
+    ctx.fill()
+    ctx.fillStyle = C.bgDark
+  } else {
+    ctx.fillStyle = C.bgHighlight
+    roundRect(ctx, x, y, w, h, 2)
+    ctx.fill()
+    ctx.strokeStyle = C.bgHighlight
+    ctx.lineWidth = 1
+    roundRect(ctx, x, y, w, h, 2)
+    ctx.stroke()
+    ctx.fillStyle = C.fgDim
   }
 
-  // Wire up M/S/R buttons
-  sidebar.querySelectorAll("[data-action]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      const el = e.currentTarget as HTMLElement
-      const action = el.dataset.action
-      const idx = parseInt(el.dataset.idx!, 10)
-      const track = state.tracks[idx]
-      if (!track) return
-
-      if (action === "mute") {
-        track.muted = !track.muted
-        if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
-      } else if (action === "solo") {
-        track.solo = !track.solo
-        if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
-      } else if (action === "arm") {
-        track.armed = !track.armed
-      }
-      renderSidebar()
-    })
-  })
+  ctx.font = "bold 10px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText(label, x + w / 2, y + 12)
+  ctx.textAlign = "left"
 }
 
-function formatPan(pan: number): string {
-  if (Math.abs(pan) < 0.01) return "C"
-  if (pan < 0) return `L${Math.round(Math.abs(pan) * 100)}`
-  return `R${Math.round(pan * 100)}`
-}
+// ── Timeline ────────────────────────────────────────────────────────────
+function drawTimeline() {
+  const x0 = SIDEBAR_W
+  const y0 = TOPBAR_H
+  const w = W - SIDEBAR_W
+  const h = TIMELINE_H
 
-// ── Canvas Rendering ────────────────────────────────────────────────────
-function renderFrame() {
-  renderTimeline()
-  renderWaveforms()
-  updateTopBar()
-}
+  ctx.fillStyle = C.bgDark
+  ctx.fillRect(x0, y0, w, h)
 
-function renderTimeline() {
-  const w = timelineCanvas.width / (window.devicePixelRatio || 1)
-  const h = 24
-  const ctx = timelineCtx
-
-  ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = Colors.bgDark
-  ctx.fillRect(0, 0, w, h)
+  // Bottom border
+  ctx.fillStyle = C.bgHighlight
+  ctx.fillRect(x0, y0 + h - 1, w, 1)
 
   const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
   const samplesPerCol = getSamplesPerCol(w)
 
-  // Draw beat markers
   const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
   const endSample = state.scrollOffset + w * samplesPerCol
   const endBeat = Math.ceil(endSample / samplesPerBeat)
 
   for (let beat = startBeat; beat <= endBeat; beat++) {
     const samplePos = beat * samplesPerBeat
-    const x = (samplePos - state.scrollOffset) / samplesPerCol
-    if (x < 0 || x >= w) continue
+    const x = x0 + (samplePos - state.scrollOffset) / samplesPerCol
+    if (x < x0 || x >= x0 + w) continue
 
     const isBar = beat % 4 === 0
-    ctx.strokeStyle = isBar ? Colors.fgDim : Colors.bgHighlight
+    ctx.strokeStyle = isBar ? C.fgDim : C.bgHighlight
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
-    ctx.moveTo(x, isBar ? 0 : 8)
-    ctx.lineTo(x, h)
+    ctx.moveTo(x, y0 + (isBar ? 0 : 8))
+    ctx.lineTo(x, y0 + h)
     ctx.stroke()
 
     if (isBar) {
-      ctx.fillStyle = Colors.fgDim
+      ctx.fillStyle = C.fgDim
       ctx.font = "10px monospace"
-      ctx.fillText(`${Math.floor(beat / 4) + 1}`, x + 3, 10)
+      ctx.fillText(`${Math.floor(beat / 4) + 1}`, x + 3, y0 + 10)
     }
   }
 
-  // Draw loop region
+  // Loop region
   if (state.loopStart !== null && state.loopEnd !== null) {
-    const x1 = (state.loopStart - state.scrollOffset) / samplesPerCol
-    const x2 = (state.loopEnd - state.scrollOffset) / samplesPerCol
+    const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
+    const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
     ctx.fillStyle = "rgba(122, 162, 247, 0.2)"
-    ctx.fillRect(Math.max(0, x1), 0, Math.min(w, x2) - Math.max(0, x1), h)
+    const clampX1 = Math.max(x0, lx1)
+    const clampX2 = Math.min(x0 + w, lx2)
+    if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, h)
   }
 
-  // Draw playhead
-  const playheadX = (state.playheadPosition - state.scrollOffset) / samplesPerCol
-  if (playheadX >= 0 && playheadX <= w) {
-    ctx.strokeStyle = Colors.green
+  // Playhead
+  const playheadX = x0 + (state.playheadPosition - state.scrollOffset) / samplesPerCol
+  if (playheadX >= x0 && playheadX <= x0 + w) {
+    ctx.strokeStyle = C.green
     ctx.lineWidth = 2
     ctx.beginPath()
-    ctx.moveTo(playheadX, 0)
-    ctx.lineTo(playheadX, h)
+    ctx.moveTo(playheadX, y0)
+    ctx.lineTo(playheadX, y0 + h)
     ctx.stroke()
   }
 }
 
-function renderWaveforms() {
-  const dpr = window.devicePixelRatio || 1
-  const w = waveformCanvas.width / dpr
-  const h = waveformCanvas.height / dpr
-  const ctx = waveformCtx
+// ── Waveform Area ───────────────────────────────────────────────────────
+function drawWaveformArea() {
+  const x0 = SIDEBAR_W
+  const y0 = TOPBAR_H + TIMELINE_H
+  const w = W - SIDEBAR_W
+  const areaH = H - TOPBAR_H - TIMELINE_H - STATUSBAR_H
 
-  ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = Colors.bg
-  ctx.fillRect(0, 0, w, h)
+  ctx.fillStyle = C.bg
+  ctx.fillRect(x0, y0, w, areaH)
 
   if (state.tracks.length === 0) return
 
-  // Fixed track height matching sidebar (CSS --track-height is 80px)
-  const trackHeight = 80
   const samplesPerCol = getSamplesPerCol(w)
   const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-  const totalTrackArea = state.tracks.length * trackHeight
+  const totalTrackArea = state.tracks.length * TRACK_H
+  const gridH = Math.min(totalTrackArea, areaH)
 
-  // Draw beat grid (only within track area)
+  // Beat grid
   const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
   const endSample = state.scrollOffset + w * samplesPerCol
   const endBeat = Math.ceil(endSample / samplesPerBeat)
-  const gridH = Math.min(totalTrackArea, h)
 
   for (let beat = startBeat; beat <= endBeat; beat++) {
     const samplePos = beat * samplesPerBeat
-    const x = (samplePos - state.scrollOffset) / samplesPerCol
-    if (x < 0 || x >= w) continue
+    const x = x0 + (samplePos - state.scrollOffset) / samplesPerCol
+    if (x < x0 || x >= x0 + w) continue
 
     const isBar = beat % 4 === 0
-    ctx.strokeStyle = isBar ? Colors.bgHighlight : `${Colors.bgHighlight}80`
+    ctx.strokeStyle = isBar ? C.bgHighlight : `${C.bgHighlight}80`
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, gridH)
+    ctx.moveTo(x, y0)
+    ctx.lineTo(x, y0 + gridH)
     ctx.stroke()
   }
 
-  // Draw loop region (only within track area)
+  // Loop region
   if (state.loopStart !== null && state.loopEnd !== null) {
-    const x1 = (state.loopStart - state.scrollOffset) / samplesPerCol
-    const x2 = (state.loopEnd - state.scrollOffset) / samplesPerCol
+    const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
+    const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
     ctx.fillStyle = "rgba(122, 162, 247, 0.1)"
-    ctx.fillRect(Math.max(0, x1), 0, Math.min(w, x2) - Math.max(0, x1), gridH)
+    const clampX1 = Math.max(x0, lx1)
+    const clampX2 = Math.min(x0 + w, lx2)
+    if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, gridH)
   }
 
-  // Draw each track's waveform
+  // Tracks
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x0, y0, w, areaH)
+  ctx.clip()
+
   for (let i = 0; i < state.tracks.length; i++) {
     const track = state.tracks[i]
-    const y = i * trackHeight
-    const waveH = trackHeight - 4 // 2px padding top/bottom
+    const ty = y0 + i * TRACK_H
+    const waveH = TRACK_H - 4
 
     // Track separator
     if (i > 0) {
-      ctx.strokeStyle = Colors.bgHighlight
+      ctx.strokeStyle = C.bgHighlight
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(0, y)
-      ctx.lineTo(w, y)
+      ctx.moveTo(x0, ty)
+      ctx.lineTo(x0 + w, ty)
       ctx.stroke()
     }
 
     // Waveform
     if (track.samples && track.samples.length > 0) {
-      const color = track.muted ? Colors.fgDim : track.color
+      const color = track.muted ? C.fgDim : track.color
       ctx.fillStyle = color
       ctx.globalAlpha = track.muted ? 0.3 : 0.7
 
       for (let col = 0; col < w; col++) {
         const startSample = Math.floor(state.scrollOffset + col * samplesPerCol)
         const endSampleIdx = Math.floor(state.scrollOffset + (col + 1) * samplesPerCol)
-
         if (startSample >= track.samples.length) break
         if (endSampleIdx < 0) continue
 
-        // Find peak amplitude in this column's sample range
         let peak = 0
         const s = Math.max(0, startSample)
         const e = Math.min(track.samples.length, endSampleIdx)
@@ -425,79 +498,91 @@ function renderWaveforms() {
           if (v > peak) peak = v
         }
 
-        // Draw as a bar from center
         const barH = peak * waveH * track.volume
-        const centerY = y + 2 + waveH / 2
-        ctx.fillRect(col, centerY - barH / 2, 1, Math.max(1, barH))
+        const centerY = ty + 2 + waveH / 2
+        ctx.fillRect(x0 + col, centerY - barH / 2, 1, Math.max(1, barH))
       }
 
       ctx.globalAlpha = 1
     } else {
-      // Empty track label
-      ctx.fillStyle = Colors.fgDim
+      ctx.fillStyle = C.fgDim
       ctx.font = "11px monospace"
-      ctx.fillText("(empty)", 8, y + trackHeight / 2 + 4)
+      ctx.fillText("(empty)", x0 + 8, ty + TRACK_H / 2 + 4)
     }
 
     // Selected track highlight
     if (i === state.selectedTrackIndex) {
-      ctx.strokeStyle = Colors.blue
+      ctx.strokeStyle = C.blue
       ctx.lineWidth = 2
-      ctx.strokeRect(0, y + 1, w - 1, trackHeight - 2)
+      ctx.strokeRect(x0, ty + 1, w - 1, TRACK_H - 2)
     }
   }
 
-  // Draw playhead (only within track area)
-  const playheadX = (state.playheadPosition - state.scrollOffset) / samplesPerCol
-  if (playheadX >= 0 && playheadX <= w) {
-    ctx.strokeStyle = Colors.green
+  ctx.restore()
+
+  // Playhead
+  const playheadX = x0 + (state.playheadPosition - state.scrollOffset) / samplesPerCol
+  if (playheadX >= x0 && playheadX <= x0 + w) {
+    ctx.strokeStyle = C.green
     ctx.lineWidth = 1.5
     ctx.beginPath()
-    ctx.moveTo(playheadX, 0)
-    ctx.lineTo(playheadX, gridH)
+    ctx.moveTo(playheadX, y0)
+    ctx.lineTo(playheadX, y0 + gridH)
     ctx.stroke()
   }
 }
 
+// ── Statusbar ───────────────────────────────────────────────────────────
+function drawStatusbar() {
+  const y = H - STATUSBAR_H
+
+  ctx.fillStyle = C.bgDark
+  ctx.fillRect(0, y, W, STATUSBAR_H)
+
+  // Top border
+  ctx.fillStyle = C.bgHighlight
+  ctx.fillRect(0, y, W, 1)
+
+  ctx.fillStyle = C.fgDim
+  ctx.font = "11px monospace"
+  const textY = y + STATUSBAR_H / 2 + 4
+  const shortcuts = "Space Play  R Arm  M Mute  S Solo  C Click  +/- BPM  hjkl Nav  I Import  A Add  D Del"
+  ctx.fillText(shortcuts, 16, textY)
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+function formatPan(pan: number): string {
+  if (Math.abs(pan) < 0.01) return "C"
+  if (pan < 0) return `L${Math.round(Math.abs(pan) * 100)}`
+  return `R${Math.round(pan * 100)}`
+}
+
 function getSamplesPerCol(canvasWidth: number): number {
-  // Roughly 10 seconds visible at default zoom
   return Math.max(1, Math.floor(SAMPLE_RATE / (canvasWidth * 2) * 10) * 2)
 }
 
-// ── Top Bar Updates ─────────────────────────────────────────────────────
-function updateTopBar() {
-  bpmDisplay.textContent = `${state.bpm} BPM`
-
-  const speed = state.bpm / state.originalBpm
-  if (Math.abs(speed - 1) > 0.001) {
-    speedDisplay.textContent = `${Math.round(speed * 100)}%`
-  } else {
-    speedDisplay.textContent = ""
-  }
-
-  const totalSamples = state.playheadPosition
-  const seconds = totalSamples / SAMPLE_RATE
-  const mins = Math.floor(seconds / 60)
-  const secs = (seconds % 60).toFixed(1)
-  timeDisplay.textContent = `${mins}:${secs.padStart(4, "0")}`
-
-  // Transport button state
-  if (state.transportState !== "stopped") {
-    btnPlay.classList.add("active")
-    btnPlay.innerHTML = "&#10074;&#10074; Pause"
-  } else {
-    btnPlay.classList.remove("active")
-    btnPlay.innerHTML = "&#9654; Play"
-  }
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.arcTo(x + w, y, x + w, y + r, r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r)
+  ctx.lineTo(x + r, y + h)
+  ctx.arcTo(x, y + h, x, y + h - r, r)
+  ctx.lineTo(x, y + r)
+  ctx.arcTo(x, y, x + r, y, r)
+  ctx.closePath()
 }
 
 function showStatus(msg: string) {
-  statusMessage.textContent = msg
-  statusMessage.style.opacity = "1"
+  state.statusMessage = msg
   if (state.statusTimeout) clearTimeout(state.statusTimeout)
   state.statusTimeout = setTimeout(() => {
-    statusMessage.style.opacity = "0"
+    state.statusMessage = ""
+    render()
   }, 3000)
+  render()
 }
 
 // ── Transport ───────────────────────────────────────────────────────────
@@ -509,13 +594,10 @@ async function play() {
   }
 
   state.transportState = "playing"
+  state.freeScroll = false
 
-  // Sync all tracks before playing
-  for (const track of state.tracks) {
-    audio.syncTrack(track)
-  }
+  for (const track of state.tracks) audio.syncTrack(track)
 
-  // Set up click if enabled
   if (state.clickEnabled) {
     const duration = getClickDuration()
     audio.generateClick(state.bpm, duration)
@@ -524,47 +606,34 @@ async function play() {
     audio.setClickPan(state.clickPan)
   }
 
-  // Set loop if active
   if (state.loopStart !== null && state.loopEnd !== null) {
     audio.setLoop(state.loopStart, state.loopEnd)
   }
 
-  // Set speed
   audio.setSpeed(state.bpm / state.originalBpm)
-
-  // Start playback
   audio.play(state.playheadPosition)
-
-  // Start playhead polling
   startPlayheadPolling()
-  renderSidebar()
-  renderFrame()
+  render()
 }
 
 function stopTransport() {
   state.transportState = "stopped"
+  state.freeScroll = false
   audio.stop()
 
-  if (playheadInterval) {
-    clearInterval(playheadInterval)
-    playheadInterval = null
-  }
   if (animFrameId) {
     cancelAnimationFrame(animFrameId)
     animFrameId = null
   }
-
-  renderSidebar()
-  renderFrame()
+  render()
 }
 
 function startPlayheadPolling() {
-  // Use requestAnimationFrame for smooth visual updates
   function tick() {
     if (state.transportState === "stopped") return
     state.playheadPosition = audio.getPlayhead()
-    autoScroll()
-    renderFrame()
+    if (!state.freeScroll) autoScroll()
+    render()
     animFrameId = requestAnimationFrame(tick)
   }
   animFrameId = requestAnimationFrame(tick)
@@ -582,8 +651,7 @@ function getClickDuration(): number {
 
 // ── Scrolling ───────────────────────────────────────────────────────────
 function autoScroll() {
-  const dpr = window.devicePixelRatio || 1
-  const w = waveformCanvas.width / dpr
+  const w = W - SIDEBAR_W
   const samplesPerCol = getSamplesPerCol(w)
   const visibleSamples = w * samplesPerCol
 
@@ -595,8 +663,7 @@ function autoScroll() {
 }
 
 function ensurePlayheadVisible() {
-  const dpr = window.devicePixelRatio || 1
-  const w = waveformCanvas.width / dpr
+  const w = W - SIDEBAR_W
   const samplesPerCol = getSamplesPerCol(w)
   const visibleSamples = w * samplesPerCol
 
@@ -606,67 +673,230 @@ function ensurePlayheadVisible() {
   }
 }
 
-// ── Transport Buttons ───────────────────────────────────────────────────
-function setupTransportButtons() {
-  btnPlay.onclick = () => {
-    if (state.transportState !== "stopped") {
-      stopTransport()
-    } else {
-      play()
-    }
-  }
+// ── Hit zones for mouse ─────────────────────────────────────────────────
+type Zone = "topbar-play" | "topbar" | "sidebar-click" | "sidebar-track" | "sidebar-btn"
+           | "timeline" | "waveform" | "statusbar" | "none"
+
+interface HitResult {
+  zone: Zone
+  trackIndex: number
+  btnAction?: "mute" | "solo" | "arm"
+  localX: number
+  localY: number
 }
 
-// ── Keyboard Shortcuts ──────────────────────────────────────────────────
+function hitTest(cx: number, cy: number): HitResult {
+  const result: HitResult = { zone: "none", trackIndex: -1, localX: cx, localY: cy }
+
+  // Topbar
+  if (cy < TOPBAR_H) {
+    // Play button: x=16, w=80
+    if (cx >= 16 && cx <= 96 && cy >= (TOPBAR_H - 28) / 2 && cy <= (TOPBAR_H + 28) / 2) {
+      result.zone = "topbar-play"
+    } else {
+      result.zone = "topbar"
+    }
+    return result
+  }
+
+  // Statusbar
+  if (cy >= H - STATUSBAR_H) {
+    result.zone = "statusbar"
+    return result
+  }
+
+  // Sidebar
+  if (cx < SIDEBAR_W) {
+    const sideY = cy - TOPBAR_H
+
+    // Click track row
+    if (sideY < CLICK_ROW_H) {
+      result.zone = "sidebar-click"
+      result.trackIndex = -1
+      return result
+    }
+
+    // Regular tracks
+    const trackY = sideY - CLICK_ROW_H
+    const trackIdx = Math.floor(trackY / TRACK_H)
+    if (trackIdx >= 0 && trackIdx < state.tracks.length) {
+      result.trackIndex = trackIdx
+      const localY = trackY - trackIdx * TRACK_H
+
+      // M/S/R button row (y=28..44, x=8..74)
+      if (localY >= 28 && localY < 44 && cx >= 8) {
+        if (cx < 30) { result.zone = "sidebar-btn"; result.btnAction = "mute" }
+        else if (cx < 56) { result.zone = "sidebar-btn"; result.btnAction = "solo" }
+        else if (cx < 82) { result.zone = "sidebar-btn"; result.btnAction = "arm" }
+        else { result.zone = "sidebar-track" }
+      } else {
+        result.zone = "sidebar-track"
+      }
+    }
+    return result
+  }
+
+  // Timeline
+  if (cy < TOPBAR_H + TIMELINE_H) {
+    result.zone = "timeline"
+    result.localX = cx - SIDEBAR_W
+    return result
+  }
+
+  // Waveform area
+  result.zone = "waveform"
+  result.localX = cx - SIDEBAR_W
+  result.localY = cy - TOPBAR_H - TIMELINE_H
+  result.trackIndex = Math.floor(result.localY / TRACK_H)
+  if (result.trackIndex >= state.tracks.length) result.trackIndex = -1
+  return result
+}
+
+// ── Mouse Handling ──────────────────────────────────────────────────────
+function setupMouse() {
+  canvas.addEventListener("click", (e) => {
+    const hit = hitTest(e.clientX, e.clientY)
+
+    switch (hit.zone) {
+      case "topbar-play":
+        if (state.transportState !== "stopped") stopTransport()
+        else play()
+        break
+
+      case "sidebar-click":
+        state.selectedTrackIndex = -1
+        render()
+        break
+
+      case "sidebar-track":
+        if (hit.trackIndex >= 0) {
+          state.selectedTrackIndex = hit.trackIndex
+          render()
+        }
+        break
+
+      case "sidebar-btn":
+        if (hit.trackIndex >= 0) {
+          const track = state.tracks[hit.trackIndex]
+          if (track && hit.btnAction === "mute") {
+            track.muted = !track.muted
+            if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
+          } else if (track && hit.btnAction === "solo") {
+            track.solo = !track.solo
+            if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
+          } else if (track && hit.btnAction === "arm") {
+            track.armed = !track.armed
+          }
+          render()
+        }
+        break
+
+      case "timeline": {
+        const w = W - SIDEBAR_W
+        const samplesPerCol = getSamplesPerCol(w)
+        state.playheadPosition = Math.max(0, Math.floor(state.scrollOffset + hit.localX * samplesPerCol))
+        if (state.transportState !== "stopped") {
+          audio.setPlayhead(state.playheadPosition)
+          state.freeScroll = true
+        }
+        render()
+        break
+      }
+
+      case "waveform":
+        if (hit.trackIndex >= 0) {
+          state.selectedTrackIndex = hit.trackIndex
+          render()
+        }
+        break
+    }
+  })
+
+  // Scroll
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault()
+    const hit = hitTest(e.clientX, e.clientY)
+
+    if (hit.zone === "waveform" || hit.zone === "timeline") {
+      const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+      const direction = e.deltaY > 0 ? 1 : -1
+      state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
+      if (state.transportState !== "stopped") state.freeScroll = true
+      render()
+    } else if (hit.zone === "sidebar-track" && hit.trackIndex >= 0) {
+      // Volume scroll on sidebar tracks
+      const track = state.tracks[hit.trackIndex]
+      if (track) {
+        const delta = e.deltaY > 0 ? -0.05 : 0.05
+        track.volume = Math.max(0, Math.min(2, track.volume + delta))
+        if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
+        render()
+      }
+    } else if (hit.zone === "sidebar-click") {
+      // Volume scroll on click track
+      const delta = e.deltaY > 0 ? -0.05 : 0.05
+      state.clickVolume = Math.max(0, Math.min(2, state.clickVolume + delta))
+      if (audio.isReady) audio.setClickVolume(state.clickVolume)
+      render()
+    }
+  }, { passive: false })
+
+  // Cursor style
+  canvas.addEventListener("mousemove", (e) => {
+    const hit = hitTest(e.clientX, e.clientY)
+    if (hit.zone === "topbar-play" || hit.zone === "sidebar-btn" ||
+        hit.zone === "sidebar-track" || hit.zone === "sidebar-click" ||
+        hit.zone === "timeline") {
+      canvas.style.cursor = "pointer"
+    } else {
+      canvas.style.cursor = "default"
+    }
+  })
+}
+
+// ── Keyboard ────────────────────────────────────────────────────────────
 function setupKeyboard() {
   document.addEventListener("keydown", (e) => {
-    // Don't handle if typing in an input
     if ((e.target as HTMLElement).tagName === "INPUT") return
 
     switch (e.key) {
       case " ":
         e.preventDefault()
-        if (state.transportState !== "stopped") {
-          stopTransport()
-        } else {
-          play()
-        }
+        if (state.transportState !== "stopped") stopTransport()
+        else play()
         break
 
       case "m":
         if (state.selectedTrackIndex === -1) {
           state.clickEnabled = !state.clickEnabled
-          renderSidebar()
         } else {
           const track = state.tracks[state.selectedTrackIndex]
           if (track) {
             track.muted = !track.muted
             if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
-            renderSidebar()
           }
         }
+        render()
         break
 
-      case "s":
-        {
-          const track = state.tracks[state.selectedTrackIndex]
-          if (track) {
-            track.solo = !track.solo
-            if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
-            renderSidebar()
-          }
+      case "s": {
+        const track = state.tracks[state.selectedTrackIndex]
+        if (track) {
+          track.solo = !track.solo
+          if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
+          render()
         }
         break
+      }
 
-      case "r":
-        {
-          const track = state.tracks[state.selectedTrackIndex]
-          if (track) {
-            track.armed = !track.armed
-            renderSidebar()
-          }
+      case "r": {
+        const track = state.tracks[state.selectedTrackIndex]
+        if (track) {
+          track.armed = !track.armed
+          render()
         }
         break
+      }
 
       case "c":
         state.clickEnabled = !state.clickEnabled
@@ -680,20 +910,20 @@ function setupKeyboard() {
             audio.setClick(false, 0)
           }
         }
-        renderSidebar()
+        render()
         break
 
       case "+":
       case "=":
         state.bpm = Math.min(300, state.bpm + (e.shiftKey ? 10 : 1))
         if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
-        renderFrame()
+        render()
         break
 
       case "-":
         state.bpm = Math.max(20, state.bpm - (e.shiftKey ? 10 : 1))
         if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
-        renderFrame()
+        render()
         break
 
       case "ArrowUp":
@@ -701,8 +931,7 @@ function setupKeyboard() {
         e.preventDefault()
         if (state.selectedTrackIndex > -1) {
           state.selectedTrackIndex--
-          renderSidebar()
-          renderFrame()
+          render()
         }
         break
 
@@ -711,55 +940,68 @@ function setupKeyboard() {
         e.preventDefault()
         if (state.selectedTrackIndex < state.tracks.length - 1) {
           state.selectedTrackIndex++
-          renderSidebar()
-          renderFrame()
+          render()
         }
         break
 
       case "ArrowLeft":
-      case "h":
-        {
-          const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-          const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
-          state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
-          renderFrame()
-        }
+      case "h": {
+        const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+        const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
+        state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
+        if (state.transportState !== "stopped") state.freeScroll = true
+        render()
         break
+      }
 
       case "ArrowRight":
-      case "l":
-        {
-          const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-          const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
-          state.scrollOffset += scrollAmount
-          renderFrame()
-        }
+      case "l": {
+        const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+        const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
+        state.scrollOffset += scrollAmount
+        if (state.transportState !== "stopped") state.freeScroll = true
+        render()
         break
+      }
+
+      case "[": {
+        const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+        state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBeat * 4)
+        if (state.transportState !== "stopped") audio.setPlayhead(state.playheadPosition)
+        ensurePlayheadVisible()
+        render()
+        break
+      }
+
+      case "]": {
+        const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+        state.playheadPosition += samplesPerBeat * 4
+        if (state.transportState !== "stopped") audio.setPlayhead(state.playheadPosition)
+        ensurePlayheadVisible()
+        render()
+        break
+      }
 
       case "Home":
       case "0":
         state.playheadPosition = 0
         state.scrollOffset = 0
-        if (state.transportState !== "stopped") {
-          audio.setPlayhead(0)
-        }
-        renderFrame()
+        state.freeScroll = false
+        if (state.transportState !== "stopped") audio.setPlayhead(0)
+        render()
         break
 
-      case "End":
-        {
-          let maxLen = 0
-          for (const t of state.tracks) {
-            if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
-          }
-          state.playheadPosition = maxLen
-          if (state.transportState !== "stopped") {
-            audio.setPlayhead(maxLen)
-          }
-          ensurePlayheadVisible()
-          renderFrame()
+      case "End": {
+        let maxLen = 0
+        for (const t of state.tracks) {
+          if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
         }
+        state.playheadPosition = maxLen
+        if (state.transportState !== "stopped") audio.setPlayhead(maxLen)
+        ensurePlayheadVisible()
+        render()
         break
+      }
 
       case "a":
         if (state.transportState !== "stopped") {
@@ -769,8 +1011,7 @@ function setupKeyboard() {
           state.tracks.push(newTrack)
           if (audio.isReady) audio.syncTrack(newTrack)
           state.selectedTrackIndex = state.tracks.length - 1
-          renderSidebar()
-          renderFrame()
+          render()
         }
         break
 
@@ -792,62 +1033,50 @@ function setupKeyboard() {
                 state.selectedTrackIndex = state.tracks.length - 1
               }
             }
-            renderSidebar()
-            renderFrame()
+            render()
           }
         }
         break
+
+      case "v":
+      case "V":
+        // Volume adjust via keyboard (future: prompt)
+        break
+
+      case "<": {
+        if (state.selectedTrackIndex === -1) {
+          state.clickPan = Math.max(-1, state.clickPan - 0.1)
+          if (audio.isReady) audio.setClickPan(state.clickPan)
+        } else {
+          const track = state.tracks[state.selectedTrackIndex]
+          if (track) {
+            track.pan = Math.max(-1, track.pan - 0.1)
+            if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+          }
+        }
+        render()
+        break
+      }
+
+      case ">": {
+        if (state.selectedTrackIndex === -1) {
+          state.clickPan = Math.min(1, state.clickPan + 0.1)
+          if (audio.isReady) audio.setClickPan(state.clickPan)
+        } else {
+          const track = state.tracks[state.selectedTrackIndex]
+          if (track) {
+            track.pan = Math.min(1, track.pan + 0.1)
+            if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+          }
+        }
+        render()
+        break
+      }
 
       case "i":
       case "I":
         importWav()
         break
-    }
-  })
-}
-
-// ── Canvas Mouse ────────────────────────────────────────────────────────
-function setupCanvasMouse() {
-  // Scroll to navigate timeline
-  waveformCanvas.addEventListener("wheel", (e) => {
-    e.preventDefault()
-    const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-    const direction = e.deltaY > 0 ? 1 : -1
-    state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
-    renderFrame()
-  }, { passive: false })
-
-  timelineCanvas.addEventListener("wheel", (e) => {
-    e.preventDefault()
-    const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-    const direction = e.deltaY > 0 ? 1 : -1
-    state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
-    renderFrame()
-  }, { passive: false })
-
-  // Click on timeline to set playhead
-  timelineCanvas.addEventListener("click", (e) => {
-    const rect = timelineCanvas.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const w = rect.width
-    const samplesPerCol = getSamplesPerCol(w)
-    state.playheadPosition = Math.max(0, Math.floor(state.scrollOffset + x * samplesPerCol))
-    if (state.transportState !== "stopped") {
-      audio.setPlayhead(state.playheadPosition)
-    }
-    renderFrame()
-  })
-
-  // Click on waveform area to select track
-  waveformCanvas.addEventListener("click", (e) => {
-    const rect = waveformCanvas.getBoundingClientRect()
-    const y = e.clientY - rect.top
-    const trackHeight = 80
-    const trackIdx = Math.floor(y / trackHeight)
-    if (trackIdx >= 0 && trackIdx < state.tracks.length) {
-      state.selectedTrackIndex = trackIdx
-      renderSidebar()
-      renderFrame()
     }
   })
 }
@@ -866,22 +1095,19 @@ async function importWav() {
 
     try {
       const arrayBuf = await file.arrayBuffer()
-      const parsed = parseWavFile(new Uint8Array(arrayBuf))
+      const parsed = parseWav(new Uint8Array(arrayBuf))
 
       if (!parsed) {
         showStatus("Failed to parse WAV file!")
         return
       }
 
-      // Detect BPM before resampling (use original sample rate for accuracy)
       const detectedBPM = detectBPM(parsed.samples, parsed.sampleRate)
 
-      // Resample to project sample rate if needed
       let samples = parsed.sampleRate !== SAMPLE_RATE
         ? resample(parsed.samples, parsed.sampleRate, SAMPLE_RATE)
         : parsed.samples
 
-      // Find beat offset and trim audio so first beat sits at sample 0
       if (detectedBPM) {
         const beatOffset = findBeatOffset(samples, SAMPLE_RATE, detectedBPM)
         if (beatOffset > 0 && beatOffset < samples.length) {
@@ -889,7 +1115,6 @@ async function importWav() {
         }
       }
 
-      // Set project BPM if project is empty (all tracks have no audio)
       if (detectedBPM) {
         const projectEmpty = state.tracks.every(t => !t.samples || t.samples.length === 0)
         if (projectEmpty) {
@@ -906,8 +1131,7 @@ async function importWav() {
         if (audio.isReady) audio.setTrackSamples(track.id, samples)
         const bpmInfo = detectedBPM ? ` | ${detectedBPM} BPM` : ""
         showStatus(`Imported: ${file.name} (${(samples.length / SAMPLE_RATE).toFixed(1)}s${bpmInfo})`)
-        renderSidebar()
-        renderFrame()
+        render()
       }
     } catch (err) {
       showStatus(`Import error: ${err}`)
@@ -918,95 +1142,50 @@ async function importWav() {
   input.click()
 }
 
-/** Minimal WAV parser — 16/24-bit PCM, 32-bit float, mono/stereo, any sample rate.
- *  Returns raw decoded samples at the source sample rate (no resampling). */
-function parseWavFile(data: Uint8Array): { samples: Float32Array; sampleRate: number } | null {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+// ── Init ────────────────────────────────────────────────────────────────
+async function init() {
+  resize()
+  window.addEventListener("resize", resize)
 
-  // Check RIFF header
-  if (String.fromCharCode(data[0], data[1], data[2], data[3]) !== "RIFF") return null
-  if (String.fromCharCode(data[8], data[9], data[10], data[11]) !== "WAVE") return null
+  // Show loading state
+  drawLoadingScreen("Loading WASM audio engine...")
 
-  // Scan for fmt and data chunks
-  let fmtOffset = -1
-  let dataOffset = -1
-  let dataSize = 0
-  let channels = 0
-  let sampleRate = 0
-  let bitsPerSample = 0
-  let audioFormat = 0
-
-  let pos = 12
-  while (pos < data.length - 8) {
-    const chunkId = String.fromCharCode(data[pos], data[pos + 1], data[pos + 2], data[pos + 3])
-    const chunkSize = view.getUint32(pos + 4, true)
-
-    if (chunkId === "fmt ") {
-      fmtOffset = pos + 8
-      audioFormat = view.getUint16(fmtOffset, true)
-      channels = view.getUint16(fmtOffset + 2, true)
-      sampleRate = view.getUint32(fmtOffset + 4, true)
-      bitsPerSample = view.getUint16(fmtOffset + 14, true)
-    } else if (chunkId === "data") {
-      dataOffset = pos + 8
-      dataSize = chunkSize
-      break
-    }
-
-    pos += 8 + chunkSize
-    // Align to even boundary
-    if (pos % 2 !== 0) pos++
+  try {
+    await loadScript("/wasm/tuidaw_audio.js")
+  } catch (err) {
+    drawLoadingScreen(`Failed to load WASM: ${err}`)
+    console.error("WASM load failed:", err)
+    return
   }
 
-  if (fmtOffset < 0 || dataOffset < 0) return null
+  setupMouse()
+  setupKeyboard()
+  render()
+}
 
-  // Decode samples
-  let monoSamples: Float32Array
+function drawLoadingScreen(msg: string) {
+  ctx.fillStyle = C.bg
+  ctx.fillRect(0, 0, W, H)
 
-  if (audioFormat === 1 && bitsPerSample === 16) {
-    // PCM 16-bit
-    const totalFrames = Math.floor(dataSize / (2 * channels))
-    monoSamples = new Float32Array(totalFrames)
-    for (let i = 0; i < totalFrames; i++) {
-      let sum = 0
-      for (let ch = 0; ch < channels; ch++) {
-        const offset = dataOffset + (i * channels + ch) * 2
-        sum += view.getInt16(offset, true) / 32768
-      }
-      monoSamples[i] = sum / channels
-    }
-  } else if (audioFormat === 1 && bitsPerSample === 24) {
-    // PCM 24-bit
-    const totalFrames = Math.floor(dataSize / (3 * channels))
-    monoSamples = new Float32Array(totalFrames)
-    for (let i = 0; i < totalFrames; i++) {
-      let sum = 0
-      for (let ch = 0; ch < channels; ch++) {
-        const offset = dataOffset + (i * channels + ch) * 3
-        let val = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
-        if (val & 0x800000) val |= ~0xFFFFFF // sign extend
-        sum += val / 8388608
-      }
-      monoSamples[i] = sum / channels
-    }
-  } else if (audioFormat === 3 && bitsPerSample === 32) {
-    // IEEE 32-bit float
-    const totalFrames = Math.floor(dataSize / (4 * channels))
-    monoSamples = new Float32Array(totalFrames)
-    for (let i = 0; i < totalFrames; i++) {
-      let sum = 0
-      for (let ch = 0; ch < channels; ch++) {
-        const offset = dataOffset + (i * channels + ch) * 4
-        sum += view.getFloat32(offset, true)
-      }
-      monoSamples[i] = sum / channels
-    }
-  } else {
-    console.error(`Unsupported WAV format: audioFormat=${audioFormat}, bits=${bitsPerSample}`)
-    return null
-  }
+  ctx.fillStyle = C.blue
+  ctx.font = "bold 24px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText("tuidaw", W / 2, H / 2 - 20)
 
-  return { samples: monoSamples, sampleRate }
+  ctx.fillStyle = C.fgDim
+  ctx.font = "14px monospace"
+  ctx.fillText(msg, W / 2, H / 2 + 20)
+  ctx.textAlign = "left"
+}
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script")
+    script.src = src
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error(`Failed to load ${src}`))
+    document.head.appendChild(script)
+  })
 }
 
 // ── Start ───────────────────────────────────────────────────────────────
