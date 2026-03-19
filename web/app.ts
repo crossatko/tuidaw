@@ -1927,7 +1927,10 @@ function setupKeyboard() {
 }
 
 // ── WAV Import ──────────────────────────────────────────────────────────
-async function importWav() {
+// MUST be synchronous — Safari blocks programmatic .click() on file inputs
+// unless it occurs in the synchronous call stack of a trusted user gesture.
+// The async work happens inside the change handler only.
+function importWav() {
   // Safari requires the input to be in the DOM and uses 'change' event
   const input = document.createElement("input")
   input.type = "file"
@@ -2224,7 +2227,9 @@ async function saveProject() {
 }
 
 // ── Project Open ────────────────────────────────────────────────────────
-async function openProject() {
+// MUST be synchronous — Safari blocks programmatic .click() on file inputs
+// unless it occurs in the synchronous call stack of a trusted user gesture.
+function openProject() {
   if (state.transportState !== "stopped") {
     showStatus("Stop transport first")
     return
