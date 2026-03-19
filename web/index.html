@@ -85,8 +85,11 @@
     /* ── Canvas ─────────────────────────────────────────────────────── */
     canvas {
       display: block;
-      /* width/height set programmatically in resize() — CSS viewport
-         units differ from innerWidth/Height in PWA and iOS Safari */
+      /* Prevent flex min-width: auto from forcing canvas to display
+         at its buffer size (W*dpr) instead of the CSS/inline width */
+      min-width: 0;
+      min-height: 0;
+      /* width/height set programmatically in resize() */
     }
     /* ── Error log ──────────────────────────────────────────────────── */
     #error-log {
