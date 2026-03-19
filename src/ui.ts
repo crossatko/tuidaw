@@ -170,9 +170,20 @@ export class UIRenderer {
     onClickVolumeChange: (delta: number) => void
     onClickPanChange: (delta: number) => void
   }): void {
+    // Debounce scroll events — Ghostty fires ~3 events per physical wheel tick.
+    // Accept only the first event in a 10ms window.
+    let lastScrollTime = 0
+    const scrollDebounce = (): boolean => {
+      const now = performance.now()
+      if (now - lastScrollTime < 10) return false
+      lastScrollTime = now
+      return true
+    }
+
     // Main area: mouse wheel scrolls the timeline horizontally
     this.mainFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
+      if (!scrollDebounce()) return
       const dir = event.scroll.direction
       // Scroll up/down → scroll timeline left/right (natural mapping for horizontal timeline)
       if (dir === "up" || dir === "left") {
@@ -188,6 +199,7 @@ export class UIRenderer {
     // Volume zone: everything else in sidebar
     this.sidebarFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
+      if (!scrollDebounce()) return
       const dir = event.scroll.direction
       const delta = (dir === "up" || dir === "left") ? 1 : -1
 
@@ -203,9 +215,9 @@ export class UIRenderer {
       if (contentY < CLICK_ROW_HEIGHT) {
         // On click track row — pan zone: x >= 9 (where Pan: label is drawn)
         if (event.x >= 9) {
-           callbacks.onClickPanChange(delta * 0.02)
+           callbacks.onClickPanChange(delta * 0.05)
         } else {
-           callbacks.onClickVolumeChange(delta * 0.02)
+           callbacks.onClickVolumeChange(delta * 0.05)
         }
         return
       }
@@ -222,12 +234,12 @@ export class UIRenderer {
 
       // Pan control: row 2, x >= 9 (where pan indicator is drawn)
       if (rowInTrack === 2 && event.x >= 9) {
-        callbacks.onPanChange(delta * 0.02)
+        callbacks.onPanChange(delta * 0.05)
         return
       }
 
       // Volume control: everything else within the sidebar
-      callbacks.onVolumeChange(delta * 0.02)
+      callbacks.onVolumeChange(delta * 0.05)
     }
 
     // Sidebar: click to select track
