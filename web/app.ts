@@ -11,6 +11,10 @@ import { resample } from "../src/utils/dsp"
 import { parseWav, encodeWav } from "../src/utils/wav"
 import type { ProjectDescriptor, TrackDescriptor } from "../src/types"
 
+// ── On-screen debug log (defined in index.html, visible when errors occur) ──
+declare function _debugLog(msg: string): void
+declare function _debugError(msg: string): void
+
 // ── OLED Colors ─────────────────────────────────────────────────────────
 const C = {
   bg: "#000000",
@@ -104,10 +108,21 @@ function createDefaultState(): AppState {
   }
 }
 
+function genId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID()
+  // Fallback for insecure contexts / older browsers
+  const a = new Uint8Array(16)
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(a)
+  else for (let i = 0; i < 16; i++) a[i] = (Math.random() * 256) | 0
+  a[6] = (a[6] & 0x0f) | 0x40; a[8] = (a[8] & 0x3f) | 0x80
+  const h = Array.from(a, b => b.toString(16).padStart(2, "0")).join("")
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`
+}
+
 let nextTrackNum = 2
 function createTrack(name: string, colorIndex: number): WebTrack {
   return {
-    id: crypto.randomUUID(),
+    id: genId(),
     name,
     color: TRACK_COLORS[colorIndex % TRACK_COLORS.length],
     volume: DEFAULT_VOLUME,
@@ -122,7 +137,10 @@ function createTrack(name: string, colorIndex: number): WebTrack {
 
 // ── Canvas Setup ────────────────────────────────────────────────────────
 const canvas = document.getElementById("app") as HTMLCanvasElement
-const ctx = canvas.getContext("2d")!
+if (!canvas) _debugError("Canvas element #app not found")
+const _ctx = canvas.getContext("2d")
+if (!_ctx) _debugError("Failed to get 2d context from canvas")
+const ctx = _ctx!
 let dpr = window.devicePixelRatio || 1
 let W = 0  // logical width
 let H = 0  // logical height
@@ -153,9 +171,12 @@ async function ensureAudioReady(): Promise<boolean> {
   audioInitStarted = true
   audioInitPromise = (async () => {
     try {
+      _debugLog("Initializing WASM audio engine...")
       await audio.init()
+      _debugLog("Audio engine ready")
       for (const track of state.tracks) audio.syncTrack(track)
     } catch (err) {
+      _debugError(`Audio init failed: ${err}`)
       console.error("Audio init failed:", err)
       showStatus(`Audio init failed: ${err}`)
     }
@@ -2250,6 +2271,7 @@ async function openProject() {
 
 // ── Init ────────────────────────────────────────────────────────────────
 async function init() {
+  _debugLog(`init: ${W}x${H}, dpr=${dpr}`)
   resize()
   window.addEventListener("resize", resize)
 
@@ -2257,16 +2279,22 @@ async function init() {
   drawLoadingScreen("Loading WASM audio engine...")
 
   try {
+    _debugLog("Loading WASM script...")
     await loadScript("/wasm/tuidaw_audio.js")
+    _debugLog("WASM script loaded OK")
   } catch (err) {
+    _debugError(`WASM load failed: ${err}`)
     drawLoadingScreen(`Failed to load WASM: ${err}`)
     console.error("WASM load failed:", err)
     return
   }
 
+  _debugLog("Setting up mouse + keyboard...")
   setupMouse()
   setupKeyboard()
+  _debugLog("Rendering initial frame...")
   render()
+  _debugLog("Init complete")
 }
 
 function drawLoadingScreen(msg: string) {
@@ -2295,4 +2323,7 @@ function loadScript(src: string): Promise<void> {
 }
 
 // ── Start ───────────────────────────────────────────────────────────────
-init().catch(console.error)
+init().catch((err) => {
+  _debugError(`init() crashed: ${err?.stack || err}`)
+  console.error(err)
+})

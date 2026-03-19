@@ -7,7 +7,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      background: #1a1b26;
+      background: #000;
       overflow: hidden;
       height: 100vh;
       width: 100vw;
@@ -17,10 +17,61 @@
       width: 100vw;
       height: 100vh;
     }
+    #error-log {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.95);
+      color: #f05060;
+      font: 13px/1.5 monospace;
+      padding: 16px;
+      overflow-y: auto;
+      z-index: 9999;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #error-log .title {
+      color: #e8e8e8;
+      font-size: 16px;
+      font-weight: bold;
+      margin-bottom: 12px;
+    }
+    #error-log .entry {
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      background: #1a1a1a;
+      border-left: 3px solid #f05060;
+    }
+    #error-log .info { color: #56d4f0; border-left-color: #56d4f0; }
   </style>
 </head>
 <body>
   <canvas id="app"></canvas>
+  <div id="error-log"><div class="title">tuidaw debug log</div></div>
+  <script>
+    // Global error capture — shows errors on screen when no devtools available
+    (function() {
+      var log = document.getElementById("error-log");
+      var entries = [];
+      function addEntry(msg, isInfo) {
+        log.style.display = "block";
+        var div = document.createElement("div");
+        div.className = "entry" + (isInfo ? " info" : "");
+        div.textContent = new Date().toLocaleTimeString() + " " + msg;
+        log.appendChild(div);
+        entries.push(msg);
+        // Keep canvas visible behind if only info messages
+      }
+      window._debugLog = function(msg) { addEntry(msg, true); };
+      window._debugError = function(msg) { addEntry(msg, false); };
+      window.addEventListener("error", function(e) {
+        addEntry("Uncaught: " + e.message + "\n  at " + (e.filename || "?") + ":" + (e.lineno || "?"), false);
+      });
+      window.addEventListener("unhandledrejection", function(e) {
+        addEntry("Unhandled rejection: " + (e.reason && e.reason.stack || e.reason || "unknown"), false);
+      });
+    })();
+  </script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
