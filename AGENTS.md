@@ -282,7 +282,8 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 65. **TUI refactoring**: `index.ts` (was 1043 lines) split into 15-line dispatcher + `tui.ts` (1048 lines). TUI functionality preserved.
 66. **Extract BPM detection + DSP to shared utils**: `detectBPM`, `refineBPM`, `refineBPMMulti`, `findBeatOffset` extracted from `AudioEngine` class methods to standalone functions in `src/utils/bpm.ts` (~310 lines). `resample` extracted to `src/utils/dsp.ts` (~25 lines). Both used by TUI (`src/audio-engine.ts`) and Web UI (`web/app.ts`). Web UI import pipeline now runs full BPM detection → resample → beat offset trim → auto-set project BPM → rename track from filename.
 67. **Extract WAV parsing to shared utils**: `parseWav`, `float32ToPcmS16`, `pcmS16ToFloat32`, `buildWavHeader`, `encodeWav` (mono), `encodeWavStereo` (stereo with equal-power pan) extracted to `src/utils/wav.ts` (~192 lines). Uses `Uint8Array`/`DataView` only (works in both Bun and browser). TUI's `AudioEngine` removed 6 WAV methods (~170 lines), now imports from shared utils. Web UI removed local `parseWavFile` (~90 lines), imports `parseWav` from shared utils.
-68. **Full-canvas Web UI**: Rewrote Web UI from DOM-based (HTML divs + dual canvas) to single `<canvas>` rendering entire app via Canvas 2D. Eliminates HTML margin/padding height misalignment between sidebar and waveform tracks. Zone-based hit testing (`hitTest()` returns zone type + track index + button). `index.html` reduced from 306 to 26 lines. `app.ts` fully rewritten (~1192 lines). Layout constants: `SIDEBAR_W=220`, `TOPBAR_H=44`, `STATUSBAR_H=28`, `TIMELINE_H=24`, `TRACK_H=80`, `CLICK_ROW_H=32`.
+68. **Full-canvas Web UI**: Rewrote Web UI from DOM-based (HTML divs + dual canvas) to single `<canvas>` rendering entire app via Canvas 2D. Eliminates HTML margin/padding height misalignment between sidebar and waveform tracks. Zone-based hit testing (`hitTest()` returns zone type + track index + button). `index.html` reduced from 306 to 26 lines. `app.ts` fully rewritten (~1208 lines). Layout constants: `SIDEBAR_W=220`, `TOPBAR_H=44`, `STATUSBAR_H=28`, `TIMELINE_H=24`, `TRACK_H=80`, `CLICK_ROW_H=32`.
+69. **OLED theme for Web UI**: Replaced Tokyo Night color palette with OLED-optimized theme. True black (`#000000`) background, white/near-white (`#e8e8e8`) foreground, subtle gray borders (`#2a2a2a`). Color accents only for active UI states: green for playing, red for armed, orange for mute active, yellow for solo active, cyan for click active. Inactive buttons use dark fill (`#1a1a1a`) with border outlines. Active button text is black for maximum contrast. Track waveform colors adjusted for OLED visibility.
 
 ## File structure
 
@@ -360,8 +361,9 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # (required for SharedArrayBuffer / WASM pthreads).
 │   ├── index.html            # Minimal HTML shell — single <canvas id="app"> + script tag
 │   │                          # + 15 lines CSS. Full app rendered via Canvas 2D. ~26 lines.
-│   ├── app.ts                # Main browser app (~1192 lines): Full-canvas Canvas 2D rendering
+│   ├── app.ts                # Main browser app (~1208 lines): Full-canvas Canvas 2D rendering
 │   │                          # of entire UI (topbar, sidebar, timeline, waveforms, statusbar).
+│   │                          # OLED theme (true black bg, white fg, color accents for active states).
 │   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
 │   │                          # (Space/M/S/R/C/+/-/hjkl/arrows/[]/</>/Home/End), mouse
 │   │                          # interaction, WAV import with shared parser + BPM detection.
