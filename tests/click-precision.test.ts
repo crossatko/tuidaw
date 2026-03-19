@@ -6,8 +6,9 @@
 //
 // Architecture: the click buffer is generated natively by tuidaw_generate_click()
 // which fills a long pre-rendered buffer with click tones at GCD-exact beat
-// positions. The native callback reads click_samples[counter] with a simple
-// bounds check. No modulo, no floating-point BPM math, no fmod.
+// positions. The native callback indexes the buffer by output-space counter
+// (click_frame_counter). On loop wrap, the counter is reset to align with
+// the loop start position. No modulo, no floating-point BPM math, no fmod.
 //
 // Uses null audio backend — no sound output.
 

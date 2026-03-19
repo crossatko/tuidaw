@@ -391,9 +391,10 @@ export class AudioEngine {
     lib.symbols.tuidaw_set_click_volume(state.clickVolume)
     lib.symbols.tuidaw_set_click_pan(state.clickPan)
 
-    // Generate click buffer with enough duration for the project.
-    // Click counter runs in output-space, so at speed S the output-space
-    // duration is projectDuration / S. Add margin and enforce 10min minimum.
+    // Generate click buffer in OUTPUT-SPACE at display BPM.
+    // The native callback indexes the click buffer by output-space counter
+    // (click_frame_counter). Duration is in output frames: projectDuration / speed.
+    // On loop wrap, the counter is reset to align with the loop start position.
     const projectDuration = state.tracks.reduce((max, t) => Math.max(max, t.samples?.length ?? 0), 0)
     const speed = state.bpm / state.originalBpm
     const outputDuration = speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
