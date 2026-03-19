@@ -14,10 +14,9 @@ import { existsSync, mkdirSync, rmSync } from "fs"
 import type { Track, ProjectState, AudioDevice, ProjectDescriptor, TrackDescriptor } from "./types"
 import { resample } from "./utils/dsp"
 import { detectBPM, findBeatOffset } from "./utils/bpm"
+import { parseWav, encodeWav, encodeWavStereo } from "./utils/wav"
 
 const SAMPLE_RATE = 48000
-const CHANNELS = 1
-const BYTES_PER_SAMPLE = 2
 const RECORDINGS_DIR = "./recordings"
 
 // ── Load Native Library ─────────────────────────────────────────────────────
@@ -636,8 +635,8 @@ export class AudioEngine {
   async loadWavFile(filePath: string): Promise<{ samples: Float32Array; sampleRate: number; detectedBPM: number | null } | null> {
     try {
       const file = Bun.file(filePath)
-      const buf = Buffer.from(await file.arrayBuffer())
-      const result = this.parseWav(buf)
+      const buf = new Uint8Array(await file.arrayBuffer())
+      const result = parseWav(buf)
       if (!result) return null
 
       // Detect BPM before resampling (use original sample rate for accuracy)
@@ -665,172 +664,16 @@ export class AudioEngine {
     }
   }
 
-  // Convert Float32 (-1.0 to 1.0) to signed 16-bit PCM
-  private float32ToPcmS16(samples: Float32Array): Buffer {
-    const buffer = Buffer.alloc(samples.length * BYTES_PER_SAMPLE)
-    for (let i = 0; i < samples.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, samples[i]))
-      const intSample = Math.round(clamped * 32767)
-      buffer.writeInt16LE(intSample, i * BYTES_PER_SAMPLE)
-    }
-    return buffer
-  }
-
-  // Convert signed 16-bit PCM to Float32 (-1.0 to 1.0)
-  private pcmS16ToFloat32(buffer: Buffer): Float32Array {
-    const numSamples = Math.floor(buffer.length / BYTES_PER_SAMPLE)
-    const float32 = new Float32Array(numSamples)
-    for (let i = 0; i < numSamples; i++) {
-      const sample = buffer.readInt16LE(i * BYTES_PER_SAMPLE)
-      float32[i] = sample / 32768
-    }
-    return float32
-  }
-
   // Write a WAV file from Float32 samples (mono, s16)
   async writeWav(filePath: string, samples: Float32Array, sampleRate: number): Promise<void> {
-    const pcmData = this.float32ToPcmS16(samples)
-    const numChannels = CHANNELS
-    const bitsPerSample = 16
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
-    const blockAlign = numChannels * (bitsPerSample / 8)
-    const dataSize = pcmData.length
-
-    const header = Buffer.alloc(44)
-    header.write("RIFF", 0)
-    header.writeUInt32LE(36 + dataSize, 4)
-    header.write("WAVE", 8)
-    header.write("fmt ", 12)
-    header.writeUInt32LE(16, 16)
-    header.writeUInt16LE(1, 20)
-    header.writeUInt16LE(numChannels, 22)
-    header.writeUInt32LE(sampleRate, 24)
-    header.writeUInt32LE(byteRate, 28)
-    header.writeUInt16LE(blockAlign, 32)
-    header.writeUInt16LE(bitsPerSample, 34)
-    header.write("data", 36)
-    header.writeUInt32LE(dataSize, 40)
-
-    const wavBuffer = Buffer.concat([header, pcmData])
-    await Bun.write(filePath, wavBuffer)
+    const wavData = encodeWav(samples, sampleRate)
+    await Bun.write(filePath, wavData)
   }
 
   // Write a stereo WAV file from mono Float32 samples with pan applied.
-  // Used for export mixdown temp files (ffmpeg still handles the final mix).
   async writeStereoWav(filePath: string, samples: Float32Array, sampleRate: number, pan: number = 0): Promise<void> {
-    const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
-    const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
-
-    const numChannels = 2
-    const bitsPerSample = 16
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
-    const blockAlign = numChannels * (bitsPerSample / 8)
-
-    const pcmData = Buffer.alloc(samples.length * numChannels * BYTES_PER_SAMPLE)
-    for (let i = 0; i < samples.length; i++) {
-      const s = Math.max(-1, Math.min(1, samples[i]))
-      const left = Math.round(s * leftGain * 32767)
-      const right = Math.round(s * rightGain * 32767)
-      pcmData.writeInt16LE(Math.max(-32768, Math.min(32767, left)), i * 4)
-      pcmData.writeInt16LE(Math.max(-32768, Math.min(32767, right)), i * 4 + 2)
-    }
-
-    const dataSize = pcmData.length
-    const header = Buffer.alloc(44)
-    header.write("RIFF", 0)
-    header.writeUInt32LE(36 + dataSize, 4)
-    header.write("WAVE", 8)
-    header.write("fmt ", 12)
-    header.writeUInt32LE(16, 16)
-    header.writeUInt16LE(1, 20)
-    header.writeUInt16LE(numChannels, 22)
-    header.writeUInt32LE(sampleRate, 24)
-    header.writeUInt32LE(byteRate, 28)
-    header.writeUInt16LE(blockAlign, 32)
-    header.writeUInt16LE(bitsPerSample, 34)
-    header.write("data", 36)
-    header.writeUInt32LE(dataSize, 40)
-
-    const wavBuffer = Buffer.concat([header, pcmData])
-    await Bun.write(filePath, wavBuffer)
-  }
-
-  // Parse a WAV file — handles JUNK/LIST/other chunks before fmt,
-  // stereo files (downmixed to mono), 16-bit and 32-bit float formats.
-  parseWav(buf: Buffer): { samples: Float32Array; sampleRate: number } | null {
-    if (buf.toString("ascii", 0, 4) !== "RIFF") return null
-    if (buf.toString("ascii", 8, 12) !== "WAVE") return null
-
-    // Scan for fmt and data chunks (don't assume fixed offsets — files
-    // may have JUNK, LIST, bext, or other chunks before fmt)
-    let sampleRate = 0
-    let numChannels = 1
-    let bitsPerSample = 16
-    let fmtFound = false
-    let dataBuf: Buffer | null = null
-
-    let offset = 12
-    while (offset < buf.length - 8) {
-      const chunkId = buf.toString("ascii", offset, offset + 4)
-      const chunkSize = buf.readUInt32LE(offset + 4)
-
-      if (chunkId === "fmt ") {
-        numChannels = buf.readUInt16LE(offset + 10)
-        sampleRate = buf.readUInt32LE(offset + 12)
-        bitsPerSample = buf.readUInt16LE(offset + 22)
-        fmtFound = true
-      } else if (chunkId === "data") {
-        const dataStart = offset + 8
-        const dataEnd = Math.min(dataStart + chunkSize, buf.length)
-        dataBuf = buf.subarray(dataStart, dataEnd)
-      }
-
-      offset += 8 + chunkSize
-      if (chunkSize % 2 !== 0) offset++ // RIFF chunks are 2-byte aligned
-    }
-
-    if (!fmtFound || !dataBuf || sampleRate === 0) return null
-
-    // Decode PCM data
-    let rawSamples: Float32Array
-
-    if (bitsPerSample === 16) {
-      rawSamples = this.pcmS16ToFloat32(dataBuf)
-    } else if (bitsPerSample === 32) {
-      rawSamples = new Float32Array(dataBuf.buffer, dataBuf.byteOffset, dataBuf.length / 4)
-      rawSamples = new Float32Array(rawSamples) // copy to own buffer
-    } else if (bitsPerSample === 24) {
-      // 24-bit signed PCM
-      const numSamples = Math.floor(dataBuf.length / 3)
-      rawSamples = new Float32Array(numSamples)
-      for (let i = 0; i < numSamples; i++) {
-        const b0 = dataBuf[i * 3]
-        const b1 = dataBuf[i * 3 + 1]
-        const b2 = dataBuf[i * 3 + 2]
-        // Sign-extend from 24-bit
-        let sample = (b0 | (b1 << 8) | (b2 << 16))
-        if (sample & 0x800000) sample |= ~0xFFFFFF // sign extend
-        rawSamples[i] = sample / 8388608 // 2^23
-      }
-    } else {
-      return null // unsupported format
-    }
-
-    // Downmix to mono if stereo (or more channels)
-    if (numChannels > 1) {
-      const monoLen = Math.floor(rawSamples.length / numChannels)
-      const mono = new Float32Array(monoLen)
-      for (let i = 0; i < monoLen; i++) {
-        let sum = 0
-        for (let ch = 0; ch < numChannels; ch++) {
-          sum += rawSamples[i * numChannels + ch]
-        }
-        mono[i] = sum / numChannels
-      }
-      return { samples: mono, sampleRate }
-    }
-
-    return { samples: rawSamples, sampleRate }
+    const wavData = encodeWavStereo(samples, sampleRate, pan)
+    await Bun.write(filePath, wavData)
   }
 
   // ── Offline WSOLA Time-Stretch ───────────────────────────────────────
@@ -1156,8 +999,8 @@ export class AudioEngine {
         if (td.wavFile) {
           const wavPath = `${tmpDir}/${td.wavFile}`
           if (existsSync(wavPath)) {
-            const wavBuf = Buffer.from(await Bun.file(wavPath).arrayBuffer())
-            const parsed = this.parseWav(wavBuf)
+            const wavBuf = new Uint8Array(await Bun.file(wavPath).arrayBuffer())
+            const parsed = parseWav(wavBuf)
             if (parsed) {
               samples = parsed.samples
             }
