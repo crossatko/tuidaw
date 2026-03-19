@@ -490,13 +490,13 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     }
 
     // Advance click counter with loop-wrap handling.
-    // The click counter is output-space (wall-clock frames since play start).
+    // The click counter is ABSOLUTE output-space (content position / speed).
     // The click buffer contains tones at GCD-exact beat positions in output-space.
     //
     // On loop: the click counter wraps when it reaches the output-space position
-    // corresponding to loop_end in content-space. This is computed as:
-    //   output_end = (loop_end - transport_start_pos) / speed
-    //   output_start = (loop_start - transport_start_pos) / speed
+    // corresponding to loop_end in content-space. Since the counter is absolute:
+    //   output_end = loop_end / speed
+    //   output_start = loop_start / speed
     // The counter wraps from output_end back to output_start, so the click
     // re-aligns with the content beat grid on each loop iteration.
     //
@@ -508,8 +508,8 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         long new_counter = old_counter + (long)frameCount;
 
         if (loop_start >= 0 && loop_end > loop_start && speed > 0.01f) {
-            double loop_output_end = (double)(loop_end - g_engine.transport_start_pos) / (double)speed;
-            double loop_output_start = (double)(loop_start - g_engine.transport_start_pos) / (double)speed;
+            double loop_output_end = (double)loop_end / (double)speed;
+            double loop_output_start = (double)loop_start / (double)speed;
             double loop_output_len = loop_output_end - loop_output_start;
 
             if (loop_output_len > 0 && (double)new_counter >= loop_output_end) {
@@ -848,8 +848,18 @@ EXPORT void tuidaw_play(long position) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)position);
         }
     }
-    // Reset click WSOLA state to the new position
-    atomic_store(&g_engine.click_frame_counter, 0L);
+    // Set click counter to the output-space equivalent of the playhead position.
+    // The click buffer has beat tones at absolute positions (beat 0 at sample 0,
+    // beat 1 at 60/bpm * sampleRate, etc.). By setting the counter to position/speed,
+    // the counter indexes the correct absolute position in the click buffer so that
+    // clicks only fire on actual beat positions — NOT at the playhead position.
+    // This fixes the bug where pausing and resuming from an off-beat position would
+    // cause a click to fire immediately on resume.
+    {
+        float speed = atomic_load(&g_engine.playback_speed);
+        long click_pos = (speed > 0.01f) ? (long)((double)position / (double)speed) : position;
+        atomic_store(&g_engine.click_frame_counter, click_pos);
+    }
     atomic_store(&g_engine.playing, 1);
 }
 
@@ -873,8 +883,14 @@ EXPORT void tuidaw_set_playhead(long position) {
             wsola_reset(&g_engine.tracks[i].wsola, (double)position);
         }
     }
-    // Reset click frame counter so click re-syncs to new position
-    atomic_store(&g_engine.click_frame_counter, 0L);
+    // Set click counter to the output-space equivalent of the new position.
+    // Same logic as tuidaw_play: counter = position / speed so the click buffer
+    // is indexed at the correct absolute beat-grid position.
+    {
+        float speed = atomic_load(&g_engine.playback_speed);
+        long click_pos = (speed > 0.01f) ? (long)((double)position / (double)speed) : position;
+        atomic_store(&g_engine.click_frame_counter, click_pos);
+    }
 }
 
 // ── Click / Metronome ───────────────────────────────────────────────────────
@@ -882,8 +898,14 @@ EXPORT void tuidaw_set_playhead(long position) {
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
     (void)bpm; // BPM is baked into click_samples by tuidaw_generate_click
     atomic_store(&g_engine.click_enabled, enabled);
-    // Reset click frame counter so click re-syncs when toggling on/off.
-    atomic_store(&g_engine.click_frame_counter, 0L);
+    // Set click counter to current playhead position in output-space.
+    // This ensures the click re-syncs to the beat grid when toggled on/off.
+    {
+        long pos = atomic_load(&g_engine.playhead_samples);
+        float speed = atomic_load(&g_engine.playback_speed);
+        long click_pos = (speed > 0.01f) ? (long)((double)pos / (double)speed) : pos;
+        atomic_store(&g_engine.click_frame_counter, click_pos);
+    }
 }
 
 // GCD helper for click buffer generation
