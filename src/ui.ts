@@ -203,9 +203,9 @@ export class UIRenderer {
       if (contentY < CLICK_ROW_HEIGHT) {
         // On click track row — pan zone: x >= 9 (where Pan: label is drawn)
         if (event.x >= 9) {
-          callbacks.onClickPanChange(delta * 0.05)
+           callbacks.onClickPanChange(delta * 0.02)
         } else {
-          callbacks.onClickVolumeChange(delta * 0.05)
+           callbacks.onClickVolumeChange(delta * 0.02)
         }
         return
       }
@@ -222,12 +222,12 @@ export class UIRenderer {
 
       // Pan control: row 2, x >= 9 (where pan indicator is drawn)
       if (rowInTrack === 2 && event.x >= 9) {
-        callbacks.onPanChange(delta * 0.05)
+        callbacks.onPanChange(delta * 0.02)
         return
       }
 
       // Volume control: everything else within the sidebar
-      callbacks.onVolumeChange(delta * 0.05)
+      callbacks.onVolumeChange(delta * 0.02)
     }
 
     // Sidebar: click to select track
