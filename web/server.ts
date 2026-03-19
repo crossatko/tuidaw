@@ -128,12 +128,15 @@ export async function startWebServer() {
       const file = Bun.file(filePath)
       if (await file.exists()) {
         const ext = extname(pathname)
-        return new Response(file, {
-          headers: {
-            "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
-            ...COOP_COEP_HEADERS,
-          },
-        })
+        const headers: Record<string, string> = {
+          "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+          ...COOP_COEP_HEADERS,
+        }
+        // Service worker must not be cached — browsers check for updates
+        if (pathname === "/sw.js") {
+          headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        }
+        return new Response(file, { headers })
       }
 
       return new Response("Not Found", {
