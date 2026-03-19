@@ -85,8 +85,8 @@
     /* ── Canvas ─────────────────────────────────────────────────────── */
     canvas {
       display: block;
-      width: 100vw;
-      height: calc(100vh - 56px);
+      /* width/height set programmatically in resize() to avoid
+         iOS Safari mismatch between 100vh and window.innerHeight */
     }
     /* ── Error log ──────────────────────────────────────────────────── */
     #error-log {

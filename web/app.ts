@@ -83,6 +83,7 @@ interface AppState {
   sampleRate: number
   statusMessage: string
   statusTimeout: ReturnType<typeof setTimeout> | null
+  trackScrollY: number  // vertical scroll offset for track list (sidebar + waveform area)
 }
 
 function createDefaultState(): AppState {
@@ -104,6 +105,7 @@ function createDefaultState(): AppState {
     sampleRate: SAMPLE_RATE,
     statusMessage: "",
     statusTimeout: null,
+    trackScrollY: 0,
   }
 }
 
@@ -148,9 +150,14 @@ function resize() {
   dpr = window.devicePixelRatio || 1
   W = window.innerWidth
   H = window.innerHeight - TOPBAR_H   // canvas starts below the DOM topbar
+  // Set CSS size programmatically — avoids iOS Safari mismatch
+  // where 100vh (large viewport) != window.innerHeight (current viewport)
+  canvas.style.width = W + "px"
+  canvas.style.height = H + "px"
   canvas.width = W * dpr
   canvas.height = H * dpr
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  clampTrackScroll()
   render()
 }
 
@@ -186,15 +193,42 @@ async function ensureAudioReady(): Promise<boolean> {
 
 // ── Drag State ──────────────────────────────────────────────────────────
 interface DragState {
-  type: "volume" | "pan" | "click-volume" | "click-pan" | "timeline" | "waveform-scroll"
-  trackIndex: number // -1 for click track, -2 for timeline
-  startValue: number
+  type: "volume" | "pan" | "click-volume" | "click-pan" | "timeline" | "waveform-scroll" | "sidebar-scroll"
+  trackIndex: number  // for volume/pan: the track; for sidebar-scroll: pending select index (-2 = none)
+  startValue: number  // for volume/pan: initial value; for waveform/sidebar-scroll: initial coord
+  scrolled?: boolean  // for sidebar-scroll: whether scroll threshold was exceeded
 }
 
 let drag: DragState | null = null
 let lastClickTime = 0
 let lastClickZone = ""
 let lastClickTrack = -99
+
+/** Compute the maximum trackScrollY value (0 if all tracks fit on screen) */
+function getMaxTrackScroll(): number {
+  const availableH = H - STATUSBAR_H - CLICK_ROW_H
+  const totalTrackH = state.tracks.length * TRACK_H
+  return Math.max(0, totalTrackH - availableH)
+}
+
+/** Clamp trackScrollY to valid range */
+function clampTrackScroll() {
+  state.trackScrollY = Math.max(0, Math.min(getMaxTrackScroll(), state.trackScrollY))
+}
+
+/** Ensure the selected track (by index) is visible in the scrolled sidebar */
+function ensureTrackVisible(trackIdx: number) {
+  if (trackIdx < 0) return // click track is always visible
+  const trackTop = trackIdx * TRACK_H
+  const trackBottom = trackTop + TRACK_H
+  const availableH = H - STATUSBAR_H - CLICK_ROW_H
+  if (trackTop < state.trackScrollY) {
+    state.trackScrollY = trackTop
+  } else if (trackBottom > state.trackScrollY + availableH) {
+    state.trackScrollY = trackBottom - availableH
+  }
+  clampTrackScroll()
+}
 
 // ── Rendering ───────────────────────────────────────────────────────────
 function render() {
@@ -223,11 +257,14 @@ function drawSidebar() {
   y += CLICK_ROW_H
 
   // ── Regular tracks ────────────────────────────────────────────────
-  // Clip to sidebar area (prevent tracks from overflowing into statusbar)
+  // Clip to sidebar area (prevent tracks from overflowing into statusbar or click row)
   ctx.save()
   ctx.beginPath()
   ctx.rect(0, y, SIDEBAR_W, H - STATUSBAR_H - y)
   ctx.clip()
+
+  // Apply vertical scroll offset
+  y -= state.trackScrollY
 
   for (let i = 0; i < state.tracks.length; i++) {
     const track = state.tracks[i]
@@ -595,8 +632,7 @@ function drawWaveformArea() {
 
   const samplesPerCol = getSamplesPerCol(w)
   const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
-  const totalTrackArea = state.tracks.length * TRACK_H
-  const gridH = Math.min(totalTrackArea, areaH)
+  const gridH = areaH  // beat grid / playhead fill the full visible area
 
   // Beat grid
   const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
@@ -667,7 +703,7 @@ function drawWaveformArea() {
 
   for (let i = 0; i < state.tracks.length; i++) {
     const track = state.tracks[i]
-    const ty = y0 + i * TRACK_H
+    const ty = y0 + i * TRACK_H - state.trackScrollY
     const waveH = TRACK_H - 4
 
     // Track separator
@@ -846,6 +882,7 @@ function setupTopbar() {
       state.tracks.push(newTrack)
       if (audio.isReady) audio.syncTrack(newTrack)
       state.selectedTrackIndex = state.tracks.length - 1
+      ensureTrackVisible(state.selectedTrackIndex)
       render()
     }
   })
@@ -1147,8 +1184,8 @@ function hitTest(cx: number, cy: number): HitResult {
       return result
     }
 
-    // Regular tracks
-    const trackY = sideY - CLICK_ROW_H
+    // Regular tracks (apply vertical scroll offset)
+    const trackY = sideY - CLICK_ROW_H + state.trackScrollY
     const trackIdx = Math.floor(trackY / TRACK_H)
     if (trackIdx >= 0 && trackIdx < state.tracks.length) {
       result.trackIndex = trackIdx
@@ -1205,12 +1242,12 @@ function hitTest(cx: number, cy: number): HitResult {
     return result
   }
 
-  // Waveform area
+  // Waveform area (apply vertical scroll offset)
   result.zone = "waveform"
   result.localX = cx - SIDEBAR_W
-  result.localY = cy - TIMELINE_H
+  result.localY = cy - TIMELINE_H + state.trackScrollY
   result.trackIndex = Math.floor(result.localY / TRACK_H)
-  if (result.trackIndex >= state.tracks.length) result.trackIndex = -1
+  if (result.trackIndex < 0 || result.trackIndex >= state.tracks.length) result.trackIndex = -1
   return result
 }
 
@@ -1277,10 +1314,9 @@ function setupMouse() {
         break
 
       case "sidebar-track":
-        if (hit.trackIndex >= 0) {
-          state.selectedTrackIndex = hit.trackIndex
-          render()
-        }
+        // Start potential sidebar scroll — if the touch moves > threshold, scroll;
+        // otherwise select the track on pointerup
+        drag = { type: "sidebar-scroll", trackIndex: hit.trackIndex, startValue: cy, scrolled: false }
         break
 
       case "sidebar-btn":
@@ -1308,6 +1344,7 @@ function setupMouse() {
               if (state.selectedTrackIndex >= state.tracks.length) {
                 state.selectedTrackIndex = state.tracks.length - 1
               }
+              clampTrackScroll()
               showStatus(`Deleted "${track.name}"`)
             } else {
               showStatus("Last track — nothing to delete")
@@ -1444,11 +1481,29 @@ function setupMouse() {
       if (state.transportState !== "stopped") state.freeScroll = true
       drag.startValue = cx
       render()
+    } else if (drag.type === "sidebar-scroll") {
+      const dy = drag.startValue - cy
+      if (!drag.scrolled && Math.abs(dy) > 5) {
+        drag.scrolled = true  // threshold exceeded — treat as scroll, not tap
+      }
+      if (drag.scrolled) {
+        state.trackScrollY += dy
+        clampTrackScroll()
+        drag.startValue = cy
+        render()
+      }
     }
   })
 
   // Pointer up (end drag)
   canvas.addEventListener("pointerup", () => {
+    if (drag && drag.type === "sidebar-scroll" && !drag.scrolled) {
+      // Touch didn't move enough to scroll — treat as a tap to select track
+      if (drag.trackIndex >= 0) {
+        state.selectedTrackIndex = drag.trackIndex
+        render()
+      }
+    }
     drag = null
   })
 
@@ -1469,7 +1524,12 @@ function setupMouse() {
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
       if (state.transportState !== "stopped") state.freeScroll = true
       render()
-    } else if ((hit.zone === "sidebar-track" || hit.zone === "sidebar-vol-slider") && hit.trackIndex >= 0) {
+    } else if (hit.zone === "sidebar-track" && hit.trackIndex >= 0) {
+      // Vertical scroll on sidebar track background
+      state.trackScrollY += e.deltaY
+      clampTrackScroll()
+      render()
+    } else if (hit.zone === "sidebar-vol-slider" && hit.trackIndex >= 0) {
       const track = state.tracks[hit.trackIndex]
       if (track) {
         const delta = e.deltaY > 0 ? -0.05 : 0.05
@@ -1599,6 +1659,7 @@ function setupKeyboard() {
         e.preventDefault()
         if (state.selectedTrackIndex > -1) {
           state.selectedTrackIndex--
+          ensureTrackVisible(state.selectedTrackIndex)
           render()
         }
         break
@@ -1608,6 +1669,7 @@ function setupKeyboard() {
         e.preventDefault()
         if (state.selectedTrackIndex < state.tracks.length - 1) {
           state.selectedTrackIndex++
+          ensureTrackVisible(state.selectedTrackIndex)
           render()
         }
         break
@@ -1691,6 +1753,7 @@ function setupKeyboard() {
           state.tracks.push(newTrack)
           if (audio.isReady) audio.syncTrack(newTrack)
           state.selectedTrackIndex = state.tracks.length - 1
+          ensureTrackVisible(state.selectedTrackIndex)
           render()
         }
         break
@@ -1705,13 +1768,14 @@ function setupKeyboard() {
             if (track.samples && track.samples.length > 0) {
               track.samples = null
               if (audio.isReady) audio.setTrackSamples(track.id, null)
-              showStatus(`Cleared "${track.name}"`)
+               showStatus(`Cleared "${track.name}"`)
             } else if (state.tracks.length > 1) {
               if (audio.isReady) audio.removeTrack(track.id)
               state.tracks.splice(state.selectedTrackIndex, 1)
               if (state.selectedTrackIndex >= state.tracks.length) {
                 state.selectedTrackIndex = state.tracks.length - 1
               }
+              clampTrackScroll()
             }
             render()
           }
@@ -2156,6 +2220,8 @@ function openProject() {
       state.loopEnd = desc.loopEnd
       state.selectedTrackIndex = Math.min(desc.selectedTrackIndex, newTracks.length - 1)
       state.freeScroll = false
+      state.trackScrollY = 0
+      clampTrackScroll()
 
       // Update nextTrackNum
       let maxNum = 0
@@ -2189,6 +2255,10 @@ async function init() {
   _debugLog(`init: ${window.innerWidth}x${window.innerHeight}, dpr=${dpr}`)
   resize()
   window.addEventListener("resize", resize)
+  // iOS Safari: visualViewport fires when toolbar shows/hides (window resize doesn't)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", resize)
+  }
 
   // Show loading state
   drawLoadingScreen("Loading WASM audio engine...")
