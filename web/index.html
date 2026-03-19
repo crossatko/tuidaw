@@ -52,18 +52,20 @@
     // Global error capture — shows errors on screen when no devtools available
     (function() {
       var log = document.getElementById("error-log");
-      var entries = [];
+      var hasErrors = false;
       function addEntry(msg, isInfo) {
+        if (!isInfo) hasErrors = true;
         log.style.display = "block";
         var div = document.createElement("div");
         div.className = "entry" + (isInfo ? " info" : "");
         div.textContent = new Date().toLocaleTimeString() + " " + msg;
         log.appendChild(div);
-        entries.push(msg);
-        // Keep canvas visible behind if only info messages
       }
       window._debugLog = function(msg) { addEntry(msg, true); };
       window._debugError = function(msg) { addEntry(msg, false); };
+      window._debugHide = function() {
+        if (!hasErrors) log.style.display = "none";
+      };
       window.addEventListener("error", function(e) {
         addEntry("Uncaught: " + e.message + "\n  at " + (e.filename || "?") + ":" + (e.lineno || "?"), false);
       });
