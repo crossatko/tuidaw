@@ -38,7 +38,7 @@ const TOPBAR_H = 44
 const STATUSBAR_H = 28
 const TIMELINE_H = 24
 const TRACK_H = 80
-const CLICK_ROW_H = 32
+const CLICK_ROW_H = TIMELINE_H
 
 // ── App State ───────────────────────────────────────────────────────────
 interface AppState {
