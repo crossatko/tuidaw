@@ -179,6 +179,7 @@ let audioInitStarted = false
 
 // Available input devices (populated after mic access)
 let inputDevices: InputDeviceInfo[] = []
+let showInputOverlay = false
 
 // Per-track: the playhead position when that track's recording began (for punch-in)
 const trackRecordStartPositions: Map<string, number> = new Map()
@@ -261,6 +262,7 @@ function render() {
   drawTimeline()
   drawWaveformArea()
   drawStatusbar()
+  if (showInputOverlay) drawInputOverlay()
   updateTopbar()
 }
 
@@ -387,26 +389,38 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
   drawMSRButton(pad + MSR_BTN_W + 6, msrY, "S", track.solo, C.yellow)
   drawMSRButton(pad + (MSR_BTN_W + 6) * 2, msrY, "R", track.armed, C.red)
 
-  // Input device + channel info (right of MSR buttons)
+  // Input channel badge (right of MSR buttons) — visible when armed or selected
   const infoX = pad + (MSR_BTN_W + 6) * 3 + 8
   const infoMaxW = SIDEBAR_W - pad - infoX
   if (track.armed || isSelected) {
-    // Show input device label + channel
     const devLabel = getInputDeviceLabel(track.inputDeviceId)
     const chLabel = getChannelLabel(track.inputChannel)
+    // Channel badge (tappable — cycles channels)
+    const chColor = track.armed ? C.red : C.cyan
+    ctx.font = "bold 10px monospace"
+    const chW = ctx.measureText(chLabel).width + 12
+    const chBtnX = infoX
+    const chBtnY = msrY + 2
+    const chBtnH = 24
+    ctx.fillStyle = C.bgHighlight
+    roundRect(ctx, chBtnX, chBtnY, chW, chBtnH, 3)
+    ctx.fill()
+    ctx.strokeStyle = chColor
+    ctx.lineWidth = 1
+    roundRect(ctx, chBtnX, chBtnY, chW, chBtnH, 3)
+    ctx.stroke()
+    ctx.fillStyle = chColor
+    ctx.fillText(chLabel, chBtnX + 6, chBtnY + 16)
+    // Device name (small, to the right of channel badge)
     ctx.font = "9px monospace"
-    // Device name (truncated)
-    ctx.fillStyle = track.armed ? C.red : C.fgDim
+    ctx.fillStyle = C.fgDim
+    const devX = chBtnX + chW + 6
     ctx.save()
     ctx.beginPath()
-    ctx.rect(infoX, msrY, infoMaxW, 14)
+    ctx.rect(devX, msrY, infoMaxW - chW - 6, 28)
     ctx.clip()
-    ctx.fillText(devLabel, infoX, msrY + 10)
+    ctx.fillText(devLabel, devX, msrY + 18)
     ctx.restore()
-    // Channel badge
-    ctx.fillStyle = track.armed ? C.red : C.fgDim
-    ctx.font = "bold 9px monospace"
-    ctx.fillText(chLabel, infoX, msrY + 24)
   } else {
     // Duration info (when not armed/selected)
     ctx.fillStyle = C.fgDim
@@ -883,6 +897,7 @@ function setupTopbar() {
   const btnOpen = document.getElementById("btn-open")!
   const btnImport = document.getElementById("btn-import")!
   const btnExport = document.getElementById("btn-export")!
+  const btnInput = document.getElementById("btn-input")!
   const btnAddTrack = document.getElementById("btn-add-track")!
 
   btnPlay.addEventListener("click", () => {
@@ -954,6 +969,29 @@ function setupTopbar() {
     showStatus("Export not yet implemented in Web UI")
   })
 
+  btnInput.addEventListener("click", async () => {
+    // Request mic permission + enumerate devices if not already done
+    if (inputDevices.length === 0) {
+      try {
+        const ok = await audio.requestMicAccess()
+        if (!ok) {
+          showStatus("Microphone access denied")
+          return
+        }
+        inputDevices = audio.inputDevices
+        audio.onDeviceChange(() => {
+          inputDevices = audio.inputDevices
+          if (showInputOverlay) render()
+        })
+      } catch {
+        showStatus("Failed to access microphone")
+        return
+      }
+    }
+    showInputOverlay = !showInputOverlay
+    render()
+  })
+
   btnAddTrack.addEventListener("click", () => {
     if (state.transportState !== "stopped") {
       showStatus("Stop transport first (Space)")
@@ -966,6 +1004,113 @@ function setupTopbar() {
       render()
     }
   })
+}
+
+// ── Input Device Overlay ────────────────────────────────────────────────
+const OVERLAY_ROW_H = 44
+const OVERLAY_PAD = 16
+const OVERLAY_MAX_W = 400
+
+function getOverlayLayout() {
+  const overlayW = Math.min(OVERLAY_MAX_W, W - 32)
+  const itemCount = inputDevices.length + 1 // +1 for "Default" row
+  const headerH = 40
+  const overlayH = Math.min(headerH + itemCount * OVERLAY_ROW_H + OVERLAY_PAD, H - 32)
+  const overlayX = Math.round((W - overlayW) / 2)
+  const overlayY = Math.round((H - overlayH) / 2)
+  return { overlayX, overlayY, overlayW, overlayH, headerH, itemCount }
+}
+
+function drawInputOverlay() {
+  // Dim backdrop
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)"
+  ctx.fillRect(0, 0, W, H)
+
+  const { overlayX, overlayY, overlayW, overlayH, headerH } = getOverlayLayout()
+
+  // Panel background
+  ctx.fillStyle = "#111111"
+  roundRect(ctx, overlayX, overlayY, overlayW, overlayH, 8)
+  ctx.fill()
+  ctx.strokeStyle = C.border
+  ctx.lineWidth = 1
+  roundRect(ctx, overlayX, overlayY, overlayW, overlayH, 8)
+  ctx.stroke()
+
+  // Header
+  ctx.fillStyle = C.fg
+  ctx.font = "bold 14px monospace"
+  ctx.fillText("Select Input Device", overlayX + OVERLAY_PAD, overlayY + 26)
+
+  // Selected track info
+  const selTrack = state.selectedTrackIndex >= 0 ? state.tracks[state.selectedTrackIndex] : null
+  if (selTrack) {
+    ctx.fillStyle = C.fgDim
+    ctx.font = "10px monospace"
+    ctx.fillText(`for "${selTrack.name}"`, overlayX + OVERLAY_PAD + 180, overlayY + 26)
+  }
+
+  // Device rows
+  const rowsY = overlayY + headerH
+  const maxVisible = Math.floor((overlayH - headerH - OVERLAY_PAD) / OVERLAY_ROW_H)
+
+  // Build device list: [null (Default), ...inputDevices]
+  const deviceList: Array<{ deviceId: string | null; label: string; channels: number }> = [
+    { deviceId: null, label: "Default", channels: 0 },
+    ...inputDevices.map(d => ({ deviceId: d.deviceId, label: d.label, channels: d.channelCount })),
+  ]
+
+  const currentDeviceId = selTrack?.inputDeviceId ?? null
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(overlayX, rowsY, overlayW, overlayH - headerH - OVERLAY_PAD)
+  ctx.clip()
+
+  for (let i = 0; i < deviceList.length && i < maxVisible; i++) {
+    const dev = deviceList[i]
+    const rowY = rowsY + i * OVERLAY_ROW_H
+    const isActive = dev.deviceId === currentDeviceId
+
+    // Highlight active device
+    if (isActive) {
+      ctx.fillStyle = C.bgHighlight
+      roundRect(ctx, overlayX + 4, rowY + 2, overlayW - 8, OVERLAY_ROW_H - 4, 4)
+      ctx.fill()
+      ctx.strokeStyle = C.cyan
+      ctx.lineWidth = 1
+      roundRect(ctx, overlayX + 4, rowY + 2, overlayW - 8, OVERLAY_ROW_H - 4, 4)
+      ctx.stroke()
+    }
+
+    // Device label
+    ctx.fillStyle = isActive ? C.cyan : C.fg
+    ctx.font = isActive ? "bold 12px monospace" : "12px monospace"
+    ctx.fillText(dev.label, overlayX + OVERLAY_PAD, rowY + 20)
+
+    // Channel count (if known)
+    if (dev.channels > 0) {
+      ctx.fillStyle = C.fgDim
+      ctx.font = "10px monospace"
+      ctx.fillText(`${dev.channels}ch`, overlayX + OVERLAY_PAD, rowY + 34)
+    }
+
+    // Check mark for active device
+    if (isActive) {
+      ctx.fillStyle = C.cyan
+      ctx.font = "bold 14px monospace"
+      ctx.fillText("\u2713", overlayX + overlayW - OVERLAY_PAD - 14, rowY + 22)
+    }
+  }
+
+  ctx.restore()
+
+  // Hint at bottom
+  if (inputDevices.length === 0) {
+    ctx.fillStyle = C.fgDim
+    ctx.font = "10px monospace"
+    ctx.fillText("Requesting microphone access...", overlayX + OVERLAY_PAD, overlayY + overlayH - 12)
+  }
 }
 
 /** Sync DOM topbar button states/classes and text displays with current app state */
@@ -1011,6 +1156,10 @@ function updateTopbar() {
   const mins = Math.floor(seconds / 60)
   const secs = (seconds % 60).toFixed(1)
   timeDisplay.textContent = `${mins}:${secs.padStart(4, "0")}`
+
+  // Input button — highlight when overlay is open
+  const btnInput = document.getElementById("btn-input")!
+  btnInput.classList.toggle("active-input", showInputOverlay)
 
   // Status message
   statusMsg.textContent = state.statusMessage
@@ -1445,7 +1594,8 @@ function ensurePlayheadVisible() {
 // ── Hit zones for mouse (canvas only — topbar is DOM) ───────────────────
 type Zone = "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
            | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
-           | "sidebar-input-device" | "sidebar-input-channel"
+           | "sidebar-input-channel"
+           | "input-overlay" | "input-overlay-dismiss"
            | "timeline" | "waveform" | "waveform-nudge" | "statusbar" | "none"
 
 interface HitResult {
@@ -1455,10 +1605,35 @@ interface HitResult {
   localX: number
   localY: number
   sliderFrac?: number  // 0-1 position within slider
+  overlayIndex?: number  // index into overlay device list
 }
 
 function hitTest(cx: number, cy: number): HitResult {
   const result: HitResult = { zone: "none", trackIndex: -1, localX: cx, localY: cy }
+
+  // Input device overlay (covers everything when visible)
+  if (showInputOverlay) {
+    const { overlayX, overlayY, overlayW, overlayH, headerH, itemCount } = getOverlayLayout()
+    if (cx >= overlayX && cx < overlayX + overlayW &&
+        cy >= overlayY && cy < overlayY + overlayH) {
+      // Inside overlay
+      const rowsY = overlayY + headerH
+      if (cy >= rowsY) {
+        const rowIdx = Math.floor((cy - rowsY) / OVERLAY_ROW_H)
+        if (rowIdx >= 0 && rowIdx < itemCount) {
+          result.zone = "input-overlay"
+          result.overlayIndex = rowIdx
+          return result
+        }
+      }
+      // Header area — still inside, just don't dismiss
+      result.zone = "input-overlay"
+      return result
+    }
+    // Outside overlay — dismiss
+    result.zone = "input-overlay-dismiss"
+    return result
+  }
 
   // Statusbar
   if (cy >= H - STATUSBAR_H) {
@@ -1525,17 +1700,12 @@ function hitTest(cx: number, cy: number): HitResult {
         }
       }
 
-      // Input device/channel zone (right of MSR buttons, same row area y+28..y+56)
+      // Input channel zone (right of MSR buttons, same row area y+28..y+56)
       const infoX = pad + (MSR_BTN_W + 6) * 3 + 8
       if (localY >= 28 && localY < 56 && cx >= infoX) {
         const track = state.tracks[trackIdx]
         if (track && (track.armed || trackIdx === state.selectedTrackIndex)) {
-          // Top half = device selector, bottom half = channel selector
-          if (localY < 42) {
-            result.zone = "sidebar-input-device"; return result
-          } else {
-            result.zone = "sidebar-input-channel"; return result
-          }
+          result.zone = "sidebar-input-channel"; return result
         }
       }
 
@@ -1730,35 +1900,32 @@ function setupMouse() {
         }
         break
 
-      case "sidebar-input-device":
-        if (hit.trackIndex >= 0) {
-          const track = state.tracks[hit.trackIndex]
-          if (track) {
-            state.selectedTrackIndex = hit.trackIndex
-            // Cycle through available input devices (null -> dev0 -> dev1 -> ... -> null)
-            if (inputDevices.length === 0) {
-              showStatus("No input devices found — tap Play to initialize audio")
+      case "input-overlay":
+        if (hit.overlayIndex !== undefined) {
+          // Index 0 = Default (null), 1..N = inputDevices[i-1]
+          const selTrack = state.selectedTrackIndex >= 0 ? state.tracks[state.selectedTrackIndex] : null
+          if (selTrack) {
+            if (hit.overlayIndex === 0) {
+              selTrack.inputDeviceId = null
+              selTrack.inputChannel = 0
             } else {
-              const currentIdx = track.inputDeviceId
-                ? inputDevices.findIndex(d => d.deviceId === track.inputDeviceId)
-                : -1
-              if (currentIdx < 0) {
-                // Currently default → go to first device
-                track.inputDeviceId = inputDevices[0].deviceId
-              } else if (currentIdx >= inputDevices.length - 1) {
-                // Last device → go back to default
-                track.inputDeviceId = null
-                track.inputChannel = 0 // reset channel
-              } else {
-                track.inputDeviceId = inputDevices[currentIdx + 1].deviceId
-                track.inputChannel = 0 // reset channel when device changes
+              const dev = inputDevices[hit.overlayIndex - 1]
+              if (dev) {
+                selTrack.inputDeviceId = dev.deviceId
+                selTrack.inputChannel = 0
               }
-              const label = getInputDeviceLabel(track.inputDeviceId)
-              showStatus(`Input: ${label}`)
             }
-            render()
+            const label = getInputDeviceLabel(selTrack.inputDeviceId)
+            showStatus(`Input: ${label}`)
           }
+          showInputOverlay = false
+          render()
         }
+        break
+
+      case "input-overlay-dismiss":
+        showInputOverlay = false
+        render()
         break
 
       case "sidebar-input-channel":
@@ -1997,6 +2164,15 @@ function setupMouse() {
 function setupKeyboard() {
   document.addEventListener("keydown", (e) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return
+
+    // Dismiss input overlay on Escape
+    if (showInputOverlay) {
+      if (e.key === "Escape") {
+        showInputOverlay = false
+        render()
+      }
+      return // Block all other keys while overlay is open
+    }
 
     switch (e.key) {
       case " ":
