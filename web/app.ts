@@ -150,8 +150,9 @@ function resize() {
   dpr = window.devicePixelRatio || 1
   W = window.innerWidth
   H = window.innerHeight - TOPBAR_H   // canvas starts below the DOM topbar
-  // Only set height programmatically — CSS width: 100vw works everywhere,
-  // but CSS height (100vh) differs from innerHeight on iOS Safari and Wayland
+  // Set size programmatically — CSS viewport units can differ from
+  // window.innerWidth/Height in PWA standalone mode and iOS Safari
+  canvas.style.width = W + "px"
   canvas.style.height = H + "px"
   canvas.width = W * dpr
   canvas.height = H * dpr
