@@ -213,6 +213,19 @@ export class AudioEngine {
     return { inputs, outputs }
   }
 
+  // ── Output Device ────────────────────────────────────────────────────
+
+  // Switch the playback device. Stops the current device, sets the new index,
+  // and restarts with the new device. Safe to call while transport is stopped.
+  setOutputDevice(deviceId: number | null): void {
+    lib.symbols.tuidaw_set_output_device(deviceId ?? -1)
+    lib.symbols.tuidaw_stop_playback_device()
+    const result = lib.symbols.tuidaw_start_playback_device()
+    if (result !== 0) {
+      throw new Error("Failed to restart playback device with new output")
+    }
+  }
+
   // ── Track Management (sync native state with JS state) ─────────────────
 
   // Ensure a track exists in the native engine and sync its current state.
@@ -413,8 +426,8 @@ export class AudioEngine {
       lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
     }
 
-    // Set output device
-    lib.symbols.tuidaw_set_output_device(state.outputDeviceId ?? -1)
+    // Switch output device (stops + restarts playback device if needed)
+    this.setOutputDevice(state.outputDeviceId)
 
     // Start transport from current playhead position
     lib.symbols.tuidaw_play(BigInt(state.playheadPosition))
