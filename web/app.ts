@@ -89,8 +89,6 @@ const $ = (id: string) => document.getElementById(id)!
 const loadingEl = $("loading") as HTMLDivElement
 const loadingStatus = $("loading-status") as HTMLParagraphElement
 const btnPlay = $("btn-play") as HTMLButtonElement
-const btnStop = $("btn-stop") as HTMLButtonElement
-const btnRecord = $("btn-record") as HTMLButtonElement
 const bpmDisplay = $("bpm-display") as HTMLDivElement
 const speedDisplay = $("speed-display") as HTMLDivElement
 const timeDisplay = $("time-display") as HTMLDivElement
@@ -106,25 +104,19 @@ const audio = new WebAudioBridge()
 const state = createDefaultState()
 let playheadInterval: ReturnType<typeof setInterval> | null = null
 let animFrameId: number | null = null
+let audioInitPromise: Promise<void> | null = null
+let audioInitStarted = false
 
 async function init() {
   loadingStatus.textContent = "Loading WASM audio engine..."
 
   try {
-    // Load the Emscripten glue script first
+    // Load the Emscripten glue script (defines TuidawAudio global)
     await loadScript("/wasm/tuidaw_audio.js")
-    loadingStatus.textContent = "Initializing audio..."
-    await audio.init()
-    loadingStatus.textContent = "Ready!"
+    loadingStatus.textContent = "Ready — press any key or click to start"
   } catch (err) {
-    loadingStatus.textContent = `Failed to initialize: ${err}`
-    console.error("Audio init failed:", err)
-    // Still show the UI even if audio fails — useful for layout work
-  }
-
-  // Sync initial track to native engine
-  for (const track of state.tracks) {
-    audio.syncTrack(track)
+    loadingStatus.textContent = `Failed to load WASM: ${err}`
+    console.error("WASM load failed:", err)
   }
 
   // Hide loading overlay
@@ -138,6 +130,34 @@ async function init() {
   setupCanvasMouse()
   renderSidebar()
   renderFrame()
+}
+
+/** Initialize audio on first user gesture (required by browsers) */
+async function ensureAudioReady(): Promise<boolean> {
+  if (audio.isReady) return true
+
+  if (audioInitStarted) {
+    // Already initializing — wait for it
+    if (audioInitPromise) await audioInitPromise
+    return audio.isReady
+  }
+
+  audioInitStarted = true
+  audioInitPromise = (async () => {
+    try {
+      await audio.init()
+      // Sync initial tracks to native engine
+      for (const track of state.tracks) {
+        audio.syncTrack(track)
+      }
+    } catch (err) {
+      console.error("Audio init failed:", err)
+      showStatus(`Audio init failed: ${err}`)
+    }
+  })()
+
+  await audioInitPromise
+  return audio.isReady
 }
 
 function loadScript(src: string): Promise<void> {
@@ -237,10 +257,10 @@ function renderSidebar() {
 
       if (action === "mute") {
         track.muted = !track.muted
-        audio.setTrackMuted(track.id, track.muted)
+        if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
       } else if (action === "solo") {
         track.solo = !track.solo
-        audio.setTrackSolo(track.id, track.solo)
+        if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
       } else if (action === "arm") {
         track.armed = !track.armed
       }
@@ -331,14 +351,17 @@ function renderWaveforms() {
 
   if (state.tracks.length === 0) return
 
-  const trackHeight = Math.max(40, Math.floor(h / state.tracks.length))
+  // Fixed track height matching sidebar (CSS --track-height is 80px)
+  const trackHeight = 80
   const samplesPerCol = getSamplesPerCol(w)
   const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+  const totalTrackArea = state.tracks.length * trackHeight
 
-  // Draw beat grid
+  // Draw beat grid (only within track area)
   const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
   const endSample = state.scrollOffset + w * samplesPerCol
   const endBeat = Math.ceil(endSample / samplesPerBeat)
+  const gridH = Math.min(totalTrackArea, h)
 
   for (let beat = startBeat; beat <= endBeat; beat++) {
     const samplePos = beat * samplesPerBeat
@@ -350,16 +373,16 @@ function renderWaveforms() {
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
     ctx.moveTo(x, 0)
-    ctx.lineTo(x, h)
+    ctx.lineTo(x, gridH)
     ctx.stroke()
   }
 
-  // Draw loop region
+  // Draw loop region (only within track area)
   if (state.loopStart !== null && state.loopEnd !== null) {
     const x1 = (state.loopStart - state.scrollOffset) / samplesPerCol
     const x2 = (state.loopEnd - state.scrollOffset) / samplesPerCol
     ctx.fillStyle = "rgba(122, 162, 247, 0.1)"
-    ctx.fillRect(Math.max(0, x1), 0, Math.min(w, x2) - Math.max(0, x1), h)
+    ctx.fillRect(Math.max(0, x1), 0, Math.min(w, x2) - Math.max(0, x1), gridH)
   }
 
   // Draw each track's waveform
@@ -422,14 +445,14 @@ function renderWaveforms() {
     }
   }
 
-  // Draw playhead
+  // Draw playhead (only within track area)
   const playheadX = (state.playheadPosition - state.scrollOffset) / samplesPerCol
   if (playheadX >= 0 && playheadX <= w) {
     ctx.strokeStyle = Colors.green
     ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(playheadX, 0)
-    ctx.lineTo(playheadX, h)
+    ctx.lineTo(playheadX, gridH)
     ctx.stroke()
   }
 }
@@ -456,9 +479,14 @@ function updateTopBar() {
   const secs = (seconds % 60).toFixed(1)
   timeDisplay.textContent = `${mins}:${secs.padStart(4, "0")}`
 
-  // Transport button states
-  btnPlay.classList.toggle("active", state.transportState === "playing")
-  btnRecord.classList.toggle("recording", state.transportState === "recording")
+  // Transport button state
+  if (state.transportState !== "stopped") {
+    btnPlay.classList.add("active")
+    btnPlay.innerHTML = "&#10074;&#10074; Pause"
+  } else {
+    btnPlay.classList.remove("active")
+    btnPlay.innerHTML = "&#9654; Play"
+  }
 }
 
 function showStatus(msg: string) {
@@ -471,8 +499,9 @@ function showStatus(msg: string) {
 }
 
 // ── Transport ───────────────────────────────────────────────────────────
-function play() {
-  if (!audio.isReady) {
+async function play() {
+  const ready = await ensureAudioReady()
+  if (!ready) {
     showStatus("Audio engine not ready")
     return
   }
@@ -584,10 +613,6 @@ function setupTransportButtons() {
       play()
     }
   }
-  btnStop.onclick = () => stopTransport()
-  btnRecord.onclick = () => {
-    showStatus("Recording not yet implemented in web UI")
-  }
 }
 
 // ── Keyboard Shortcuts ──────────────────────────────────────────────────
@@ -602,12 +627,7 @@ function setupKeyboard() {
         if (state.transportState !== "stopped") {
           stopTransport()
         } else {
-          const hasArmed = state.tracks.some((t) => t.armed)
-          if (hasArmed) {
-            showStatus("Recording not yet implemented in web UI")
-          } else {
-            play()
-          }
+          play()
         }
         break
 
@@ -619,7 +639,7 @@ function setupKeyboard() {
           const track = state.tracks[state.selectedTrackIndex]
           if (track) {
             track.muted = !track.muted
-            audio.setTrackMuted(track.id, track.muted)
+            if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
             renderSidebar()
           }
         }
@@ -630,7 +650,7 @@ function setupKeyboard() {
           const track = state.tracks[state.selectedTrackIndex]
           if (track) {
             track.solo = !track.solo
-            audio.setTrackSolo(track.id, track.solo)
+            if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
             renderSidebar()
           }
         }
@@ -664,17 +684,18 @@ function setupKeyboard() {
       case "+":
       case "=":
         state.bpm = Math.min(300, state.bpm + (e.shiftKey ? 10 : 1))
-        audio.setSpeed(state.bpm / state.originalBpm)
+        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
         renderFrame()
         break
 
       case "-":
         state.bpm = Math.max(20, state.bpm - (e.shiftKey ? 10 : 1))
-        audio.setSpeed(state.bpm / state.originalBpm)
+        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
         renderFrame()
         break
 
       case "ArrowUp":
+      case "k":
         e.preventDefault()
         if (state.selectedTrackIndex > -1) {
           state.selectedTrackIndex--
@@ -684,6 +705,7 @@ function setupKeyboard() {
         break
 
       case "ArrowDown":
+      case "j":
         e.preventDefault()
         if (state.selectedTrackIndex < state.tracks.length - 1) {
           state.selectedTrackIndex++
@@ -693,6 +715,7 @@ function setupKeyboard() {
         break
 
       case "ArrowLeft":
+      case "h":
         {
           const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
           const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
@@ -702,6 +725,7 @@ function setupKeyboard() {
         break
 
       case "ArrowRight":
+      case "l":
         {
           const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
           const scrollAmount = e.shiftKey ? samplesPerBeat * 4 : samplesPerBeat
@@ -741,7 +765,7 @@ function setupKeyboard() {
         } else {
           const newTrack = createTrack(`Track ${nextTrackNum++}`, state.tracks.length)
           state.tracks.push(newTrack)
-          audio.syncTrack(newTrack)
+          if (audio.isReady) audio.syncTrack(newTrack)
           state.selectedTrackIndex = state.tracks.length - 1
           renderSidebar()
           renderFrame()
@@ -757,10 +781,10 @@ function setupKeyboard() {
           if (track) {
             if (track.samples && track.samples.length > 0) {
               track.samples = null
-              audio.setTrackSamples(track.id, null)
+              if (audio.isReady) audio.setTrackSamples(track.id, null)
               showStatus(`Cleared "${track.name}"`)
             } else if (state.tracks.length > 1) {
-              audio.removeTrack(track.id)
+              if (audio.isReady) audio.removeTrack(track.id)
               state.tracks.splice(state.selectedTrackIndex, 1)
               if (state.selectedTrackIndex >= state.tracks.length) {
                 state.selectedTrackIndex = state.tracks.length - 1
@@ -816,7 +840,7 @@ function setupCanvasMouse() {
   waveformCanvas.addEventListener("click", (e) => {
     const rect = waveformCanvas.getBoundingClientRect()
     const y = e.clientY - rect.top
-    const trackHeight = Math.max(40, Math.floor(rect.height / state.tracks.length))
+    const trackHeight = 80
     const trackIdx = Math.floor(y / trackHeight)
     if (trackIdx >= 0 && trackIdx < state.tracks.length) {
       state.selectedTrackIndex = trackIdx
@@ -851,7 +875,7 @@ async function importWav() {
       if (track) {
         track.samples = samples
         track.sampleRate = SAMPLE_RATE
-        audio.setTrackSamples(track.id, samples)
+        if (audio.isReady) audio.setTrackSamples(track.id, samples)
         showStatus(`Imported: ${file.name} (${(samples.length / SAMPLE_RATE).toFixed(1)}s)`)
         renderSidebar()
         renderFrame()
