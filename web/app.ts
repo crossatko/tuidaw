@@ -1131,13 +1131,13 @@ function setupKeyboard() {
 
       case "+":
       case "=":
-        state.bpm = Math.min(300, state.bpm + (e.shiftKey ? 10 : 1))
+        state.bpm = Math.min(300, state.bpm + 1)
         if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
         render()
         break
 
       case "-":
-        state.bpm = Math.max(20, state.bpm - (e.shiftKey ? 10 : 1))
+        state.bpm = Math.max(20, state.bpm - 1)
         if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
         render()
         break
