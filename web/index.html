@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon-192.svg" />
   <title>tuidaw</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -170,5 +176,13 @@
     })();
   </script>
   <script type="module" src="/app.js"></script>
+  <script>
+    // Register service worker for offline PWA support
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(function(e) {
+        console.warn("SW registration failed:", e);
+      });
+    }
+  </script>
 </body>
 </html>

@@ -203,6 +203,10 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 - **Safari user activation chain**: Safari blocks programmatic `.click()` on file inputs unless it happens in the synchronous call stack of a trusted user gesture. Three things broke this: (1) `async` functions consumed the activation token before reaching `.click()`, (2) file inputs not in the DOM are silently ignored by Safari, (3) `touchstart preventDefault()` on the canvas consumed the activation token. Ultimate fix: move topbar to real DOM buttons so file dialog triggers are native user gestures — canvas `touchstart preventDefault()` doesn't interfere since topbar is outside the canvas.
 - **Safari/iOS canvas sizing mismatch**: CSS `height: calc(100vh - 56px)` vs JS `window.innerHeight - 56` causes vertical coordinate displacement on iOS Safari. `100vh` equals the "large viewport" (toolbar hidden) while `innerHeight` is the current visible viewport (smaller when toolbar visible). The canvas buffer gets stretched vertically to fill the larger CSS box, causing y-coordinates to be displaced — the offset increases with y position (pan sliders worse than volume sliders). Fix: set `canvas.style.width/height` programmatically in `resize()` to match logical dimensions exactly, and add `visualViewport` resize listener for iOS toolbar show/hide.
 - **Sidebar vertical scrolling (Web UI)**: `trackScrollY` state tracks vertical scroll offset for track rows. Click track row is always pinned at top (unaffected by scroll). Both `drawSidebar()` and `drawWaveformArea()` apply the same scroll offset so sidebar and waveform rows stay aligned. Hit testing accounts for scroll offset. Sidebar touch interaction uses a "pending scroll" pattern with 5px movement threshold — below threshold it's a tap-to-select, above it triggers vertical scrolling.
+- **Flex min-width: auto problem**: Body is `display: flex; flex-direction: column`, canvas is a flex item. Default `min-width: auto` for replaced elements = intrinsic size = canvas buffer size (`W * dpr`). On iPad dpr=2, canvas forced to display at 2x. Fix: `min-width: 0; min-height: 0` on canvas CSS.
+- **Final canvas sizing solution**: CSS has `display: block; min-width: 0; min-height: 0;` (no width/height). JS `resize()` sets `canvas.style.width = W + "px"` and `canvas.style.height = H + "px"` programmatically. `visualViewport` resize listener handles iOS toolbar show/hide.
+- **Stale bundle issue**: Server bundles `app.ts` once at startup via `Bun.build()`. HTML is served fresh from disk. If user reloads without restarting server, they get new HTML but old JS. Server needs `Cache-Control: no-cache` headers for `sw.js` to ensure browsers check for service worker updates.
+- **PWA with COOP/COEP**: Service workers work fine alongside `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. The SW scope is same-origin so COOP doesn't interfere. All cached resources are same-origin too, so COEP `require-corp` is satisfied.
 
 ### OpenTUI Mouse Event API:
 
@@ -299,6 +303,9 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 79. **Topbar moved to HTML DOM**: Canvas topbar replaced with real `<button>` elements in `<div id="topbar">` in `index.html`. Guarantees Safari/iOS user activation for file dialogs (Import, Open) since button clicks are native user gestures — canvas `touchstart preventDefault()` no longer interferes. `index.html` expanded to ~142 lines with styled buttons, BPM display, speed/time indicators, status message. `app.ts` removed `drawTopbar()`, `getTopbarLayout()`, all topbar hit zones, `BTN_H`, `inRect()`. Added `setupTopbar()` (wires DOM click handlers) and `updateTopbar()` (syncs button states/text from `render()`). Canvas height = `calc(100vh - 56px)`, all y-offsets in canvas rendering start at 0 instead of TOPBAR_H.
 80. **Fix Safari/iOS canvas sizing mismatch**: Canvas CSS size now set programmatically in `resize()` (`canvas.style.width/height = W/H + "px"`) instead of CSS viewport units. Eliminates vertical coordinate displacement on iOS Safari where `100vh` (large viewport) vs `innerHeight` (visible viewport) mismatch caused canvas buffer stretching — y-coordinates were displaced increasingly with depth (pan sliders worse than volume sliders). Added `visualViewport` resize listener for iOS toolbar show/hide events.
 81. **Sidebar vertical scrolling (Web UI)**: `trackScrollY` state enables vertical scrolling of track rows when they overflow the viewport. Click track row is pinned at top (unaffected by scroll). `drawSidebar()` and `drawWaveformArea()` apply the same scroll offset for alignment. `hitTest()` accounts for scroll offset. Sidebar touch interaction uses "pending scroll" pattern with 5px movement threshold — below threshold it's a tap-to-select, above it triggers vertical scrolling. Mouse wheel on sidebar scrolls vertically. Keyboard track navigation (`j`/`k`/arrows) auto-scrolls to keep selected track visible via `ensureTrackVisible()`. Track add/delete/open operations clamp scroll position via `clampTrackScroll()`. Viewport resize also clamps.
+82. **PWA support**: `web/manifest.json` with app name "tuidaw", standalone display, OLED black theme colors (`#000000`), SVG icons (waveform bars + playhead). `web/sw.js` service worker with stale-while-revalidate strategy, precaches all app assets (`/`, `/index.html`, `/app.js`, WASM files, manifest, icons). `skipWaiting()` + `clients.claim()` for immediate activation. Versioned cache name (`tuidaw-v1`). `index.html` has `<link rel="manifest">`, apple-mobile-web-app meta tags, `<link rel="apple-touch-icon">`, SW registration script.
+83. **PWA icons**: `web/icon-192.svg` and `web/icon-512.svg` — waveform bars (cyan) + playhead (green) on black rounded rect. SVG scales to any size.
+84. **Server Cache-Control for SW**: `web/server.ts` serves `/sw.js` with `Cache-Control: no-cache, no-store, must-revalidate` so browsers always check for service worker updates. Other static files use default caching.
 
 ## File structure
 
@@ -374,6 +381,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # Bundles app.ts via Bun.build for browser.
 │   │                          # Serves static files with COOP/COEP headers
 │   │                          # (required for SharedArrayBuffer / WASM pthreads).
+│   │                          # Cache-Control: no-cache for /sw.js.
 │   ├── index.html            # HTML shell with DOM topbar (<div id="topbar"> with real
 │   │                          # <button> elements for Play, Loop, Click, BPM +/-, Save,
 │   │                          # Open, Import, Export, +Track) + <canvas id="app"> for
@@ -381,7 +389,16 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # Topbar is DOM (not canvas) for Safari/iOS user activation
 │   │                          # compatibility with file dialogs. Canvas CSS size set
 │   │                          # programmatically (not viewport units) for iOS Safari
-│   │                          # compatibility. ~142 lines.
+│   │                          # compatibility. PWA manifest, apple-mobile-web-app meta,
+│   │                          # SW registration. ~142 lines.
+│   ├── manifest.json         # PWA manifest: name "tuidaw", standalone display,
+│   │                          # OLED black theme, SVG icons.
+│   ├── sw.js                 # Service worker: versioned cache (tuidaw-v1), precaches
+│   │                          # all app assets, stale-while-revalidate fetch strategy,
+│   │                          # skipWaiting + clients.claim for immediate activation.
+│   ├── icon-192.svg          # PWA icon 192x192: waveform bars (cyan) + playhead (green)
+│   │                          # on black rounded rect. SVG scales to any size.
+│   ├── icon-512.svg          # PWA icon 512x512: same design as icon-192.svg.
 │   ├── app.ts                # Main browser app (~2100 lines): Canvas 2D rendering
 │   │                          # of sidebar, timeline, waveforms, statusbar (NOT topbar).
 │   │                          # OLED theme (true black bg, white fg, color accents for active states).
