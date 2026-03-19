@@ -30,6 +30,9 @@
     "test-bpm.ts",
     "debug-bpm.ts",
     "analyze-clicks.ts",
-    "analyze-live-click.ts"
+    "analyze-live-click.ts",
+    "native/emsdk/**",
+    "web/app.ts",
+    "web/audio-bridge.ts"
   ]
 }
