@@ -188,7 +188,7 @@ async function ensureAudioReady(): Promise<boolean> {
 
 // ── Drag State ──────────────────────────────────────────────────────────
 interface DragState {
-  type: "volume" | "pan" | "click-volume" | "click-pan" | "timeline"
+  type: "volume" | "pan" | "click-volume" | "click-pan" | "timeline" | "waveform-scroll"
   trackIndex: number // -1 for click track, -2 for timeline
   startValue: number
 }
@@ -503,7 +503,7 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
 
   const pad = 8
 
-  // Row 1 (y+4..y+20): color dot + name
+  // Row 1 (y+4..y+20): color dot + name + delete button
   ctx.fillStyle = track.color
   ctx.beginPath()
   ctx.arc(pad + 5, y + 14, 5, 0, Math.PI * 2)
@@ -511,13 +511,29 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
 
   ctx.fillStyle = C.fg
   ctx.font = "bold 12px monospace"
-  const maxNameW = SIDEBAR_W - 28
+  const delBtnX = SIDEBAR_W - pad - 28
+  const maxNameW = delBtnX - (pad + 14) - 4
   ctx.save()
   ctx.beginPath()
   ctx.rect(pad + 14, y, maxNameW, 24)
   ctx.clip()
   ctx.fillText(track.name, pad + 14, y + 18)
   ctx.restore()
+
+  // Delete button (X) — top right of track row
+  const delBtnY = y + 4
+  const delBtnW = 28
+  const delBtnH = 24
+  ctx.fillStyle = C.bgHighlight
+  roundRect(ctx, delBtnX, delBtnY, delBtnW, delBtnH, 3)
+  ctx.fill()
+  ctx.strokeStyle = C.border
+  ctx.lineWidth = 1
+  roundRect(ctx, delBtnX, delBtnY, delBtnW, delBtnH, 3)
+  ctx.stroke()
+  ctx.fillStyle = C.fgDim
+  ctx.font = "bold 12px monospace"
+  ctx.fillText("\u00D7", delBtnX + 9, delBtnY + 17) // × symbol
 
   // Row 2 (y+26..y+54): M S R buttons (bigger)
   const msrY = y + 28
@@ -1150,7 +1166,7 @@ type Zone = "topbar-play" | "topbar-loop" | "topbar-click" | "topbar-bpm-minus" 
 interface HitResult {
   zone: Zone
   trackIndex: number
-  btnAction?: "mute" | "solo" | "arm"
+  btnAction?: "mute" | "solo" | "arm" | "delete"
   localX: number
   localY: number
   sliderFrac?: number  // 0-1 position within slider
@@ -1225,8 +1241,14 @@ function hitTest(cx: number, cy: number): HitResult {
       result.trackIndex = trackIdx
       const localY = trackY - trackIdx * TRACK_H
 
-      // MSR buttons (y+28..y+28+MSR_BTN_H)
+      // Delete button (top-right of name row, y+4..y+28)
       const pad = 8
+      const delBtnX = SIDEBAR_W - pad - 28
+      if (localY >= 4 && localY < 28 && cx >= delBtnX && cx < delBtnX + 28) {
+        result.zone = "sidebar-btn"; result.btnAction = "delete"; return result
+      }
+
+      // MSR buttons (y+28..y+28+MSR_BTN_H)
       if (localY >= 28 && localY < 28 + MSR_BTN_H) {
         const lx = cx - pad
         if (lx >= 0 && lx < MSR_BTN_W) {
@@ -1429,6 +1451,21 @@ function setupMouse() {
             if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
           } else if (track && hit.btnAction === "arm") {
             track.armed = !track.armed
+          } else if (track && hit.btnAction === "delete") {
+            if (state.transportState !== "stopped") {
+              showStatus("Stop transport first (Space)")
+            } else if (track.samples && track.samples.length > 0) {
+              track.samples = null
+              if (audio.isReady) audio.setTrackSamples(track.id, null)
+              showStatus(`Cleared "${track.name}"`)
+            } else if (state.tracks.length > 1) {
+              if (audio.isReady) audio.removeTrack(track.id)
+              state.tracks.splice(hit.trackIndex, 1)
+              if (state.selectedTrackIndex >= state.tracks.length) {
+                state.selectedTrackIndex = state.tracks.length - 1
+              }
+              showStatus(`Deleted "${track.name}"`)
+            }
           }
           render()
         }
@@ -1489,8 +1526,9 @@ function setupMouse() {
       case "waveform":
         if (hit.trackIndex >= 0) {
           state.selectedTrackIndex = hit.trackIndex
-          render()
         }
+        drag = { type: "waveform-scroll", trackIndex: -2, startValue: e.clientX }
+        render()
         break
     }
   })
@@ -1548,6 +1586,15 @@ function setupMouse() {
         audio.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
       }
+      render()
+    } else if (drag.type === "waveform-scroll") {
+      const dx = drag.startValue - e.clientX
+      const w = W - SIDEBAR_W
+      const samplesPerCol = getSamplesPerCol(w)
+      const deltaSamples = dx * samplesPerCol
+      state.scrollOffset = Math.max(0, state.scrollOffset + deltaSamples)
+      if (state.transportState !== "stopped") state.freeScroll = true
+      drag.startValue = e.clientX
       render()
     }
   })
