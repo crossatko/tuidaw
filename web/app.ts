@@ -1665,8 +1665,21 @@ function setupMouse() {
     }
   }, { passive: false })
 
-  // Touch events: prevent default to avoid scrolling/zooming on iPad
-  canvas.addEventListener("touchstart", (e) => { e.preventDefault() }, { passive: false })
+  // Touch events: prevent default to avoid scrolling/zooming on iPad.
+  // IMPORTANT: Do NOT preventDefault on touches that land on buttons requiring
+  // user activation (Import, Open) — iOS Safari consumes the user gesture token
+  // when touchstart is prevented, so the subsequent pointerdown can no longer
+  // open file dialogs programmatically.
+  canvas.addEventListener("touchstart", (e) => {
+    const touch = e.touches[0]
+    if (touch) {
+      const { cx, cy } = canvasCoords(touch)
+      const hit = hitTest(cx, cy)
+      // Let user activation pass through for file-dialog buttons
+      if (hit.zone === "topbar-import" || hit.zone === "topbar-open") return
+    }
+    e.preventDefault()
+  }, { passive: false })
   canvas.addEventListener("touchmove", (e) => { e.preventDefault() }, { passive: false })
 }
 
