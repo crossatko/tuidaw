@@ -47,10 +47,10 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_set_output_device`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` — output device
 - `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` — track management
 - `tuidaw_play(position)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` — transport
-- `tuidaw_set_click(enabled, bpm)` — metronome (sets displayed BPM for output-space click timing)
+- `tuidaw_set_click(enabled, bpm)` — metronome enable/disable (bpm param is legacy/unused — BPM is baked into click_samples buffer length)
 - `tuidaw_set_click_volume(volume)` — click volume (0.0–2.0+, allows above 100%)
 - `tuidaw_set_click_pan(pan)` — click panning (-1.0 L to 1.0 R)
-- `tuidaw_set_click_samples(ptr, len)` — set click tone buffer (just the 960-sample tone, not beat-length)
+- `tuidaw_set_click_samples(ptr, len)` — set pre-baked click buffer (N beats of tone+silence, length encodes BPM via GCD-exact integer math)
 - `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
 - `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
 - `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA time-stretch speed control (0.25x–2.0x)
@@ -152,17 +152,18 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
 - **`tuidaw_set_speed` must reset WSOLA states**: When speed changes (especially crossing the 1.0 threshold), WSOLA `input_pos` can be stale from whenever WSOLA was last active. Without resetting, switching from 1.0x to 0.5x causes a massive playhead backward jump (e.g. 47616 → 5120) because `input_pos` was still at position 0 from when `tuidaw_play` initially called `wsola_reset`. Fixed by always calling `wsola_reset(current_playhead)` for all active tracks in `tuidaw_set_speed`.
 - **WSOLA initialization vs reset distinction**: `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_speed()` all reset WSOLA states. The callback's `if (!tk->wsola.initialized)` check is a safety net but should rarely trigger since these three functions cover all transitions.
-- **Click timing model (final)**: Click uses an **output-space frame counter** (`click_frame_counter`) with `fmod(counter, 60.0/displayed_bpm*48000.0)`. The counter increments by 1 per output frame regardless of WSOLA speed, so clicks always tick at the displayed BPM in wall-clock time. The click tone buffer (960 samples of 1kHz sine + 20ms decay) is **BPM-independent** and **never pitch-shifted** — no WSOLA on clicks, no content-space mapping. When `fmod` phase < `click_samples_len`, the tone is read directly; otherwise silence. Counter resets to 0 on `tuidaw_play()` and `tuidaw_set_playhead()`. Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.97 samples (0.041ms).
+- **Click timing model (final)**: Click uses a **pre-baked buffer** with **integer modulo** in the native callback. JS generates a buffer containing N beats (click tone + silence), where N is chosen via GCD so the total buffer length is an EXACT INTEGER of samples — zero cumulative drift when looped. The native callback reads `click_samples[counter % click_samples_len]` — pure integer modulo, no floating-point BPM math, no fmod. Click tone is 960 samples of 1kHz sine + 20ms decay, BPM-independent. `click_frame_counter` increments by `frameCount` after each callback. Counter resets to 0 on `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_click()`. GCD math: `bpmScaled = round(bpm*100)`, `totalScaled = sampleRate*60*100`, `N = bpmScaled / gcd(bpmScaled, totalScaled)`. Examples: 155 BPM → N=31 (576000 samples), 120 BPM → N=1 (24000), 212 BPM → N=53 (720000). Buffer capped at ~20 seconds; exotic BPMs fall back to N=1. Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). `click_displayed_bpm` removed from native engine entirely.
 - **Click loop realignment**: Not needed — the output-space frame counter is independent of loop state, so clicks continue at the correct rate regardless of content-space loop wrapping.
 - **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
 - **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
-- **Click output-space playback**: Click tone is a BPM-independent 960-sample buffer (1kHz sine + 20ms decay) passed to native via `tuidaw_set_click_samples`. The native engine uses an output-space frame counter with `fmod` to read the tone at the displayed BPM rate — no WSOLA, no pitch shifting, no content-space mapping. Replaces old WSOLA-based click that caused pitch artifacts at non-1.0x speeds.
+- **Click output-space playback**: Click tone is a BPM-independent 960-sample buffer (1kHz sine + 20ms decay). The native engine uses a pre-baked buffer containing N beats (tone + silence per beat, length encodes BPM via GCD), read with `click_samples[counter % click_samples_len]` — pure integer modulo, no WSOLA, no pitch shifting, no floating-point BPM math. Replaces old WSOLA-based click that caused pitch artifacts at non-1.0x speeds.
 - **`tuidaw_set_click_samples(float*, int len)`**: Stores pointer + len. Race-safe (sets len=0 before pointer update).
 - **Click track is always visible**: CLICK_ROW_HEIGHT=2 content rows, click track row always rendered in sidebar and main area. Uses dim colors when disabled, bright when enabled or selected. SEPARATOR_HEIGHT controls the gap between track rows (default 1, supports 0 for no separator or 2+ for wider gaps).
 - **`CLICK_TRACK_INDEX = -1`**: Sentinel for click track selected. Up arrow from track 0 navigates to click track. Down arrow from click track navigates to track 0.
 - **Click track navigation**: V key adjusts click volume, `<`/`>` adjust click pan, M key toggles clickEnabled — all when click track is selected (index -1).
 - **Mouse click on click row**: Clicking click track row in sidebar or main area sets `selectedTrackIndex = -1`.
 - **`updateClickBuffer` called on C toggle**: Ensures click tone buffer is set. Tone is BPM-independent (960 samples). BPM changes are handled by `startClick(bpm)` which updates `click_displayed_bpm` in native.
+- **`updateClickBuffer(bpm)` regenerates pre-baked buffer**: Called on BPM change, C toggle, M toggle (click track), and WAV import. Generates N-beat GCD-exact buffer and passes to native via `tuidaw_set_click_samples`.
 
 ### OpenTUI Mouse Event API:
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -235,7 +236,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 55. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
 56. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
 57. **Automatic beat-phase alignment on import**: `findBeatOffset()` trims audio so beat 1 sits at sample 0. Uses multi-window contrast scoring (8-bar overlapping windows, later windows weighted higher) + median/IQR sample-level refinement. Handles intros with guitar slides, non-matching percussion, count-ins.
-58. **Click pitch-preservation fix**: Replaced WSOLA-based click playback with output-space frame counter approach. Click tone buffer is now BPM-independent (960 samples of 1kHz sine + 20ms decay). Native engine uses `click_frame_counter` + `fmod(counter, 60.0/displayed_bpm*48000)` for timing. No WSOLA, no pitch shifting — click tone is always 1kHz regardless of playback speed or BPM changes. Fixes click pitch change when adjusting BPM. `startClick(bpm)` passes displayed BPM (not originalBpm).
+58. **Pre-baked click buffer (GCD-exact)**: Replaced fmod-based click timing with pre-baked buffer approach. JS generates N-beat buffer where N is chosen via GCD so total length is an exact integer — zero cumulative drift. Native callback reads `click_samples[counter % click_samples_len]` (pure integer modulo). `click_displayed_bpm` removed from native engine. Beat positions within buffer use integer arithmetic: `floor(k * bufLen / N)`. Buffer capped at ~20 seconds; exotic BPMs fall back to N=1. Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). 8 click precision tests pass (120/145/155/212 BPM, single/chunked render, with-track, non-zero start, 5-min drift, 3-min stress).
 
 ## File structure
 
@@ -256,7 +257,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   └── workflows/
 │       └── build.yml         # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~954 lines)
+│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~997 lines)
 │   ├── miniaudio.h           # miniaudio single-header library (95,864 lines, committed)
 │   ├── build.sh              # Build script using zig cc
 │   ├── libtuidaw_audio.so    # Pre-built shared library (x86_64 Linux, 32 exported symbols)
@@ -275,7 +276,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │   │                          # chunk scanning), resampling (linear interpolation),
 │   │                          # BPM detection (two-pass: onset ACF + sample-level),
 │   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1415 lines.
+│   │                          # Also exports zenitySave()/zenityOpen(). ~1689 lines.
 │   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
 │   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
 │   ├── state.ts              # State management - createDefaultState, createTrack,
@@ -293,6 +294,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # ~1218 lines.
 ├── recordings/               # Auto-created directory for saved WAV files
 ├── tests/
+│   ├── click-precision.test.ts # 8 tests for click timing precision (all pass)
 │   ├── loop-wsola.test.ts    # 6 tests for loop+WSOLA behavior (all pass)
 │   ├── loop-playhead.test.ts # 6 tests for loop+playhead interaction (all pass)
 │   └── playhead-sync.test.ts # 6 tests for playhead content-space sync (all pass)
@@ -305,7 +307,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ### Native audio engine (miniaudio)
 The C library (`native/tuidaw_audio.c`) wraps miniaudio and exports a flat C API. The audio callback runs on a separate thread and handles:
 - Multi-track mixing with per-track volume and pan (equal-power panning)
-- Metronome click generation (inline sine wave synthesis)
+- Metronome click generation (pre-baked buffer with integer modulo — zero floating-point BPM math)
 - Loop region handling (sample-accurate boundary detection)
 - Playhead tracking (atomic counter incremented per frame)
 

@@ -95,13 +95,15 @@ typedef struct {
     _Atomic float click_volume;           // 0.0 - 2.0+ (allows above 100%)
     _Atomic float click_pan;              // -1.0 (L) to 1.0 (R), 0.0 = center
 
-    // Click pre-generated sample buffer (owned by JS — NOT freed here).
-    // The buffer contains just the click TONE (e.g. 960 samples of 1kHz sine
-    // with 20ms decay). Beat TIMING is handled separately via click_frame_counter
-    // and click_displayed_bpm — NO WSOLA, NO pitch shift.
-    float*        click_samples;          // pointer to JS-owned Float32Array (tone only)
-    _Atomic int   click_samples_len;      // number of samples in buffer (tone, not beat)
-    double        click_displayed_bpm;    // displayed/target BPM for click timing (output-space)
+    // Click pre-baked sample buffer (owned by JS — NOT freed here).
+    // The buffer contains ONE FULL BEAT: click tone (960 samples of 1kHz sine
+    // with 20ms decay) followed by silence to fill the beat duration.
+    // Buffer length = round(60/BPM * sampleRate) samples.
+    // The native callback simply reads click_samples[counter % click_samples_len]
+    // — pure integer modulo, no floating-point BPM math, no fmod.
+    // When BPM changes, JS regenerates the buffer with a new length.
+    float*        click_samples;          // pointer to JS-owned Float32Array (one full beat)
+    _Atomic int   click_samples_len;      // number of samples in buffer (one full beat)
     _Atomic long  click_frame_counter;    // output frame counter for click timing (reset on play/seek)
 
     // Loop state
@@ -303,11 +305,11 @@ static float wsola_read_sample(WsolaState* ws) {
 // Called on the audio thread. Mixes all tracks + click into the output buffer.
 // When playback_speed != 1.0, uses WSOLA for pitch-preserving time stretch.
 //
-// Click is now a pre-generated buffer (one beat of 1kHz sine + decay) owned
-// by JS. The native engine loops it at [0, click_samples_len) through its own
-// WsolaState — identical to a normal track, so it automatically gets
-// pitch-preserved time-stretch at all speeds. Toggling click_enabled is
-// identical to muting/unmuting a regular track.
+// Click is now a pre-baked buffer (one full beat: tone + silence) owned
+// by JS. The native engine reads it with simple integer modulo
+// (counter % buffer_length) — no BPM math in the callback, no fmod,
+// no floating-point precision issues. When BPM changes, JS regenerates
+// the buffer with a new length.
 
 static void playback_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pDevice;
@@ -405,28 +407,17 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             right += sample * vol * right_gain;
         }
 
-        // Click (metronome) — output-space frame counter approach.
-        // The click_samples buffer contains just the click TONE (e.g. 960 samples).
-        // Beat timing is computed from click_displayed_bpm using an output-space
-        // frame counter (click_frame_counter). This counter increments by 1 per
-        // output frame regardless of WSOLA speed, so the click always ticks at
-        // the displayed BPM rate in wall-clock time. The tone is NEVER
-        // pitch-shifted since it's read directly (no WSOLA, no time-stretching).
+        // Click (metronome) — pre-baked buffer approach.
+        // The click_samples buffer contains ONE FULL BEAT: click tone at the
+        // start, followed by silence to fill the beat duration. The buffer
+        // length encodes the BPM (length = round(60/BPM * sampleRate)).
+        // We simply read click_samples[counter % click_samples_len] — pure
+        // integer modulo, no floating-point BPM math, no fmod, no precision
+        // issues. When BPM changes, JS regenerates the buffer with a new length.
         if (click_enabled && click_samples && click_samples_len > 0) {
-            float click_sample = 0.0f;
-            double displayed_bpm = g_engine.click_displayed_bpm;
-            if (displayed_bpm > 0.0) {
-                double spb_output = 60.0 / displayed_bpm * (double)SAMPLE_RATE;
-                long counter = atomic_load(&g_engine.click_frame_counter) + (long)frame;
-                double beat_phase = fmod((double)counter, spb_output);
-                if (beat_phase < 0.0) beat_phase += spb_output;
-                int idx = (int)beat_phase;
-                if (idx < click_samples_len) {
-                    click_sample = click_samples[idx];
-                }
-            }
-
-            click_sample *= click_vol;
+            long counter = atomic_load(&g_engine.click_frame_counter) + (long)frame;
+            int idx = (int)(counter % (long)click_samples_len);
+            float click_sample = click_samples[idx] * click_vol;
 
             // Equal-power panning for click
             float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
@@ -544,7 +535,6 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.click_pan, 0.0f);
     atomic_store(&g_engine.click_samples_len, 0);
     g_engine.click_samples = NULL;
-    g_engine.click_displayed_bpm = 0.0;
     atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
@@ -574,7 +564,6 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.click_pan, 0.0f);
     atomic_store(&g_engine.click_samples_len, 0);
     g_engine.click_samples = NULL;
-    g_engine.click_displayed_bpm = 0.0;
     atomic_store(&g_engine.click_frame_counter, 0L);
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
@@ -854,20 +843,18 @@ EXPORT void tuidaw_set_playhead(long position) {
 // ── Click / Metronome ───────────────────────────────────────────────────────
 
 EXPORT void tuidaw_set_click(int enabled, float bpm) {
+    (void)bpm; // BPM is now baked into click_samples buffer length by JS
     atomic_store(&g_engine.click_enabled, enabled);
-    // Store displayed BPM for output-space click timing.
-    // bpm may be 0 (when disabling) — only update if valid.
-    if (bpm > 0.0f) {
-        g_engine.click_displayed_bpm = (double)bpm;
-    }
     // Reset click frame counter so click re-syncs when toggling on/off.
     atomic_store(&g_engine.click_frame_counter, 0L);
 }
 
-// Set the pre-generated click tone buffer (owned by JS, NOT freed here).
-// The buffer contains just the click TONE (e.g. 960 samples of 1kHz sine
-// with 20ms decay). Beat timing is handled by click_displayed_bpm +
-// click_frame_counter. Pass NULL/0 to clear the click buffer.
+// Set the pre-baked click buffer (owned by JS, NOT freed here).
+// The buffer contains ONE FULL BEAT: click tone (960 samples of 1kHz sine
+// with 20ms decay) at the start, followed by silence to fill the beat duration.
+// Buffer length = round(60/BPM * sampleRate) — BPM is baked into the length.
+// The callback reads click_samples[counter % len] — pure integer modulo.
+// Pass NULL/0 to clear the click buffer.
 // Race-safe: sets length to 0 first, then pointer, then new length.
 EXPORT void tuidaw_set_click_samples(float* samples, int len) {
     atomic_store(&g_engine.click_samples_len, 0);  // disable first (race-safe)
