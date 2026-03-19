@@ -14,6 +14,7 @@ import type { ProjectDescriptor, TrackDescriptor } from "../src/types"
 // ── On-screen debug log (defined in index.html, visible when errors occur) ──
 declare function _debugLog(msg: string): void
 declare function _debugError(msg: string): void
+declare function _debugHide(): void
 
 // ── OLED Colors ─────────────────────────────────────────────────────────
 const C = {
@@ -2294,7 +2295,7 @@ async function init() {
   setupKeyboard()
   _debugLog("Rendering initial frame...")
   render()
-  _debugLog("Init complete")
+  _debugHide()
 }
 
 function drawLoadingScreen(msg: string) {
