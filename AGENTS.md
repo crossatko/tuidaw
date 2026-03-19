@@ -32,6 +32,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **Run `bun run check` after changes to verify type-correctness**
 
 ### Native audio engine architecture:
+
 - C shared library wraps miniaudio, exports flat C API, called from TypeScript via `bun:ffi` (`dlopen`)
 - The native audio callback handles mixing, pan, volume, click generation, loop regions, and WSOLA time-stretch sample-accurately — no temp files, no process spawning
 - **WSOLA time-stretch**: per-track Waveform Similarity Overlap-Add for pitch-preserving speed changes (window=1024, hop=512, search=±256)
@@ -41,6 +42,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Built with `zig cc` (Zig 0.14.0 downloaded to `native/zig-toolchain/`)
 
 ### Native API surface (all implemented in C, exported as `EXPORT`):
+
 - `tuidaw_init/deinit` — engine lifecycle
 - `tuidaw_init_null` — engine lifecycle with null (silent) backend for tests
 - `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` — device enumeration
@@ -58,6 +60,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - `tuidaw_render(output, frame_count)` — offline render: calls playback_callback into a user-provided buffer (bypasses audio device, deterministic output for tests)
 
 ### Recording behavior:
+
 - **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
 - **Multiple tracks can be armed simultaneously**, each with different input devices
 - **SPACE starts recording if any tracks are armed**, otherwise just plays
@@ -66,6 +69,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Non-armed, non-muted tracks play back during recording
 
 ### Live controls during transport (all implemented):
+
 - **M** = live mute/unmute (instant atomic update in native engine)
 - **S** = live solo toggle (re-evaluates all tracks via native engine)
 - **C** = live click toggle (enables/disables click in native callback)
@@ -76,14 +80,17 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **A/D** blocked during transport with status message
 
 ### D key behavior (two-step):
+
 - First press: if track has audio content, clears the content (nulls samples)
 - Second press: if track is empty, deletes the track (or resets state if last track)
 
 ### File operations use zenity (GTK native dialogs):
+
 - **F5** = Save project, **F6** = Open project, **I** = Import WAV, **E** = Export mixdown
 - Ctrl+key shortcuts do NOT work in OpenTUI (intercepted internally)
 
 ### Timeline and playhead navigation (beat-based):
+
 - **Left/Right arrows** = scroll view by 1 beat (Shift: 1 bar / 4 beats)
 - **[ / ]** = scrub playhead left/right by 1 bar (4 beats) — **works during playback** (seeks native engine + resets WSOLA)
 - **{ / }** = nudge selected track earlier/later by 1/16 beat — trims from start or prepends silence, syncs to native engine instantly
@@ -94,6 +101,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Timeline beat grid renders based on `samplesPerBeat = (60 / originalBpm) * sampleRate`
 
 ### Mouse wheel controls:
+
 - **Main waveform area**: scroll = move view by 1 beat per tick
 - **Sidebar volume zone**: scroll on any track row (except pan zone) = adjust volume +/-5% per tick
 - **Sidebar pan zone**: scroll on row 1 at x >= 17 = adjust pan +/-0.05 per tick
@@ -101,6 +109,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - Pan keyboard shortcuts: `<` = pan left 0.1, `>` = pan right 0.1
 
 ### WAV import features:
+
 - Chunk-scanning parser (handles JUNK, LIST, bext chunks before fmt)
 - Supports 16-bit PCM, 24-bit PCM, 32-bit IEEE float
 - Stereo-to-mono downmix
@@ -120,10 +129,12 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
   - **Validated against click.wav ground truth**: average beat error **0.01ms**, max 0.5ms over 60 beats — error is pure click-export jitter, not algorithm error.
 
 ### Project file format:
+
 - `.tuidaw` files are gzipped tarballs (`tar czf` / `tar xzf`)
 - Contains `project.json` (ProjectDescriptor) + `tracks/*.wav` (individual track WAVs)
 
 ### Export mixdown:
+
 - Uses ffmpeg with `volume` and `pan` filters per track (equal-power panning law)
 - **WSOLA time-stretch applied offline** when speed != 1.0: each track's samples are pitch-preserving time-stretched in TypeScript before writing to temp WAV (matching native engine's window=1024, hop=512, search=±256 algorithm)
 - Single track: volume + pan + aformat
@@ -168,6 +179,7 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 - **`updateClickBuffer(bpm, durationFrames)` calls native `tuidaw_generate_click`**: Called on BPM change, C toggle, M toggle (click track), WAV import, and transport start. Duration is `max(projectDuration/speed + 60s, 10min)` (output-space). Buffer is C-owned (no JS pinning needed).
 
 ### OpenTUI Mouse Event API:
+
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
 - `onMouseScroll` handler on any Renderable: `(event: MouseEvent) => void`
 - `event.scroll?.direction` is `"up" | "down" | "left" | "right"`, `event.scroll?.delta` is numeric
@@ -214,31 +226,31 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
 33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
 34. **Free-scroll mode**: during playback, manual scroll (mouse wheel, arrows) enters free-roam mode — view stays where user scrolled. Auto-scroll re-engages when playhead naturally enters the visible area. Cleared on stop, seeks, and playhead jumps. Timeline clicks during playback also enter free-roam mode (view stays at the clicked area). Loop-centering in `autoScroll()` only activates when playhead is inside the loop region — seeking past the loop disables both native loop and loop-centering.
-34. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
-35. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
-36. **Unified TRACK_ROW_HEIGHT=4** for both sidebar and waveform (pure content rows, no separator), sidebar has dedicated volume/pan row
-37. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
-38. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
-39. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
-40. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
-41. **Loop-playhead interaction**: Loop is enforced when playhead is at or before loopEnd; disabled only when manually seeking past the loop. Playback from before the loop enters it naturally. `autoScroll()` centers the loop region on screen when it fits the view. 6 tests verify all scenarios.
-42. **Click track volume control**: Native `tuidaw_set_click_volume(float)` with atomic float, range 0.0–2.0+ (allows above 100%), applied as amplitude multiplier in audio callback
-43. **Click track pan control**: Native `tuidaw_set_click_pan(float)` with equal-power panning (-1.0 L to 1.0 R), same cosine/sine law as track panning
-44. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
-45. **Click track sidebar row**: Compact 1-row (CLICK_ROW_HEIGHT=1) click track row at top of sidebar. Shows ♩ icon, volume%, pan indicator. CLICK_COLOR when enabled, FG_DIM when disabled.
-46. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
-47. **Mouse wheel click controls**: Scroll on click row in sidebar adjusts volume (x<13) or pan (x≥13) with ±0.05 per tick
-48. **BPM on empty project**: When no tracks have audio, +/- changes `originalBpm` (base tempo) instead of creating a speed ratio, so speed stays 1.0x
-49. **Export mixdown with click**: When clickEnabled, generates synthetic click WAV (1kHz/20ms/decay matching native engine) and includes in ffmpeg mixdown with click's volume and pan
-50. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
-51. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
-52. **Click WSOLA via pre-generated buffer**: Native click engine replaced with WSOLA-based buffer playback. `generateClickBuffer(originalBpm)` generates one beat of 1kHz sine + 20ms decay; passed to native via `tuidaw_set_click_samples`. Pitch-preserving at all speeds. Click buffer regenerated on BPM change and C toggle.
-53. **Click track always visible**: CLICK_ROW_HEIGHT=1 (compact single row). Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
-54. **Click track as first-class navigable track**: `CLICK_TRACK_INDEX = -1` sentinel. Up from track 0 selects click track. Down from click track goes to track 0. V, `<`, `>`, M keys all work on click track when selected.
-55. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
-56. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
-57. **Automatic beat-phase alignment on import**: `findBeatOffset()` trims audio so beat 1 sits at sample 0. Uses multi-window contrast scoring (8-bar overlapping windows, later windows weighted higher) + median/IQR sample-level refinement. Handles intros with guitar slides, non-matching percussion, count-ins.
-58. **Pre-baked click buffer (GCD-exact, native C generation)**: Click buffer generated natively by `tuidaw_generate_click(bpm, duration_frames)` in C. Long buffer (10min+ project duration) with click tones at GCD-exact beat positions. Native callback indexes buffer by `click_frame_counter` (output-space wall-clock counter). On loop, counter wraps when it reaches the output-space position of `loop_end`, resetting to `loop_start`'s output-space position — independent of WSOLA look-ahead. Buffer is C-owned (malloc/realloc). JS-side `generateClickBuffer`, `setClickSamples`, `pinnedClickBuffer`, `gcd()` removed. `updateClickBuffer(bpm, durationFrames)` calls native. Duration computed as `max(projectDuration/speed + 60s, 10min)` (output-space). Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). 12 click precision tests pass (120/145/155/212 BPM, single/chunked render, with-track, non-zero start, 5-min drift, 3-min stress, loop on-beat/off-beat/fractional/speed).
+35. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
+36. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
+37. **Unified TRACK_ROW_HEIGHT=4** for both sidebar and waveform (pure content rows, no separator), sidebar has dedicated volume/pan row
+38. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
+39. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
+40. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
+41. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
+42. **Loop-playhead interaction**: Loop is enforced when playhead is at or before loopEnd; disabled only when manually seeking past the loop. Playback from before the loop enters it naturally. `autoScroll()` centers the loop region on screen when it fits the view. 6 tests verify all scenarios.
+43. **Click track volume control**: Native `tuidaw_set_click_volume(float)` with atomic float, range 0.0–2.0+ (allows above 100%), applied as amplitude multiplier in audio callback
+44. **Click track pan control**: Native `tuidaw_set_click_pan(float)` with equal-power panning (-1.0 L to 1.0 R), same cosine/sine law as track panning
+45. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
+46. **Click track sidebar row**: Compact 1-row (CLICK_ROW_HEIGHT=1) click track row at top of sidebar. Shows ♩ icon, volume%, pan indicator. CLICK_COLOR when enabled, FG_DIM when disabled.
+47. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
+48. **Mouse wheel click controls**: Scroll on click row in sidebar adjusts volume (x<13) or pan (x≥13) with ±0.05 per tick
+49. **BPM on empty project**: When no tracks have audio, +/- changes `originalBpm` (base tempo) instead of creating a speed ratio, so speed stays 1.0x
+50. **Export mixdown with click**: When clickEnabled, generates synthetic click WAV (1kHz/20ms/decay matching native engine) and includes in ffmpeg mixdown with click's volume and pan
+51. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
+52. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
+53. **Click WSOLA via pre-generated buffer**: Native click engine replaced with WSOLA-based buffer playback. `generateClickBuffer(originalBpm)` generates one beat of 1kHz sine + 20ms decay; passed to native via `tuidaw_set_click_samples`. Pitch-preserving at all speeds. Click buffer regenerated on BPM change and C toggle.
+54. **Click track always visible**: CLICK_ROW_HEIGHT=1 (compact single row). Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
+55. **Click track as first-class navigable track**: `CLICK_TRACK_INDEX = -1` sentinel. Up from track 0 selects click track. Down from click track goes to track 0. V, `<`, `>`, M keys all work on click track when selected.
+56. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
+57. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
+58. **Automatic beat-phase alignment on import**: `findBeatOffset()` trims audio so beat 1 sits at sample 0. Uses multi-window contrast scoring (8-bar overlapping windows, later windows weighted higher) + median/IQR sample-level refinement. Handles intros with guitar slides, non-matching percussion, count-ins.
+59. **Pre-baked click buffer (GCD-exact, native C generation)**: Click buffer generated natively by `tuidaw_generate_click(bpm, duration_frames)` in C. Long buffer (10min+ project duration) with click tones at GCD-exact beat positions. Native callback indexes buffer by `click_frame_counter` (output-space wall-clock counter). On loop, counter wraps when it reaches the output-space position of `loop_end`, resetting to `loop_start`'s output-space position — independent of WSOLA look-ahead. Buffer is C-owned (malloc/realloc). JS-side `generateClickBuffer`, `setClickSamples`, `pinnedClickBuffer`, `gcd()` removed. `updateClickBuffer(bpm, durationFrames)` calls native. Duration computed as `max(projectDuration/speed + 60s, 10min)` (output-space). Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). 12 click precision tests pass (120/145/155/212 BPM, single/chunked render, with-track, non-zero start, 5-min drift, 3-min stress, loop on-beat/off-beat/fractional/speed).
 
 ## File structure
 
@@ -307,7 +319,9 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ## Key architecture patterns
 
 ### Native audio engine (miniaudio)
+
 The C library (`native/tuidaw_audio.c`) wraps miniaudio and exports a flat C API. The audio callback runs on a separate thread and handles:
+
 - Multi-track mixing with per-track volume and pan (equal-power panning)
 - Metronome click generation (long pre-rendered buffer with GCD-exact beat positions, bounds-check read — zero floating-point BPM math)
 - Loop region handling (sample-accurate boundary detection)
@@ -316,30 +330,39 @@ The C library (`native/tuidaw_audio.c`) wraps miniaudio and exports a flat C API
 All parameter changes (volume, pan, mute, solo, BPM) are instant atomic updates — no WAV rewriting or process restarting needed.
 
 ### TypeScript FFI bridge
+
 `AudioEngine` class in `audio-engine.ts` uses `bun:ffi` `dlopen` to call the native library. It maintains:
+
 - Track ID mapping (string IDs ↔ native integer IDs)
 - Pinned buffer references (preventing GC of Float32Arrays while native code holds pointers)
 - Recording state tracking (which tracks are recording, start positions)
 
 ### Recording via polling
+
 During recording, the native engine captures audio into ring buffers. TypeScript polls these buffers every ~33ms via `pollRecordingData()`, which returns only new samples since the last poll. These are merged into the track's `samples` Float32Array at the correct offset.
 
 ### Live playback refresh
+
 When mute/solo changes during transport, `refreshLivePlayback()` syncs all tracks' mute/solo state to the native engine via `setTrackMuted()` / `setTrackSolo()`. The native mixer handles the rest sample-accurately.
 
 ### Punch-in/out
+
 `punchInTrack(track, position)` starts a native capture device mid-transport. `punchOutTrack(track)` stops recording, retrieves the full buffer, merges audio, and saves to file.
 
 ### UI rendering model
+
 `UIRenderer.render(state)` redraws all four frame buffers (topbar, sidebar, main, statusbar) every frame. Overlays (help, device selector, file picker) are drawn on top of the main area FB. After rendering, `renderer.requestRender()` is called to flush changes to terminal.
 
 ### Mouse handler architecture
+
 `UIRenderer.setupMouseHandlers(callbacks)` is called once after `setup()`, attaching `onMouseScroll` handlers to `mainFB` and `sidebarFB`. The handlers compute which track/zone the cursor is over and invoke the appropriate callback. The callbacks live in `index.ts` and have access to `state` and `render()`.
 
 ### Playhead visibility
+
 `ensurePlayheadVisible()` recenters the scroll offset when the playhead moves outside the visible area (centers playhead in view). Called after all manual playhead movements ([], End, mouse click). During live playback, `autoScroll()` handles forward-scrolling when playhead nears the right edge (80% threshold).
 
 ### WAV import pipeline
+
 1. Parse WAV file (scan RIFF chunks for `fmt` + `data`)
 2. Decode samples (16-bit PCM, 24-bit PCM, or 32-bit float)
 3. Downmix stereo to mono (if needed)
@@ -380,6 +403,11 @@ y+0: [sel] ♩ V:xx%  Pan:C
 - Separator drawn AFTER content (SEPARATOR_HEIGHT rows), not part of CLICK_ROW_HEIGHT
 
 Mouse zones for sidebar scroll:
+
 - Click row (y < CLICK_ROW_HEIGHT, always): x<9 = click volume, x≥9 = click pan
 - Row 2, x >= 9 = pan control
 - Everything else = volume control
+
+## TODO:
+
+- [ ] pausing and pressing play starts with the click, so the click shifted it's start position to the playhead position event when it's offbeat
