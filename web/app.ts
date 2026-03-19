@@ -39,9 +39,9 @@ const SAMPLE_RATE = 48000
 const SIDEBAR_W = 260
 const TOPBAR_H = 56
 const STATUSBAR_H = 36
-const TIMELINE_H = 28
+const TIMELINE_H = 48   // must match CLICK_ROW_H so sidebar tracks align with waveform tracks
 const TRACK_H = 120
-const CLICK_ROW_H = 48
+const CLICK_ROW_H = TIMELINE_H
 
 // Button sizing
 const BTN_H = 36        // topbar button height
@@ -49,7 +49,6 @@ const MSR_BTN_W = 32    // mute/solo/arm button width
 const MSR_BTN_H = 28    // mute/solo/arm button height
 
 // Slider dimensions
-const SLIDER_W = 160     // slider track width
 const SLIDER_H = 20      // slider track height
 const SLIDER_KNOB_W = 12 // slider knob width
 const SLIDER_KNOB_H = 24 // slider knob height (taller than track for easy grab)
@@ -449,8 +448,9 @@ function drawClickTrackRow(y: number) {
 
   // Row 2: Volume slider + Pan slider
   const sliderY = y + 24
-  drawMiniSlider(SLIDER_PAD, sliderY, "V", state.clickVolume, 0, 2, state.clickEnabled ? C.cyan : C.fgDim)
-  drawMiniSlider(SLIDER_PAD + SLIDER_W / 2 + 16, sliderY, "P", (state.clickPan + 1) / 2, 0, 1, state.clickEnabled ? C.cyan : C.fgDim)
+  const clickSliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
+  drawMiniSlider(SLIDER_PAD, sliderY, "V", state.clickVolume / 2, 0, 2, state.clickEnabled ? C.cyan : C.fgDim)
+  drawMiniSlider(SLIDER_PAD + clickSliderW + 16, sliderY, "P", (state.clickPan + 1) / 2, 0, 1, state.clickEnabled ? C.cyan : C.fgDim)
 }
 
 function drawTrackRow(y: number, index: number, track: WebTrack) {
@@ -504,7 +504,7 @@ function drawTrackRow(y: number, index: number, track: WebTrack) {
 
   // Row 3 (y+62..y+82): Volume slider
   const volSliderY = y + 62
-  drawMiniSlider(SLIDER_PAD, volSliderY, "V", track.volume, 0, 2, track.color)
+  drawMiniSlider(SLIDER_PAD, volSliderY, "V", track.volume, 0, 1, track.color)
 
   // Row 4 (y+88..y+108): Pan slider
   const panSliderY = y + 90
@@ -535,7 +535,7 @@ function drawMSRButton(x: number, y: number, label: string, active: boolean, act
 }
 
 // Draw a mini slider with label. `value` is normalized fraction of range [min, max].
-function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, _max: number, accentColor: string) {
+function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, max: number, accentColor: string) {
   const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
   const trackW = sliderW - 24
   const trackH = 6
@@ -550,7 +550,7 @@ function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, 
   // Value text
   let valueText: string
   if (label === "V") {
-    valueText = `${Math.round(valueFrac * 100)}%`
+    valueText = `${Math.round(valueFrac * max * 100)}%`
   } else {
     // Pan: convert frac (0-1) to pan (-1 to +1)
     const pan = valueFrac * 2 - 1
@@ -1399,7 +1399,7 @@ function setupMouse() {
               if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
               showStatus(`Volume reset to ${Math.round(DEFAULT_VOLUME * 100)}%`)
             } else if (hit.sliderFrac !== undefined) {
-              track.volume = hit.sliderFrac * 2 // 0-2 range
+              track.volume = hit.sliderFrac // 0-1 range
               if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
               drag = { type: "volume", trackIndex: hit.trackIndex, startValue: track.volume }
             }
@@ -1469,7 +1469,7 @@ function setupMouse() {
       if (track) {
         const geo = getSliderGeometry(SLIDER_PAD)
         const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
-        track.volume = frac * 2
+        track.volume = frac
         if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
         render()
       }
@@ -1533,7 +1533,7 @@ function setupMouse() {
       const track = state.tracks[hit.trackIndex]
       if (track) {
         const delta = e.deltaY > 0 ? -0.05 : 0.05
-        track.volume = Math.max(0, Math.min(2, track.volume + delta))
+        track.volume = Math.max(0, Math.min(1, track.volume + delta))
         if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
         render()
       }
