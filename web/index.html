@@ -53,9 +53,10 @@
     (function() {
       var log = document.getElementById("error-log");
       var hasErrors = false;
+      var hidden = false;
       function addEntry(msg, isInfo) {
         if (!isInfo) hasErrors = true;
-        log.style.display = "block";
+        if (!hidden || !isInfo) log.style.display = "block";
         var div = document.createElement("div");
         div.className = "entry" + (isInfo ? " info" : "");
         div.textContent = new Date().toLocaleTimeString() + " " + msg;
@@ -64,6 +65,7 @@
       window._debugLog = function(msg) { addEntry(msg, true); };
       window._debugError = function(msg) { addEntry(msg, false); };
       window._debugHide = function() {
+        hidden = true;
         if (!hasErrors) log.style.display = "none";
       };
       window.addEventListener("error", function(e) {
