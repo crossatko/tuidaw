@@ -1,8 +1,9 @@
 // ============================================================================
-// tuidaw Web App — Full-canvas DAW interface
+// tuidaw Web App — Full-canvas DAW interface (touch-friendly)
 // ============================================================================
 // Single <canvas> renders everything: topbar, sidebar, waveforms, statusbar.
 // No DOM elements besides the canvas itself (+ hidden file input for import).
+// Touch-friendly: larger buttons, visual sliders, all actions via touch.
 
 import { WebAudioBridge, type WebTrack } from "./audio-bridge"
 import { detectBPM, findBeatOffset } from "../src/utils/bpm"
@@ -34,13 +35,31 @@ const TRACK_COLORS = [
 
 const SAMPLE_RATE = 48000
 
-// ── Layout Constants ────────────────────────────────────────────────────
-const SIDEBAR_W = 220
-const TOPBAR_H = 44
-const STATUSBAR_H = 28
-const TIMELINE_H = 24
-const TRACK_H = 80
-const CLICK_ROW_H = TIMELINE_H
+// ── Layout Constants (touch-friendly sizes) ─────────────────────────────
+const SIDEBAR_W = 260
+const TOPBAR_H = 56
+const STATUSBAR_H = 36
+const TIMELINE_H = 28
+const TRACK_H = 120
+const CLICK_ROW_H = 48
+
+// Button sizing
+const BTN_H = 36        // topbar button height
+const MSR_BTN_W = 32    // mute/solo/arm button width
+const MSR_BTN_H = 28    // mute/solo/arm button height
+
+// Slider dimensions
+const SLIDER_W = 160     // slider track width
+const SLIDER_H = 20      // slider track height
+const SLIDER_KNOB_W = 12 // slider knob width
+const SLIDER_KNOB_H = 24 // slider knob height (taller than track for easy grab)
+const SLIDER_PAD = 8     // left padding for sliders
+
+// ── Default values for double-click reset ───────────────────────────────
+const DEFAULT_VOLUME = 0.8
+const DEFAULT_PAN = 0
+const DEFAULT_CLICK_VOLUME = 0.5
+const DEFAULT_CLICK_PAN = 0
 
 // ── App State ───────────────────────────────────────────────────────────
 interface AppState {
@@ -89,8 +108,8 @@ function createTrack(name: string, colorIndex: number): WebTrack {
     id: crypto.randomUUID(),
     name,
     color: TRACK_COLORS[colorIndex % TRACK_COLORS.length],
-    volume: 0.8,
-    pan: 0,
+    volume: DEFAULT_VOLUME,
+    pan: DEFAULT_PAN,
     muted: false,
     solo: false,
     armed: false,
@@ -143,6 +162,18 @@ async function ensureAudioReady(): Promise<boolean> {
   return audio.isReady
 }
 
+// ── Drag State ──────────────────────────────────────────────────────────
+interface DragState {
+  type: "volume" | "pan" | "click-volume" | "click-pan" | "timeline"
+  trackIndex: number // -1 for click track, -2 for timeline
+  startValue: number
+}
+
+let drag: DragState | null = null
+let lastClickTime = 0
+let lastClickZone = ""
+let lastClickTrack = -99
+
 // ── Rendering ───────────────────────────────────────────────────────────
 function render() {
   ctx.clearRect(0, 0, W, H)
@@ -154,6 +185,7 @@ function render() {
 }
 
 // ── Topbar ──────────────────────────────────────────────────────────────
+// Topbar layout: [Play] [Loop] [Click] | [-] BPM [+] | Speed | Time | ... [Import] [Export] [+Track]
 function drawTopbar() {
   ctx.fillStyle = C.bgDark
   ctx.fillRect(0, 0, W, TOPBAR_H)
@@ -163,63 +195,112 @@ function drawTopbar() {
   ctx.fillRect(0, TOPBAR_H - 1, W, 1)
 
   const textY = TOPBAR_H / 2 + 5
-  let x = 16
+  const btnY = (TOPBAR_H - BTN_H) / 2
+  let x = 12
 
-  // Play button
-  const btnW = 80
-  const btnH = 28
-  const btnY = (TOPBAR_H - btnH) / 2
+  // ── Play button ───────────────────────────────────────────────────
+  const playW = 80
   const isPlaying = state.transportState !== "stopped"
 
   ctx.fillStyle = isPlaying ? C.green : C.bgHighlight
-  roundRect(ctx, x, btnY, btnW, btnH, 4)
+  roundRect(ctx, x, btnY, playW, BTN_H, 4)
   ctx.fill()
-
-  // Button border when not playing
   if (!isPlaying) {
     ctx.strokeStyle = C.border
     ctx.lineWidth = 1
-    roundRect(ctx, x, btnY, btnW, btnH, 4)
+    roundRect(ctx, x, btnY, playW, BTN_H, 4)
     ctx.stroke()
   }
 
   ctx.fillStyle = isPlaying ? "#000000" : C.fg
-  ctx.font = "bold 12px monospace"
+  ctx.font = "bold 13px monospace"
   ctx.textAlign = "center"
-  ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + btnW / 2, textY)
+  ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + playW / 2, textY)
   ctx.textAlign = "left"
-  x += btnW + 8
+  x += playW + 8
 
-  // Loop button
-  const loopBtnW = 64
+  // ── Loop button ───────────────────────────────────────────────────
+  const loopW = 64
   const hasLoop = state.loopStart !== null && state.loopEnd !== null
   const settingLoop = state.loopStart !== null && state.loopEnd === null
 
-  ctx.fillStyle = hasLoop ? C.purple : (settingLoop ? C.bgHighlight : C.bgHighlight)
-  roundRect(ctx, x, btnY, loopBtnW, btnH, 4)
+  ctx.fillStyle = hasLoop ? C.purple : C.bgHighlight
+  roundRect(ctx, x, btnY, loopW, BTN_H, 4)
   ctx.fill()
-
   if (!hasLoop) {
     ctx.strokeStyle = settingLoop ? C.purple : C.border
     ctx.lineWidth = 1
-    roundRect(ctx, x, btnY, loopBtnW, btnH, 4)
+    roundRect(ctx, x, btnY, loopW, BTN_H, 4)
     ctx.stroke()
   }
 
   ctx.fillStyle = hasLoop ? "#000000" : (settingLoop ? C.purple : C.fgDim)
-  ctx.font = "bold 11px monospace"
+  ctx.font = "bold 12px monospace"
   ctx.textAlign = "center"
-  ctx.fillText(settingLoop ? "Loop..." : "Loop", x + loopBtnW / 2, textY)
+  ctx.fillText(settingLoop ? "Loop..." : "Loop", x + loopW / 2, textY)
   ctx.textAlign = "left"
-  x += loopBtnW + 16
+  x += loopW + 8
 
-  // BPM
+  // ── Click button ──────────────────────────────────────────────────
+  const clickW = 64
+  ctx.fillStyle = state.clickEnabled ? C.cyan : C.bgHighlight
+  roundRect(ctx, x, btnY, clickW, BTN_H, 4)
+  ctx.fill()
+  if (!state.clickEnabled) {
+    ctx.strokeStyle = C.border
+    ctx.lineWidth = 1
+    roundRect(ctx, x, btnY, clickW, BTN_H, 4)
+    ctx.stroke()
+  }
+
+  ctx.fillStyle = state.clickEnabled ? "#000000" : C.fgDim
+  ctx.font = "bold 12px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText("Click", x + clickW / 2, textY)
+  ctx.textAlign = "left"
+  x += clickW + 16
+
+  // ── BPM: [-] value [+] ───────────────────────────────────────────
+  const bpmBtnW = 32
+  // Minus button
+  ctx.fillStyle = C.bgHighlight
+  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
+  ctx.fill()
+  ctx.strokeStyle = C.border
+  ctx.lineWidth = 1
+  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
+  ctx.stroke()
+  ctx.fillStyle = C.fg
+  ctx.font = "bold 16px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText("-", x + bpmBtnW / 2, textY + 1)
+  x += bpmBtnW + 4
+
+  // BPM value
   ctx.fillStyle = C.cyan
   ctx.font = "bold 14px monospace"
-  ctx.fillText(`${state.bpm} BPM`, x, textY)
-  x += 90
+  ctx.textAlign = "center"
+  const bpmStr = `${state.bpm} BPM`
+  const bpmTextW = ctx.measureText(bpmStr).width + 16
+  ctx.fillText(bpmStr, x + bpmTextW / 2, textY)
+  x += bpmTextW + 4
 
-  // Speed
+  // Plus button
+  ctx.fillStyle = C.bgHighlight
+  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
+  ctx.fill()
+  ctx.strokeStyle = C.border
+  ctx.lineWidth = 1
+  roundRect(ctx, x, btnY, bpmBtnW, BTN_H, 4)
+  ctx.stroke()
+  ctx.fillStyle = C.fg
+  ctx.font = "bold 16px monospace"
+  ctx.textAlign = "center"
+  ctx.fillText("+", x + bpmBtnW / 2, textY + 1)
+  ctx.textAlign = "left"
+  x += bpmBtnW + 12
+
+  // ── Speed % ───────────────────────────────────────────────────────
   const speed = state.bpm / state.originalBpm
   if (Math.abs(speed - 1) > 0.001) {
     ctx.fillStyle = C.orange
@@ -228,7 +309,7 @@ function drawTopbar() {
     x += 50
   }
 
-  // Time
+  // ── Time ──────────────────────────────────────────────────────────
   const seconds = state.playheadPosition / SAMPLE_RATE
   const mins = Math.floor(seconds / 60)
   const secs = (seconds % 60).toFixed(1)
@@ -236,14 +317,76 @@ function drawTopbar() {
   ctx.font = "13px monospace"
   ctx.fillText(`${mins}:${secs.padStart(4, "0")}`, x, textY)
 
-  // Status message (right-aligned)
+  // ── Right-aligned buttons: [Import] [Export] [+Track] ─────────────
+  const rightBtns = [
+    { label: "+Track", key: "add-track", w: 72 },
+    { label: "Export", key: "export", w: 64 },
+    { label: "Import", key: "import", w: 64 },
+  ]
+  let rx = W - 12
+  for (const btn of rightBtns) {
+    rx -= btn.w
+    ctx.fillStyle = C.bgHighlight
+    roundRect(ctx, rx, btnY, btn.w, BTN_H, 4)
+    ctx.fill()
+    ctx.strokeStyle = C.border
+    ctx.lineWidth = 1
+    roundRect(ctx, rx, btnY, btn.w, BTN_H, 4)
+    ctx.stroke()
+    ctx.fillStyle = C.fgDim
+    ctx.font = "bold 11px monospace"
+    ctx.textAlign = "center"
+    ctx.fillText(btn.label, rx + btn.w / 2, textY)
+    ctx.textAlign = "left"
+    rx -= 8
+  }
+
+  // ── Status message (before right buttons) ─────────────────────────
   if (state.statusMessage) {
     ctx.fillStyle = C.yellow
     ctx.font = "12px monospace"
     ctx.textAlign = "right"
-    ctx.fillText(state.statusMessage, W - 16, textY)
+    ctx.fillText(state.statusMessage, rx - 8, textY)
     ctx.textAlign = "left"
   }
+}
+
+// ── Compute topbar button positions (must match drawTopbar) ─────────────
+function getTopbarLayout() {
+  const btnY = (TOPBAR_H - BTN_H) / 2
+  let x = 12
+  const playW = 80
+  const play = { x, y: btnY, w: playW, h: BTN_H }
+  x += playW + 8
+  const loopW = 64
+  const loop = { x, y: btnY, w: loopW, h: BTN_H }
+  x += loopW + 8
+  const clickW = 64
+  const click = { x, y: btnY, w: clickW, h: BTN_H }
+  x += clickW + 16
+  const bpmBtnW = 32
+  const bpmMinus = { x, y: btnY, w: bpmBtnW, h: BTN_H }
+  x += bpmBtnW + 4
+  // BPM text area
+  ctx.font = "bold 14px monospace"
+  const bpmStr = `${state.bpm} BPM`
+  const bpmTextW = ctx.measureText(bpmStr).width + 16
+  const bpmText = { x, y: btnY, w: bpmTextW, h: BTN_H }
+  x += bpmTextW + 4
+  const bpmPlus = { x, y: btnY, w: bpmBtnW, h: BTN_H }
+
+  // Right-aligned buttons
+  let rx = W - 12
+  const addTrackW = 72
+  const addTrack = { x: rx - addTrackW, y: btnY, w: addTrackW, h: BTN_H }
+  rx -= addTrackW + 8
+  const exportW = 64
+  const exportBtn = { x: rx - exportW, y: btnY, w: exportW, h: BTN_H }
+  rx -= exportW + 8
+  const importW = 64
+  const importBtn = { x: rx - importW, y: btnY, w: importW, h: BTN_H }
+
+  return { play, loop, click, bpmMinus, bpmText, bpmPlus, importBtn, exportBtn, addTrack }
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────
@@ -258,13 +401,32 @@ function drawSidebar() {
 
   let y = TOPBAR_H
 
-  // ── Click track row ───────────────────────────────────────────────────
-  const isClickSelected = state.selectedTrackIndex === -1
+  // ── Click track row ───────────────────────────────────────────────
+  drawClickTrackRow(y)
+  y += CLICK_ROW_H
 
-  if (isClickSelected) {
+  // ── Regular tracks ────────────────────────────────────────────────
+  // Clip to sidebar area (prevent tracks from overflowing into statusbar)
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, y, SIDEBAR_W, H - STATUSBAR_H - y)
+  ctx.clip()
+
+  for (let i = 0; i < state.tracks.length; i++) {
+    const track = state.tracks[i]
+    drawTrackRow(y, i, track)
+    y += TRACK_H
+  }
+
+  ctx.restore()
+}
+
+function drawClickTrackRow(y: number) {
+  const isSelected = state.selectedTrackIndex === -1
+
+  if (isSelected) {
     ctx.fillStyle = C.bgHighlight
     ctx.fillRect(0, y, SIDEBAR_W - 1, CLICK_ROW_H)
-    // Selection indicator
     ctx.fillStyle = C.blue
     ctx.fillRect(0, y, 3, CLICK_ROW_H)
   }
@@ -273,112 +435,193 @@ function drawSidebar() {
   ctx.fillStyle = C.border
   ctx.fillRect(0, y + CLICK_ROW_H - 1, SIDEBAR_W - 1, 1)
 
-  const clickTextY = y + CLICK_ROW_H / 2 + 4
   const clickColor = state.clickEnabled ? C.cyan : C.fgDim
-  const fgColor = state.clickEnabled ? C.fg : C.fgDim
+  const pad = 8
 
-  ctx.font = "12px monospace"
+  // Row 1: icon + "Click" label
   ctx.fillStyle = clickColor
-  ctx.fillText("\u2669", 8, clickTextY)  // ♩ icon
+  ctx.font = "14px monospace"
+  ctx.fillText("\u2669", pad, y + 16)
 
-  ctx.fillStyle = fgColor
-  ctx.fillText("Click", 22, clickTextY)
+  ctx.fillStyle = state.clickEnabled ? C.fg : C.fgDim
+  ctx.font = "bold 12px monospace"
+  ctx.fillText("Click", pad + 18, y + 16)
 
-  ctx.fillStyle = C.fgDim
-  ctx.font = "10px monospace"
-  const clickInfo = `V:${Math.round(state.clickVolume * 100)}% ${formatPan(state.clickPan)}`
-  ctx.fillText(clickInfo, 70, clickTextY)
-
-  y += CLICK_ROW_H
-
-  // ── Regular tracks ────────────────────────────────────────────────────
-  for (let i = 0; i < state.tracks.length; i++) {
-    const track = state.tracks[i]
-    const isSelected = i === state.selectedTrackIndex
-
-    // Selected background
-    if (isSelected) {
-      ctx.fillStyle = C.bgHighlight
-      ctx.fillRect(0, y, SIDEBAR_W - 1, TRACK_H)
-      // Selection indicator
-      ctx.fillStyle = C.blue
-      ctx.fillRect(0, y, 3, TRACK_H)
-    }
-
-    // Bottom border
-    ctx.fillStyle = C.border
-    ctx.fillRect(0, y + TRACK_H - 1, SIDEBAR_W - 1, 1)
-
-    const pad = 8
-
-    // Row 1: color dot + name
-    ctx.fillStyle = track.color
-    ctx.beginPath()
-    ctx.arc(pad + 4, y + 14, 4, 0, Math.PI * 2)
-    ctx.fill()
-
-    ctx.fillStyle = C.fg
-    ctx.font = "bold 12px monospace"
-    const maxNameW = SIDEBAR_W - 24
-    ctx.save()
-    ctx.beginPath()
-    ctx.rect(pad + 12, y, maxNameW, 24)
-    ctx.clip()
-    ctx.fillText(track.name, pad + 12, y + 18)
-    ctx.restore()
-
-    // Row 2: M S R buttons
-    const btnY = y + 28
-    drawSmallButton(ctx, pad, btnY, "M", track.muted, C.orange)
-    drawSmallButton(ctx, pad + 26, btnY, "S", track.solo, C.yellow)
-    drawSmallButton(ctx, pad + 52, btnY, "R", track.armed, C.red)
-
-    // Row 3: Volume + Pan
-    const paramY = y + 52
-    ctx.fillStyle = C.fgDim
-    ctx.font = "10px monospace"
-    ctx.fillText(`V:${Math.round(track.volume * 100)}%`, pad, paramY)
-    ctx.fillText(formatPan(track.pan), pad + 60, paramY)
-
-    // Row 4: Duration or (empty)
-    const infoY = y + 68
-    ctx.fillStyle = C.fgDim
-    ctx.font = "10px monospace"
-    if (track.samples && track.samples.length > 0) {
-      const dur = (track.samples.length / SAMPLE_RATE).toFixed(1)
-      ctx.fillText(`${dur}s`, pad, infoY)
-    } else {
-      ctx.fillText("(empty)", pad, infoY)
-    }
-
-    y += TRACK_H
-  }
+  // Row 2: Volume slider + Pan slider
+  const sliderY = y + 24
+  drawMiniSlider(SLIDER_PAD, sliderY, "V", state.clickVolume, 0, 2, state.clickEnabled ? C.cyan : C.fgDim)
+  drawMiniSlider(SLIDER_PAD + SLIDER_W / 2 + 16, sliderY, "P", (state.clickPan + 1) / 2, 0, 1, state.clickEnabled ? C.cyan : C.fgDim)
 }
 
-function drawSmallButton(ctx: CanvasRenderingContext2D, x: number, y: number, label: string, active: boolean, activeColor: string) {
-  const w = 22
-  const h = 16
+function drawTrackRow(y: number, index: number, track: WebTrack) {
+  const isSelected = index === state.selectedTrackIndex
 
+  // Selected background
+  if (isSelected) {
+    ctx.fillStyle = C.bgHighlight
+    ctx.fillRect(0, y, SIDEBAR_W - 1, TRACK_H)
+    ctx.fillStyle = C.blue
+    ctx.fillRect(0, y, 3, TRACK_H)
+  }
+
+  // Bottom border
+  ctx.fillStyle = C.border
+  ctx.fillRect(0, y + TRACK_H - 1, SIDEBAR_W - 1, 1)
+
+  const pad = 8
+
+  // Row 1 (y+4..y+20): color dot + name
+  ctx.fillStyle = track.color
+  ctx.beginPath()
+  ctx.arc(pad + 5, y + 14, 5, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.fillStyle = C.fg
+  ctx.font = "bold 12px monospace"
+  const maxNameW = SIDEBAR_W - 28
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(pad + 14, y, maxNameW, 24)
+  ctx.clip()
+  ctx.fillText(track.name, pad + 14, y + 18)
+  ctx.restore()
+
+  // Row 2 (y+26..y+54): M S R buttons (bigger)
+  const msrY = y + 28
+  drawMSRButton(pad, msrY, "M", track.muted, C.orange)
+  drawMSRButton(pad + MSR_BTN_W + 6, msrY, "S", track.solo, C.yellow)
+  drawMSRButton(pad + (MSR_BTN_W + 6) * 2, msrY, "R", track.armed, C.red)
+
+  // Duration info (right of MSR buttons)
+  ctx.fillStyle = C.fgDim
+  ctx.font = "10px monospace"
+  if (track.samples && track.samples.length > 0) {
+    const dur = (track.samples.length / SAMPLE_RATE).toFixed(1)
+    ctx.fillText(`${dur}s`, pad + (MSR_BTN_W + 6) * 3 + 8, msrY + 18)
+  } else {
+    ctx.fillText("(empty)", pad + (MSR_BTN_W + 6) * 3 + 8, msrY + 18)
+  }
+
+  // Row 3 (y+62..y+82): Volume slider
+  const volSliderY = y + 62
+  drawMiniSlider(SLIDER_PAD, volSliderY, "V", track.volume, 0, 2, track.color)
+
+  // Row 4 (y+88..y+108): Pan slider
+  const panSliderY = y + 90
+  drawMiniSlider(SLIDER_PAD, panSliderY, "P", (track.pan + 1) / 2, 0, 1, track.color)
+}
+
+function drawMSRButton(x: number, y: number, label: string, active: boolean, activeColor: string) {
   if (active) {
     ctx.fillStyle = activeColor
-    roundRect(ctx, x, y, w, h, 2)
+    roundRect(ctx, x, y, MSR_BTN_W, MSR_BTN_H, 3)
     ctx.fill()
     ctx.fillStyle = "#000000"
   } else {
     ctx.fillStyle = C.bgHighlight
-    roundRect(ctx, x, y, w, h, 2)
+    roundRect(ctx, x, y, MSR_BTN_W, MSR_BTN_H, 3)
     ctx.fill()
     ctx.strokeStyle = C.border
     ctx.lineWidth = 1
-    roundRect(ctx, x, y, w, h, 2)
+    roundRect(ctx, x, y, MSR_BTN_W, MSR_BTN_H, 3)
     ctx.stroke()
     ctx.fillStyle = C.fgDim
   }
 
-  ctx.font = "bold 10px monospace"
+  ctx.font = "bold 11px monospace"
   ctx.textAlign = "center"
-  ctx.fillText(label, x + w / 2, y + 12)
+  ctx.fillText(label, x + MSR_BTN_W / 2, y + MSR_BTN_H / 2 + 4)
   ctx.textAlign = "left"
+}
+
+// Draw a mini slider with label. `value` is normalized fraction of range [min, max].
+function drawMiniSlider(x: number, y: number, label: string, valueFrac: number, _min: number, _max: number, accentColor: string) {
+  const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
+  const trackW = sliderW - 24
+  const trackH = 6
+  const trackX = x + 24
+  const trackY = y + (SLIDER_H - trackH) / 2
+
+  // Label
+  ctx.fillStyle = C.fgDim
+  ctx.font = "10px monospace"
+  ctx.fillText(label, x, y + SLIDER_H / 2 + 3)
+
+  // Value text
+  let valueText: string
+  if (label === "V") {
+    valueText = `${Math.round(valueFrac * 100)}%`
+  } else {
+    // Pan: convert frac (0-1) to pan (-1 to +1)
+    const pan = valueFrac * 2 - 1
+    valueText = formatPan(pan)
+  }
+  ctx.fillStyle = C.fgDim
+  ctx.font = "9px monospace"
+  ctx.textAlign = "right"
+  ctx.fillText(valueText, x + sliderW, y + SLIDER_H / 2 + 3)
+  ctx.textAlign = "left"
+
+  // Track background
+  ctx.fillStyle = C.border
+  roundRect(ctx, trackX, trackY, trackW, trackH, 3)
+  ctx.fill()
+
+  // Filled portion
+  const fillW = Math.max(0, Math.min(trackW, valueFrac * trackW))
+  if (label === "P") {
+    // Pan slider: fill from center
+    const centerX = trackX + trackW / 2
+    const pan = valueFrac * 2 - 1
+    if (Math.abs(pan) > 0.01) {
+      ctx.fillStyle = accentColor
+      ctx.globalAlpha = 0.6
+      if (pan < 0) {
+        const pw = Math.abs(pan) * trackW / 2
+        roundRect(ctx, centerX - pw, trackY, pw, trackH, 2)
+        ctx.fill()
+      } else {
+        const pw = pan * trackW / 2
+        roundRect(ctx, centerX, trackY, pw, trackH, 2)
+        ctx.fill()
+      }
+      ctx.globalAlpha = 1
+
+      // Center notch
+      ctx.fillStyle = C.fgDim
+      ctx.fillRect(centerX - 0.5, trackY - 1, 1, trackH + 2)
+    } else {
+      // At center: just show notch
+      ctx.fillStyle = C.fgDim
+      ctx.fillRect(centerX - 0.5, trackY - 1, 1, trackH + 2)
+    }
+  } else {
+    // Volume slider: fill from left
+    if (fillW > 0) {
+      ctx.fillStyle = accentColor
+      ctx.globalAlpha = 0.6
+      roundRect(ctx, trackX, trackY, fillW, trackH, 3)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+  }
+
+  // Knob
+  const knobX = trackX + (label === "P" ? valueFrac : Math.min(valueFrac, 1)) * trackW - SLIDER_KNOB_W / 2
+  const knobY = y + (SLIDER_H - SLIDER_KNOB_H) / 2
+  ctx.fillStyle = "#444"
+  roundRect(ctx, knobX, knobY, SLIDER_KNOB_W, SLIDER_KNOB_H, 3)
+  ctx.fill()
+  ctx.fillStyle = C.fg
+  ctx.fillRect(knobX + SLIDER_KNOB_W / 2 - 1, knobY + 4, 2, SLIDER_KNOB_H - 8)
+}
+
+// Get slider geometry for hit testing (returns { trackX, trackW, sliderY } given the same params as drawMiniSlider)
+function getSliderGeometry(sliderX: number): { trackX: number; trackW: number } {
+  const sliderW = (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2
+  const trackW = sliderW - 24
+  const trackX = sliderX + 24
+  return { trackX, trackW }
 }
 
 // ── Timeline ────────────────────────────────────────────────────────────
@@ -411,18 +654,33 @@ function drawTimeline() {
     ctx.strokeStyle = isBar ? C.fgDim : C.border
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
-    ctx.moveTo(x, y0 + (isBar ? 0 : 8))
+    ctx.moveTo(x, y0 + (isBar ? 0 : 10))
     ctx.lineTo(x, y0 + h)
     ctx.stroke()
 
     if (isBar) {
       ctx.fillStyle = C.fgDim
       ctx.font = "10px monospace"
-      ctx.fillText(`${Math.floor(beat / 4) + 1}`, x + 3, y0 + 10)
+      ctx.fillText(`${Math.floor(beat / 4) + 1}`, x + 3, y0 + 11)
     }
   }
 
   // Loop region
+  drawLoopRegionOnTimeline(x0, y0, w, h, samplesPerCol)
+
+  // Playhead
+  const playheadX = x0 + (state.playheadPosition - state.scrollOffset) / samplesPerCol
+  if (playheadX >= x0 && playheadX <= x0 + w) {
+    ctx.strokeStyle = C.green
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(playheadX, y0)
+    ctx.lineTo(playheadX, y0 + h)
+    ctx.stroke()
+  }
+}
+
+function drawLoopRegionOnTimeline(x0: number, y0: number, w: number, h: number, samplesPerCol: number) {
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
@@ -431,7 +689,7 @@ function drawTimeline() {
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, h)
 
-    // Loop start marker
+    // Start marker
     if (lx1 >= x0 && lx1 <= x0 + w) {
       ctx.strokeStyle = C.purple
       ctx.lineWidth = 2
@@ -439,7 +697,6 @@ function drawTimeline() {
       ctx.moveTo(lx1, y0)
       ctx.lineTo(lx1, y0 + h)
       ctx.stroke()
-      // Triangle marker
       ctx.fillStyle = C.purple
       ctx.beginPath()
       ctx.moveTo(lx1, y0)
@@ -449,7 +706,7 @@ function drawTimeline() {
       ctx.fill()
     }
 
-    // Loop end marker
+    // End marker
     if (lx2 >= x0 && lx2 <= x0 + w) {
       ctx.strokeStyle = C.purple
       ctx.lineWidth = 2
@@ -457,7 +714,6 @@ function drawTimeline() {
       ctx.moveTo(lx2, y0)
       ctx.lineTo(lx2, y0 + h)
       ctx.stroke()
-      // Triangle marker
       ctx.fillStyle = C.purple
       ctx.beginPath()
       ctx.moveTo(lx2, y0)
@@ -468,7 +724,7 @@ function drawTimeline() {
     }
   }
 
-  // Loop start indicator (when setting loop, before end is placed)
+  // Loop start indicator (dashed, when setting)
   if (state.loopStart !== null && state.loopEnd === null) {
     const lx = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     if (lx >= x0 && lx <= x0 + w) {
@@ -480,7 +736,6 @@ function drawTimeline() {
       ctx.lineTo(lx, y0 + h)
       ctx.stroke()
       ctx.setLineDash([])
-      // Triangle marker
       ctx.fillStyle = C.purple
       ctx.beginPath()
       ctx.moveTo(lx, y0)
@@ -489,17 +744,6 @@ function drawTimeline() {
       ctx.closePath()
       ctx.fill()
     }
-  }
-
-  // Playhead
-  const playheadX = x0 + (state.playheadPosition - state.scrollOffset) / samplesPerCol
-  if (playheadX >= x0 && playheadX <= x0 + w) {
-    ctx.strokeStyle = C.green
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(playheadX, y0)
-    ctx.lineTo(playheadX, y0 + h)
-    ctx.stroke()
   }
 }
 
@@ -539,7 +783,7 @@ function drawWaveformArea() {
     ctx.stroke()
   }
 
-  // Loop region
+  // Loop region in waveform area
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
@@ -548,7 +792,6 @@ function drawWaveformArea() {
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, gridH)
 
-    // Loop start/end markers (vertical lines spanning waveform area)
     if (lx1 >= x0 && lx1 <= x0 + w) {
       ctx.strokeStyle = C.purple
       ctx.lineWidth = 1.5
@@ -567,7 +810,7 @@ function drawWaveformArea() {
     }
   }
 
-  // Loop start indicator (when setting, dashed line)
+  // Loop start indicator (dashed)
   if (state.loopStart !== null && state.loopEnd === null) {
     const lx = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     if (lx >= x0 && lx <= x0 + w) {
@@ -671,7 +914,7 @@ function drawStatusbar() {
   ctx.fillStyle = C.fgDim
   ctx.font = "11px monospace"
   const textY = y + STATUSBAR_H / 2 + 4
-  const shortcuts = "Space Play  P Loop  R Arm  M Mute  S Solo  C Click  +/- BPM  hjkl Nav  I Import"
+  const shortcuts = "Space Play  P Loop  R Arm  M Mute  S Solo  C Click  +/- BPM  I Import  Dbl-click slider = reset"
   ctx.fillText(shortcuts, 16, textY)
 }
 
@@ -713,7 +956,6 @@ function showStatus(msg: string) {
 // ── Loop ────────────────────────────────────────────────────────────────
 function toggleLoop() {
   if (state.transportState !== "stopped") {
-    // During transport, P only clears the loop
     if (state.loopStart !== null && state.loopEnd !== null) {
       state.loopStart = null
       state.loopEnd = null
@@ -724,13 +966,10 @@ function toggleLoop() {
     return
   }
 
-  // 3-step cycle when stopped
   if (state.loopStart === null && state.loopEnd === null) {
-    // Step 1: set loop start at playhead
     state.loopStart = state.playheadPosition
     showStatus("Loop start set — move playhead, press P again for end")
   } else if (state.loopStart !== null && state.loopEnd === null) {
-    // Step 2: set loop end at playhead
     const a = state.loopStart
     const b = state.playheadPosition
     if (a === b) {
@@ -742,7 +981,6 @@ function toggleLoop() {
       showStatus("Loop region set — press P to clear")
     }
   } else {
-    // Step 3: clear loop
     state.loopStart = null
     state.loopEnd = null
     showStatus("Loop cleared")
@@ -819,21 +1057,16 @@ function getClickDuration(): number {
   }
   const speed = state.bpm / state.originalBpm
   const outputDuration = speed > 0 ? Math.ceil(maxLen / speed) : maxLen
-  // WASM has limited memory — use smaller click buffer than TUI
-  // Project duration + 10s extra, minimum 30s, maximum 3 minutes
   const duration = Math.max(outputDuration + SAMPLE_RATE * 10, SAMPLE_RATE * 30)
   return Math.min(duration, SAMPLE_RATE * 180)
 }
 
 // ── Scrolling ───────────────────────────────────────────────────────────
-
 function syncLoopAfterSeek() {
   if (state.loopStart !== null && state.loopEnd !== null) {
     if (state.playheadPosition > state.loopEnd) {
-      // Playhead is past the loop — disable native loop so playback continues linearly
       audio.setLoop(null, null)
     } else {
-      // Playhead is before or inside the loop — enable it
       audio.setLoop(state.loopStart, state.loopEnd)
     }
   }
@@ -844,7 +1077,6 @@ function autoScroll() {
   const samplesPerCol = getSamplesPerCol(w)
   const visibleSamples = w * samplesPerCol
 
-  // Loop-aware: center loop region on screen when it fits and playhead is inside
   if (state.loopStart !== null && state.loopEnd !== null) {
     const loopLen = state.loopEnd - state.loopStart
     if (loopLen < visibleSamples &&
@@ -875,7 +1107,10 @@ function ensurePlayheadVisible() {
 }
 
 // ── Hit zones for mouse ─────────────────────────────────────────────────
-type Zone = "topbar-play" | "topbar-loop" | "topbar" | "sidebar-click" | "sidebar-track" | "sidebar-btn"
+type Zone = "topbar-play" | "topbar-loop" | "topbar-click" | "topbar-bpm-minus" | "topbar-bpm-plus" | "topbar-bpm-text"
+           | "topbar-import" | "topbar-export" | "topbar-add-track" | "topbar"
+           | "sidebar-click" | "sidebar-click-vol" | "sidebar-click-pan"
+           | "sidebar-track" | "sidebar-btn" | "sidebar-vol-slider" | "sidebar-pan-slider"
            | "timeline" | "waveform" | "statusbar" | "none"
 
 interface HitResult {
@@ -884,6 +1119,7 @@ interface HitResult {
   btnAction?: "mute" | "solo" | "arm"
   localX: number
   localY: number
+  sliderFrac?: number  // 0-1 position within slider
 }
 
 function hitTest(cx: number, cy: number): HitResult {
@@ -891,16 +1127,19 @@ function hitTest(cx: number, cy: number): HitResult {
 
   // Topbar
   if (cy < TOPBAR_H) {
-    const btnY = (TOPBAR_H - 28) / 2
-    // Play button: x=16, w=80
-    if (cx >= 16 && cx <= 96 && cy >= btnY && cy <= btnY + 28) {
-      result.zone = "topbar-play"
-    // Loop button: x=104, w=64
-    } else if (cx >= 104 && cx <= 168 && cy >= btnY && cy <= btnY + 28) {
-      result.zone = "topbar-loop"
-    } else {
-      result.zone = "topbar"
-    }
+    const layout = getTopbarLayout()
+
+    if (inRect(cx, cy, layout.play)) { result.zone = "topbar-play"; return result }
+    if (inRect(cx, cy, layout.loop)) { result.zone = "topbar-loop"; return result }
+    if (inRect(cx, cy, layout.click)) { result.zone = "topbar-click"; return result }
+    if (inRect(cx, cy, layout.bpmMinus)) { result.zone = "topbar-bpm-minus"; return result }
+    if (inRect(cx, cy, layout.bpmPlus)) { result.zone = "topbar-bpm-plus"; return result }
+    if (inRect(cx, cy, layout.bpmText)) { result.zone = "topbar-bpm-text"; return result }
+    if (inRect(cx, cy, layout.importBtn)) { result.zone = "topbar-import"; return result }
+    if (inRect(cx, cy, layout.exportBtn)) { result.zone = "topbar-export"; return result }
+    if (inRect(cx, cy, layout.addTrack)) { result.zone = "topbar-add-track"; return result }
+
+    result.zone = "topbar"
     return result
   }
 
@@ -915,9 +1154,31 @@ function hitTest(cx: number, cy: number): HitResult {
     const sideY = cy - TOPBAR_H
 
     // Click track row
-    if (sideY < CLICK_ROW_H) {
-      result.zone = "sidebar-click"
+    if (sideY >= 0 && sideY < CLICK_ROW_H) {
       result.trackIndex = -1
+
+      // Check volume slider (row 2)
+      const sliderY = 24 // relative to click row top
+      const localSliderY = sideY - sliderY
+      if (localSliderY >= -4 && localSliderY <= SLIDER_H + 4) {
+        // Volume slider
+        const volGeo = getSliderGeometry(SLIDER_PAD)
+        if (cx >= volGeo.trackX - 8 && cx <= volGeo.trackX + volGeo.trackW + 8) {
+          result.zone = "sidebar-click-vol"
+          result.sliderFrac = Math.max(0, Math.min(1, (cx - volGeo.trackX) / volGeo.trackW))
+          return result
+        }
+        // Pan slider
+        const panX = SLIDER_PAD + (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2 + 16
+        const panGeo = getSliderGeometry(panX)
+        if (cx >= panGeo.trackX - 8 && cx <= panGeo.trackX + panGeo.trackW + 8) {
+          result.zone = "sidebar-click-pan"
+          result.sliderFrac = Math.max(0, Math.min(1, (cx - panGeo.trackX) / panGeo.trackW))
+          return result
+        }
+      }
+
+      result.zone = "sidebar-click"
       return result
     }
 
@@ -928,15 +1189,40 @@ function hitTest(cx: number, cy: number): HitResult {
       result.trackIndex = trackIdx
       const localY = trackY - trackIdx * TRACK_H
 
-      // M/S/R button row (y=28..44, x=8..74)
-      if (localY >= 28 && localY < 44 && cx >= 8) {
-        if (cx < 30) { result.zone = "sidebar-btn"; result.btnAction = "mute" }
-        else if (cx < 56) { result.zone = "sidebar-btn"; result.btnAction = "solo" }
-        else if (cx < 82) { result.zone = "sidebar-btn"; result.btnAction = "arm" }
-        else { result.zone = "sidebar-track" }
-      } else {
-        result.zone = "sidebar-track"
+      // MSR buttons (y+28..y+28+MSR_BTN_H)
+      const pad = 8
+      if (localY >= 28 && localY < 28 + MSR_BTN_H) {
+        const lx = cx - pad
+        if (lx >= 0 && lx < MSR_BTN_W) {
+          result.zone = "sidebar-btn"; result.btnAction = "mute"; return result
+        } else if (lx >= MSR_BTN_W + 6 && lx < (MSR_BTN_W + 6) * 2) {
+          result.zone = "sidebar-btn"; result.btnAction = "solo"; return result
+        } else if (lx >= (MSR_BTN_W + 6) * 2 && lx < (MSR_BTN_W + 6) * 3) {
+          result.zone = "sidebar-btn"; result.btnAction = "arm"; return result
+        }
       }
+
+      // Volume slider (y+62)
+      if (localY >= 58 && localY <= 62 + SLIDER_H + 4) {
+        const volGeo = getSliderGeometry(SLIDER_PAD)
+        if (cx >= volGeo.trackX - 8 && cx <= volGeo.trackX + volGeo.trackW + 8) {
+          result.zone = "sidebar-vol-slider"
+          result.sliderFrac = Math.max(0, Math.min(1, (cx - volGeo.trackX) / volGeo.trackW))
+          return result
+        }
+      }
+
+      // Pan slider (y+90)
+      if (localY >= 86 && localY <= 90 + SLIDER_H + 4) {
+        const panGeo = getSliderGeometry(SLIDER_PAD)
+        if (cx >= panGeo.trackX - 8 && cx <= panGeo.trackX + panGeo.trackW + 8) {
+          result.zone = "sidebar-pan-slider"
+          result.sliderFrac = Math.max(0, Math.min(1, (cx - panGeo.trackX) / panGeo.trackW))
+          return result
+        }
+      }
+
+      result.zone = "sidebar-track"
     }
     return result
   }
@@ -957,9 +1243,24 @@ function hitTest(cx: number, cy: number): HitResult {
   return result
 }
 
+function inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
+}
+
+// ── Double-click detection ──────────────────────────────────────────────
+function checkDoubleClick(zone: string, trackIndex: number): boolean {
+  const now = performance.now()
+  const isDouble = (now - lastClickTime < 400) && lastClickZone === zone && lastClickTrack === trackIndex
+  lastClickTime = now
+  lastClickZone = zone
+  lastClickTrack = trackIndex
+  return isDouble
+}
+
 // ── Mouse Handling ──────────────────────────────────────────────────────
 function setupMouse() {
-  canvas.addEventListener("click", (e) => {
+  // Pointer down (for click + drag start)
+  canvas.addEventListener("pointerdown", (e) => {
     const hit = hitTest(e.clientX, e.clientY)
 
     switch (hit.zone) {
@@ -972,9 +1273,98 @@ function setupMouse() {
         toggleLoop()
         break
 
+      case "topbar-click":
+        state.clickEnabled = !state.clickEnabled
+        if (state.transportState !== "stopped") {
+          if (state.clickEnabled) {
+            if (!audio.generateClick(state.bpm, getClickDuration())) {
+              showStatus("Click buffer allocation failed")
+            }
+            audio.setClick(true, state.bpm)
+            audio.setClickVolume(state.clickVolume)
+            audio.setClickPan(state.clickPan)
+          } else {
+            audio.setClick(false, 0)
+          }
+        }
+        render()
+        break
+
+      case "topbar-bpm-minus":
+        state.bpm = Math.max(20, state.bpm - 1)
+        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
+        render()
+        break
+
+      case "topbar-bpm-plus":
+        state.bpm = Math.min(300, state.bpm + 1)
+        if (audio.isReady) audio.setSpeed(state.bpm / state.originalBpm)
+        render()
+        break
+
+      case "topbar-bpm-text":
+        // Double-click resets BPM to original
+        if (checkDoubleClick("bpm", -1)) {
+          state.bpm = state.originalBpm
+          if (audio.isReady) audio.setSpeed(1)
+          showStatus(`BPM reset to ${state.originalBpm}`)
+          render()
+        }
+        break
+
+      case "topbar-import":
+        importWav()
+        break
+
+      case "topbar-export":
+        showStatus("Export not yet implemented in Web UI")
+        break
+
+      case "topbar-add-track":
+        if (state.transportState !== "stopped") {
+          showStatus("Stop transport first (Space)")
+        } else {
+          const newTrack = createTrack(`Track ${nextTrackNum++}`, state.tracks.length)
+          state.tracks.push(newTrack)
+          if (audio.isReady) audio.syncTrack(newTrack)
+          state.selectedTrackIndex = state.tracks.length - 1
+          render()
+        }
+        break
+
       case "sidebar-click":
         state.selectedTrackIndex = -1
         render()
+        break
+
+      case "sidebar-click-vol":
+        if (checkDoubleClick("click-vol", -1)) {
+          state.clickVolume = DEFAULT_CLICK_VOLUME
+          if (audio.isReady) audio.setClickVolume(state.clickVolume)
+          showStatus(`Click volume reset to ${Math.round(DEFAULT_CLICK_VOLUME * 100)}%`)
+          render()
+        } else if (hit.sliderFrac !== undefined) {
+          state.clickVolume = hit.sliderFrac * 2 // 0-2 range
+          if (audio.isReady) audio.setClickVolume(state.clickVolume)
+          state.selectedTrackIndex = -1
+          drag = { type: "click-volume", trackIndex: -1, startValue: state.clickVolume }
+          render()
+        }
+        break
+
+      case "sidebar-click-pan":
+        if (checkDoubleClick("click-pan", -1)) {
+          state.clickPan = DEFAULT_CLICK_PAN
+          if (audio.isReady) audio.setClickPan(state.clickPan)
+          showStatus("Click pan reset to center")
+          render()
+        } else if (hit.sliderFrac !== undefined) {
+          state.clickPan = hit.sliderFrac * 2 - 1 // -1 to +1
+          if (audio.isReady) audio.setClickPan(state.clickPan)
+          state.selectedTrackIndex = -1
+          drag = { type: "click-pan", trackIndex: -1, startValue: state.clickPan }
+          render()
+        }
         break
 
       case "sidebar-track":
@@ -1000,6 +1390,44 @@ function setupMouse() {
         }
         break
 
+      case "sidebar-vol-slider":
+        if (hit.trackIndex >= 0) {
+          const track = state.tracks[hit.trackIndex]
+          if (track) {
+            if (checkDoubleClick("vol-slider", hit.trackIndex)) {
+              track.volume = DEFAULT_VOLUME
+              if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
+              showStatus(`Volume reset to ${Math.round(DEFAULT_VOLUME * 100)}%`)
+            } else if (hit.sliderFrac !== undefined) {
+              track.volume = hit.sliderFrac * 2 // 0-2 range
+              if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
+              drag = { type: "volume", trackIndex: hit.trackIndex, startValue: track.volume }
+            }
+            state.selectedTrackIndex = hit.trackIndex
+            render()
+          }
+        }
+        break
+
+      case "sidebar-pan-slider":
+        if (hit.trackIndex >= 0) {
+          const track = state.tracks[hit.trackIndex]
+          if (track) {
+            if (checkDoubleClick("pan-slider", hit.trackIndex)) {
+              track.pan = DEFAULT_PAN
+              if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+              showStatus("Pan reset to center")
+            } else if (hit.sliderFrac !== undefined) {
+              track.pan = hit.sliderFrac * 2 - 1 // -1 to +1
+              if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+              drag = { type: "pan", trackIndex: hit.trackIndex, startValue: track.pan }
+            }
+            state.selectedTrackIndex = hit.trackIndex
+            render()
+          }
+        }
+        break
+
       case "timeline": {
         const w = W - SIDEBAR_W
         const samplesPerCol = getSamplesPerCol(w)
@@ -1009,6 +1437,7 @@ function setupMouse() {
           syncLoopAfterSeek()
           state.freeScroll = true
         }
+        drag = { type: "timeline", trackIndex: -2, startValue: state.playheadPosition }
         render()
         break
       }
@@ -1022,6 +1451,73 @@ function setupMouse() {
     }
   })
 
+  // Pointer move (drag handling)
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag) {
+      // Cursor style
+      const hit = hitTest(e.clientX, e.clientY)
+      if (hit.zone !== "none" && hit.zone !== "topbar" && hit.zone !== "statusbar" && hit.zone !== "waveform") {
+        canvas.style.cursor = "pointer"
+      } else {
+        canvas.style.cursor = "default"
+      }
+      return
+    }
+
+    if (drag.type === "volume" && drag.trackIndex >= 0) {
+      const track = state.tracks[drag.trackIndex]
+      if (track) {
+        const geo = getSliderGeometry(SLIDER_PAD)
+        const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+        track.volume = frac * 2
+        if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
+        render()
+      }
+    } else if (drag.type === "pan" && drag.trackIndex >= 0) {
+      const track = state.tracks[drag.trackIndex]
+      if (track) {
+        const geo = getSliderGeometry(SLIDER_PAD)
+        const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+        track.pan = frac * 2 - 1
+        if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+        render()
+      }
+    } else if (drag.type === "click-volume") {
+      const geo = getSliderGeometry(SLIDER_PAD)
+      const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+      state.clickVolume = frac * 2
+      if (audio.isReady) audio.setClickVolume(state.clickVolume)
+      render()
+    } else if (drag.type === "click-pan") {
+      const panX = SLIDER_PAD + (SIDEBAR_W - SLIDER_PAD * 2 - 30) / 2 + 16
+      const geo = getSliderGeometry(panX)
+      const frac = Math.max(0, Math.min(1, (e.clientX - geo.trackX) / geo.trackW))
+      state.clickPan = frac * 2 - 1
+      if (audio.isReady) audio.setClickPan(state.clickPan)
+      render()
+    } else if (drag.type === "timeline") {
+      const w = W - SIDEBAR_W
+      const samplesPerCol = getSamplesPerCol(w)
+      const lx = e.clientX - SIDEBAR_W
+      state.playheadPosition = Math.max(0, Math.floor(state.scrollOffset + lx * samplesPerCol))
+      if (state.transportState !== "stopped") {
+        audio.setPlayhead(state.playheadPosition)
+        syncLoopAfterSeek()
+      }
+      render()
+    }
+  })
+
+  // Pointer up (end drag)
+  canvas.addEventListener("pointerup", () => {
+    drag = null
+  })
+
+  // Also end drag on pointer leave
+  canvas.addEventListener("pointerleave", () => {
+    drag = null
+  })
+
   // Scroll
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault()
@@ -1033,8 +1529,7 @@ function setupMouse() {
       state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
       if (state.transportState !== "stopped") state.freeScroll = true
       render()
-    } else if (hit.zone === "sidebar-track" && hit.trackIndex >= 0) {
-      // Volume scroll on sidebar tracks
+    } else if ((hit.zone === "sidebar-track" || hit.zone === "sidebar-vol-slider") && hit.trackIndex >= 0) {
       const track = state.tracks[hit.trackIndex]
       if (track) {
         const delta = e.deltaY > 0 ? -0.05 : 0.05
@@ -1042,26 +1537,30 @@ function setupMouse() {
         if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
         render()
       }
-    } else if (hit.zone === "sidebar-click") {
-      // Volume scroll on click track
+    } else if (hit.zone === "sidebar-pan-slider" && hit.trackIndex >= 0) {
+      const track = state.tracks[hit.trackIndex]
+      if (track) {
+        const delta = e.deltaY > 0 ? -0.05 : 0.05
+        track.pan = Math.max(-1, Math.min(1, track.pan + delta))
+        if (audio.isReady) audio.setTrackPan(track.id, track.pan)
+        render()
+      }
+    } else if (hit.zone === "sidebar-click" || hit.zone === "sidebar-click-vol") {
       const delta = e.deltaY > 0 ? -0.05 : 0.05
       state.clickVolume = Math.max(0, Math.min(2, state.clickVolume + delta))
       if (audio.isReady) audio.setClickVolume(state.clickVolume)
       render()
+    } else if (hit.zone === "sidebar-click-pan") {
+      const delta = e.deltaY > 0 ? -0.05 : 0.05
+      state.clickPan = Math.max(-1, Math.min(1, state.clickPan + delta))
+      if (audio.isReady) audio.setClickPan(state.clickPan)
+      render()
     }
   }, { passive: false })
 
-  // Cursor style
-  canvas.addEventListener("mousemove", (e) => {
-    const hit = hitTest(e.clientX, e.clientY)
-    if (hit.zone === "topbar-play" || hit.zone === "topbar-loop" || hit.zone === "sidebar-btn" ||
-        hit.zone === "sidebar-track" || hit.zone === "sidebar-click" ||
-        hit.zone === "timeline") {
-      canvas.style.cursor = "pointer"
-    } else {
-      canvas.style.cursor = "default"
-    }
-  })
+  // Touch events: prevent default to avoid scrolling/zooming on iPad
+  canvas.addEventListener("touchstart", (e) => { e.preventDefault() }, { passive: false })
+  canvas.addEventListener("touchmove", (e) => { e.preventDefault() }, { passive: false })
 }
 
 // ── Keyboard ────────────────────────────────────────────────────────────
@@ -1083,6 +1582,18 @@ function setupKeyboard() {
       case "m":
         if (state.selectedTrackIndex === -1) {
           state.clickEnabled = !state.clickEnabled
+          if (state.transportState !== "stopped") {
+            if (state.clickEnabled) {
+              if (!audio.generateClick(state.bpm, getClickDuration())) {
+                showStatus("Click buffer allocation failed")
+              }
+              audio.setClick(true, state.bpm)
+              audio.setClickVolume(state.clickVolume)
+              audio.setClickPan(state.clickPan)
+            } else {
+              audio.setClick(false, 0)
+            }
+          }
         } else {
           const track = state.tracks[state.selectedTrackIndex]
           if (track) {
@@ -1268,7 +1779,6 @@ function setupKeyboard() {
 
       case "v":
       case "V":
-        // Volume adjust via keyboard (future: prompt)
         break
 
       case "<": {

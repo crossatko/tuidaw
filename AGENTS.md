@@ -286,6 +286,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 69. **OLED theme for Web UI**: Replaced Tokyo Night color palette with OLED-optimized theme. True black (`#000000`) background, white/near-white (`#e8e8e8`) foreground, subtle gray borders (`#2a2a2a`). Color accents only for active UI states: green for playing, red for armed, orange for mute active, yellow for solo active, cyan for click active. Inactive buttons use dark fill (`#1a1a1a`) with border outlines. Active button text is black for maximum contrast. Track waveform colors adjusted for OLED visibility.
 70. **Loop region UI in Web UI**: Full loop region support matching TUI behavior. P key 3-step cycle (set start → set end → clear). Touch-friendly Loop button in topbar (64px wide, 28px tall) for iPad usage. Purple (`#b080e0`) visual rendering: tinted overlay on timeline and waveform area, solid start/end markers with triangle indicators on timeline, vertical lines on waveform area, dashed line while setting loop start. Loop-aware auto-scroll centers loop region on screen during playback when it fits. `syncLoopAfterSeek()` disables native loop when playhead seeks past loopEnd (linear continuation). Audio bridge fixed to pass -1 (not 0) for no-loop sentinel matching native C engine.
 71. **Fix WSOLA audio quality in Web UI**: Added missing `-DMA_ENABLE_AUDIO_WORKLETS` and `-sASYNCIFY` flags to `native/build-wasm.sh`. Without `-DMA_ENABLE_AUDIO_WORKLETS`, miniaudio's C code never compiled the AudioWorklet path — it fell back to the deprecated ScriptProcessorNode which runs the audio callback on the main thread (subject to GC pauses, layout recalc, event handling delays). `-sASYNCIFY` is required because miniaudio's AudioWorklet init path calls `emscripten_sleep()` while waiting for the worklet to start. Updated `audio-bridge.ts` to `await` the `_tuidaw_init()` and `_tuidaw_start_playback_device()` calls since they are now async with ASYNCIFY.
+72. **Touch-friendly Web UI overhaul**: Major layout and interaction redesign for touch/tablet usage. Layout constants enlarged: `SIDEBAR_W=260`, `TOPBAR_H=56`, `TRACK_H=120`, `CLICK_ROW_H=48`, `STATUSBAR_H=36`, `BTN_H=36`. Topbar now has Click button, BPM [-]/[+] buttons, Import/Export/+Track buttons. Sidebar tracks have visual draggable volume and pan sliders (volume: 0-200% range, pan: fill-from-center). Click track row has compact volume/pan sliders. MSR buttons enlarged (32x28px). Pointer events for drag interaction (pointerdown/pointermove/pointerup). Double-click/double-tap resets: volume→0.8, pan→0, BPM→originalBpm, clickVol→0.5, clickPan→0. Touch event `preventDefault()` to block iOS scroll/zoom. Extended hit zones: `topbar-click`, `topbar-bpm-minus/plus/text`, `topbar-import/export/add-track`, `sidebar-click-vol/pan`, `sidebar-vol-slider/pan-slider`. Scroll wheel on pan slider zone adjusts pan.
 
 ## File structure
 
@@ -369,7 +370,10 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
 │   │                          # (Space/M/S/R/C/+/-/hjkl/arrows/[]/</>/Home/End), mouse
 │   │                          # interaction, WAV import with shared parser + BPM detection.
-│   │                          # Layout: SIDEBAR_W=220, TOPBAR_H=44, TRACK_H=80, CLICK_ROW_H=32.
+│   │                          # Layout: SIDEBAR_W=260, TOPBAR_H=56, TRACK_H=120, CLICK_ROW_H=48.
+│   │                          # Touch-friendly: visual volume/pan sliders, drag interaction,
+│   │                          # double-click reset, topbar buttons (Click, BPM +/-, Import,
+│   │                          # Export, +Track), pointer events, touch preventDefault.
 │   ├── audio-bridge.ts       # Typed wrapper (~270 lines) around WASM tuidaw_* exports.
 │   │                          # Track ID mapping (string→numeric), WASM heap memory
 │   │                          # management for sample buffers, transport/click/loop/speed.
@@ -486,4 +490,4 @@ Mouse zones for sidebar scroll:
 
 - Web recording support
 - Project save/load in web UI
-- Volume/pan sliders in web UI
+- Export mixdown in web UI
