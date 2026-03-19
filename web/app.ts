@@ -9,25 +9,26 @@ import { detectBPM, findBeatOffset } from "../src/utils/bpm"
 import { resample } from "../src/utils/dsp"
 import { parseWav } from "../src/utils/wav"
 
-// ── Tokyo Night Colors ──────────────────────────────────────────────────
+// ── OLED Colors ─────────────────────────────────────────────────────────
 const C = {
-  bg: "#1a1b26",
-  bgDark: "#16161e",
-  bgHighlight: "#292e42",
-  fg: "#c0caf5",
-  fgDim: "#565f89",
-  blue: "#7aa2f7",
-  cyan: "#7dcfff",
-  green: "#9ece6a",
-  magenta: "#bb9af7",
-  red: "#f7768e",
-  orange: "#ff9e64",
-  yellow: "#e0af68",
+  bg: "#000000",
+  bgDark: "#000000",
+  bgHighlight: "#1a1a1a",
+  border: "#2a2a2a",
+  fg: "#e8e8e8",
+  fgDim: "#666666",
+  blue: "#5b9cf5",
+  cyan: "#56d4f0",
+  green: "#6cc644",
+  magenta: "#c678dd",
+  red: "#f05060",
+  orange: "#e89040",
+  yellow: "#e0c050",
 } as const
 
 const TRACK_COLORS = [
-  "#7aa2f7", "#9ece6a", "#f7768e", "#ff9e64",
-  "#bb9af7", "#7dcfff", "#e0af68", "#73daca",
+  "#5b9cf5", "#6cc644", "#f05060", "#e89040",
+  "#c678dd", "#56d4f0", "#e0c050", "#4ec9a0",
 ]
 
 const SAMPLE_RATE = 48000
@@ -157,7 +158,7 @@ function drawTopbar() {
   ctx.fillRect(0, 0, W, TOPBAR_H)
 
   // Bottom border
-  ctx.fillStyle = C.bgHighlight
+  ctx.fillStyle = C.border
   ctx.fillRect(0, TOPBAR_H - 1, W, 1)
 
   const textY = TOPBAR_H / 2 + 5
@@ -173,7 +174,15 @@ function drawTopbar() {
   roundRect(ctx, x, btnY, btnW, btnH, 4)
   ctx.fill()
 
-  ctx.fillStyle = isPlaying ? C.bgDark : C.fg
+  // Button border when not playing
+  if (!isPlaying) {
+    ctx.strokeStyle = C.border
+    ctx.lineWidth = 1
+    roundRect(ctx, x, btnY, btnW, btnH, 4)
+    ctx.stroke()
+  }
+
+  ctx.fillStyle = isPlaying ? "#000000" : C.fg
   ctx.font = "bold 12px monospace"
   ctx.textAlign = "center"
   ctx.fillText(isPlaying ? "|| Pause" : "> Play", x + btnW / 2, textY)
@@ -220,7 +229,7 @@ function drawSidebar() {
   ctx.fillRect(0, TOPBAR_H, SIDEBAR_W, sidebarH)
 
   // Right border
-  ctx.fillStyle = C.bgHighlight
+  ctx.fillStyle = C.border
   ctx.fillRect(SIDEBAR_W - 1, TOPBAR_H, 1, sidebarH)
 
   let y = TOPBAR_H
@@ -237,7 +246,7 @@ function drawSidebar() {
   }
 
   // Bottom border
-  ctx.fillStyle = C.bgHighlight
+  ctx.fillStyle = C.border
   ctx.fillRect(0, y + CLICK_ROW_H - 1, SIDEBAR_W - 1, 1)
 
   const clickTextY = y + CLICK_ROW_H / 2 + 4
@@ -273,7 +282,7 @@ function drawSidebar() {
     }
 
     // Bottom border
-    ctx.fillStyle = C.bgHighlight
+    ctx.fillStyle = C.border
     ctx.fillRect(0, y + TRACK_H - 1, SIDEBAR_W - 1, 1)
 
     const pad = 8
@@ -330,12 +339,12 @@ function drawSmallButton(ctx: CanvasRenderingContext2D, x: number, y: number, la
     ctx.fillStyle = activeColor
     roundRect(ctx, x, y, w, h, 2)
     ctx.fill()
-    ctx.fillStyle = C.bgDark
+    ctx.fillStyle = "#000000"
   } else {
     ctx.fillStyle = C.bgHighlight
     roundRect(ctx, x, y, w, h, 2)
     ctx.fill()
-    ctx.strokeStyle = C.bgHighlight
+    ctx.strokeStyle = C.border
     ctx.lineWidth = 1
     roundRect(ctx, x, y, w, h, 2)
     ctx.stroke()
@@ -359,7 +368,7 @@ function drawTimeline() {
   ctx.fillRect(x0, y0, w, h)
 
   // Bottom border
-  ctx.fillStyle = C.bgHighlight
+  ctx.fillStyle = C.border
   ctx.fillRect(x0, y0 + h - 1, w, 1)
 
   const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
@@ -375,7 +384,7 @@ function drawTimeline() {
     if (x < x0 || x >= x0 + w) continue
 
     const isBar = beat % 4 === 0
-    ctx.strokeStyle = isBar ? C.fgDim : C.bgHighlight
+    ctx.strokeStyle = isBar ? C.fgDim : C.border
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
     ctx.moveTo(x, y0 + (isBar ? 0 : 8))
@@ -393,7 +402,7 @@ function drawTimeline() {
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
-    ctx.fillStyle = "rgba(122, 162, 247, 0.2)"
+    ctx.fillStyle = "rgba(91, 156, 245, 0.2)"
     const clampX1 = Math.max(x0, lx1)
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, h)
@@ -439,7 +448,7 @@ function drawWaveformArea() {
     if (x < x0 || x >= x0 + w) continue
 
     const isBar = beat % 4 === 0
-    ctx.strokeStyle = isBar ? C.bgHighlight : `${C.bgHighlight}80`
+    ctx.strokeStyle = isBar ? C.border : `${C.border}80`
     ctx.lineWidth = isBar ? 1 : 0.5
     ctx.beginPath()
     ctx.moveTo(x, y0)
@@ -451,7 +460,7 @@ function drawWaveformArea() {
   if (state.loopStart !== null && state.loopEnd !== null) {
     const lx1 = x0 + (state.loopStart - state.scrollOffset) / samplesPerCol
     const lx2 = x0 + (state.loopEnd - state.scrollOffset) / samplesPerCol
-    ctx.fillStyle = "rgba(122, 162, 247, 0.1)"
+    ctx.fillStyle = "rgba(91, 156, 245, 0.1)"
     const clampX1 = Math.max(x0, lx1)
     const clampX2 = Math.min(x0 + w, lx2)
     if (clampX2 > clampX1) ctx.fillRect(clampX1, y0, clampX2 - clampX1, gridH)
@@ -470,7 +479,7 @@ function drawWaveformArea() {
 
     // Track separator
     if (i > 0) {
-      ctx.strokeStyle = C.bgHighlight
+      ctx.strokeStyle = C.border
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(x0, ty)
@@ -540,7 +549,7 @@ function drawStatusbar() {
   ctx.fillRect(0, y, W, STATUSBAR_H)
 
   // Top border
-  ctx.fillStyle = C.bgHighlight
+  ctx.fillStyle = C.border
   ctx.fillRect(0, y, W, 1)
 
   ctx.fillStyle = C.fgDim
