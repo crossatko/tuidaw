@@ -85,9 +85,8 @@
     /* ── Canvas ─────────────────────────────────────────────────────── */
     canvas {
       display: block;
-      width: 100vw;
-      /* height set programmatically in resize() — CSS 100vh differs
-         from window.innerHeight on iOS Safari and Wayland compositors */
+      /* width/height set programmatically in resize() — CSS viewport
+         units differ from innerWidth/Height in PWA and iOS Safari */
     }
     /* ── Error log ──────────────────────────────────────────────────── */
     #error-log {
