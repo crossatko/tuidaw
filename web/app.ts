@@ -175,6 +175,11 @@ let animFrameId: number | null = null
 let audioInitPromise: Promise<void> | null = null
 let audioInitStarted = false
 
+// Per-track: the playhead position when that track's recording began (for punch-in)
+const trackRecordStartPositions: Map<string, number> = new Map()
+// Accumulated recorded samples per track (merged from polling chunks)
+const trackRecordedSamples: Map<string, Float32Array[]> = new Map()
+
 async function ensureAudioReady(): Promise<boolean> {
   if (audio.isReady) return true
   if (audioInitStarted) {
@@ -941,8 +946,10 @@ function updateTopbar() {
 
   // Play button
   const isPlaying = state.transportState !== "stopped"
-  btnPlay.textContent = isPlaying ? "|| Pause" : "\u25B6 Play"
-  btnPlay.classList.toggle("active-green", isPlaying)
+  const isRecording = state.transportState === "recording"
+  btnPlay.textContent = isRecording ? "\u23FA Rec" : isPlaying ? "|| Pause" : "\u25B6 Play"
+  btnPlay.classList.toggle("active-green", isPlaying && !isRecording)
+  btnPlay.classList.toggle("active-red", isRecording)
 
   // Loop button
   const hasLoop = state.loopStart !== null && state.loopEnd !== null
@@ -1081,17 +1088,18 @@ function toggleLoop() {
 }
 
 // ── Transport ───────────────────────────────────────────────────────────
-async function play() {
-  const ready = await ensureAudioReady()
-  if (!ready) {
-    showStatus("Audio engine not ready")
-    return
+
+/** Common transport start logic: sync tracks, click, loop, speed, play */
+function startTransportCommon() {
+  for (const track of state.tracks) {
+    // During recording, mute armed tracks so they don't play back their own audio
+    if (state.transportState === "recording" && track.armed) {
+      audio.syncTrack(track)
+      audio.setTrackMuted(track.id, true)
+    } else {
+      audio.syncTrack(track)
+    }
   }
-
-  state.transportState = "playing"
-  state.freeScroll = false
-
-  for (const track of state.tracks) audio.syncTrack(track)
 
   if (state.clickEnabled) {
     const duration = getClickDuration()
@@ -1115,13 +1123,148 @@ async function play() {
 
   audio.setSpeed(state.bpm / state.originalBpm)
   audio.play(state.playheadPosition)
+}
+
+async function play() {
+  const ready = await ensureAudioReady()
+  if (!ready) {
+    showStatus("Audio engine not ready")
+    return
+  }
+
+  state.freeScroll = false
+
+  // Check if any tracks are armed — if so, start recording
+  const armedTracks = state.tracks.filter(t => t.armed)
+  if (armedTracks.length > 0) {
+    await startRecording(armedTracks)
+  } else {
+    state.transportState = "playing"
+    startTransportCommon()
+    startPlayheadPolling()
+    render()
+  }
+}
+
+/** Start recording on all armed tracks while playing back non-armed tracks. */
+async function startRecording(armedTracks: WebTrack[]) {
+  state.transportState = "recording"
+  trackRecordStartPositions.clear()
+  trackRecordedSamples.clear()
+
+  // Remember the start position for each armed track
+  for (const track of armedTracks) {
+    trackRecordStartPositions.set(track.id, state.playheadPosition)
+    trackRecordedSamples.set(track.id, [])
+  }
+
+  // Start native transport (plays non-muted, non-armed tracks)
+  startTransportCommon()
+
+  // Start getUserMedia recording on each armed track
+  for (const track of armedTracks) {
+    try {
+      await audio.startRecording(track.id)
+    } catch (err) {
+      showStatus(`Mic access denied for "${track.name}"`)
+      console.error("Recording start failed:", err)
+    }
+  }
+
   startPlayheadPolling()
   render()
 }
 
-function stopTransport() {
+/** Punch-in: start recording on a single track at the given position (during transport). */
+async function punchInTrack(track: WebTrack, startPosition: number) {
+  trackRecordStartPositions.set(track.id, startPosition)
+  trackRecordedSamples.set(track.id, [])
+
+  // Mute playback for this track while recording
+  audio.setTrackMuted(track.id, true)
+
+  try {
+    await audio.startRecording(track.id)
+  } catch (err) {
+    showStatus(`Mic access denied for "${track.name}"`)
+    console.error("Punch-in failed:", err)
+    trackRecordStartPositions.delete(track.id)
+    trackRecordedSamples.delete(track.id)
+  }
+}
+
+/** Punch-out: stop recording on a single track and finalize its audio. */
+function punchOutTrack(track: WebTrack) {
+  // Drain remaining samples from the recording
+  const remaining = audio.stopRecording(track.id)
+
+  const recStart = trackRecordStartPositions.get(track.id) ?? 0
+  const chunks = trackRecordedSamples.get(track.id) ?? []
+
+  // Add remaining samples if any
+  if (remaining && remaining.length > 0) {
+    chunks.push(remaining)
+  }
+
+  // Merge all recorded chunks into a single buffer
+  let totalRecLen = 0
+  for (const c of chunks) totalRecLen += c.length
+
+  if (totalRecLen > 0) {
+    const recorded = new Float32Array(totalRecLen)
+    let off = 0
+    for (const c of chunks) {
+      recorded.set(c, off)
+      off += c.length
+    }
+
+    // Merge: preserve [0..recStart], write recorded audio, preserve tail
+    const totalLen = recStart + recorded.length
+    const existing = track.samples
+    const merged = new Float32Array(Math.max(totalLen, existing ? existing.length : 0))
+
+    // Copy existing audio up to recStart
+    if (existing) {
+      merged.set(existing.subarray(0, Math.min(existing.length, recStart)), 0)
+      // Preserve tail beyond recorded region
+      if (existing.length > totalLen) {
+        merged.set(existing.subarray(totalLen), totalLen)
+      }
+    }
+    // Write recorded audio
+    merged.set(recorded, recStart)
+
+    track.samples = merged
+    track.sampleRate = SAMPLE_RATE
+
+    // Update WASM engine's track buffer
+    audio.setTrackSamples(track.id, track.samples)
+  }
+
+  trackRecordStartPositions.delete(track.id)
+  trackRecordedSamples.delete(track.id)
+
+  // Unmute if track should be audible
+  if (!track.muted) {
+    audio.setTrackMuted(track.id, false)
+  }
+}
+
+async function stopTransport() {
+  const wasRecording = state.transportState === "recording"
   state.transportState = "stopped"
   state.freeScroll = false
+
+  // Finalize all active recordings
+  if (wasRecording) {
+    for (const trackId of [...trackRecordStartPositions.keys()]) {
+      const track = state.tracks.find(t => t.id === trackId)
+      if (track) punchOutTrack(track)
+    }
+    trackRecordStartPositions.clear()
+    trackRecordedSamples.clear()
+  }
+
   audio.stop()
 
   if (animFrameId) {
@@ -1135,6 +1278,50 @@ function startPlayheadPolling() {
   function tick() {
     if (state.transportState === "stopped") return
     state.playheadPosition = audio.getPlayhead()
+
+    // Poll recording data for each armed track
+    if (state.transportState === "recording") {
+      for (const track of state.tracks) {
+        if (!track.armed) continue
+        if (!trackRecordStartPositions.has(track.id)) continue
+
+        const newSamples = audio.pollRecording(track.id)
+        if (newSamples && newSamples.length > 0) {
+          const chunks = trackRecordedSamples.get(track.id)
+          if (chunks) chunks.push(newSamples)
+
+          const recStart = trackRecordStartPositions.get(track.id) ?? 0
+
+          // Calculate total recorded length so far
+          let existingRecLen = 0
+          const allChunks = trackRecordedSamples.get(track.id)
+          if (allChunks) {
+            for (const c of allChunks) existingRecLen += c.length
+          }
+
+          // Live merge: preserve [0..recStart], write all recorded audio
+          const writeEnd = recStart + existingRecLen
+          const existing = track.samples
+          const merged = new Float32Array(Math.max(writeEnd, existing ? existing.length : 0))
+
+          // Copy existing audio
+          if (existing) {
+            merged.set(existing.subarray(0, Math.min(existing.length, merged.length)), 0)
+          }
+
+          // Write new recorded chunk at the correct offset
+          const writeOffset = writeEnd - newSamples.length
+          merged.set(newSamples, writeOffset)
+
+          track.samples = merged
+          track.sampleRate = SAMPLE_RATE
+
+          // Update WASM engine so playback reflects new audio
+          audio.setTrackSamples(track.id, track.samples)
+        }
+      }
+    }
+
     if (!state.freeScroll) autoScroll()
     render()
     animFrameId = requestAnimationFrame(tick)
@@ -1428,6 +1615,25 @@ function setupMouse() {
             if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
           } else if (track && hit.btnAction === "arm") {
             track.armed = !track.armed
+            if (state.transportState !== "stopped") {
+              const currentPos = audio.getPlayhead()
+              if (track.armed) {
+                if (state.transportState === "playing") {
+                  state.transportState = "recording"
+                }
+                punchInTrack(track, currentPos)
+              } else {
+                if (trackRecordStartPositions.has(track.id)) {
+                  punchOutTrack(track)
+                }
+                const stillRecording = state.tracks.some(
+                  t => t.armed && trackRecordStartPositions.has(t.id)
+                )
+                if (!stillRecording && state.transportState === "recording") {
+                  state.transportState = "playing"
+                }
+              }
+            }
           } else if (track && hit.btnAction === "delete") {
             state.selectedTrackIndex = hit.trackIndex
             if (state.transportState !== "stopped") {
@@ -1725,6 +1931,32 @@ function setupKeyboard() {
         const track = state.tracks[state.selectedTrackIndex]
         if (track) {
           track.armed = !track.armed
+
+          if (state.transportState !== "stopped") {
+            const currentPos = audio.getPlayhead()
+
+            if (track.armed) {
+              // Punch-in: start recording on this track at current playhead
+              if (state.transportState === "playing") {
+                state.transportState = "recording"
+              }
+              punchInTrack(track, currentPos)
+            } else {
+              // Punch-out: stop recording on this track, finalize audio
+              if (trackRecordStartPositions.has(track.id)) {
+                punchOutTrack(track)
+              }
+
+              // If no tracks are still recording, transition back to "playing"
+              const stillRecording = state.tracks.some(
+                t => t.armed && trackRecordStartPositions.has(t.id)
+              )
+              if (!stillRecording && state.transportState === "recording") {
+                state.transportState = "playing"
+              }
+            }
+          }
+
           render()
         }
         break
