@@ -89,8 +89,12 @@ async function main() {
       if (state.transportState !== "stopped") {
         audioEngine.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
+        // During playback, clicking the timeline means the user wants to view
+        // this area — enter free-scroll mode so autoScroll doesn't snap back
+        state.freeScroll = true
+      } else {
+        ensurePlayheadVisible()
       }
-      ensurePlayheadVisible()
       render()
     },
     onClickVolumeChange: (delta: number) => {
@@ -174,8 +178,12 @@ async function main() {
       }
     }
 
-    // If loop fits on screen, center the loop region and stay put
-    if (state.loopStart !== null && state.loopEnd !== null) {
+    // If loop fits on screen AND playhead is inside the loop, center the loop
+    // region and stay put. Skip if playhead is outside the loop (user seeked
+    // past loop region — native loop is disabled, let normal auto-scroll handle it).
+    if (state.loopStart !== null && state.loopEnd !== null &&
+        state.playheadPosition >= state.loopStart &&
+        state.playheadPosition <= state.loopEnd) {
       const loopLen = state.loopEnd - state.loopStart
       if (loopLen <= visibleSamples) {
         const loopCenter = state.loopStart + loopLen / 2
