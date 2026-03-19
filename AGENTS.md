@@ -2,7 +2,14 @@
 
 ## Goal
 
-Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and miniaudio (native C library). The app has a left sidebar with tracks, a main window with braille-font waveforms, a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses a cross-platform native library (miniaudio) via Bun FFI — no PipeWire, no CLI audio tools, no process spawning for audio.
+Build a full-featured DAW (Digital Audio Workstation) with two UIs:
+
+1. **TUI mode** (`bun run start`): Terminal interface using OpenTUI with braille waveforms, keyboard/mouse controls
+2. **Web UI mode** (`bun run start --host`): Browser interface on port 3666 using Canvas 2D rendering
+
+Both UIs share the same native miniaudio audio engine. The TUI uses `bun:ffi` (`dlopen`) to call the native `.so` library. The Web UI uses the same C source compiled to WebAssembly via Emscripten — miniaudio auto-selects its Web Audio backend when compiled with `emcc`.
+
+The app has a left sidebar with tracks, a main window with waveforms (braille in TUI, Canvas 2D in web), a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses the native miniaudio engine in both modes — no PipeWire, no CLI audio tools, no process spawning for audio.
 
 ## Workflow preferences
 
@@ -180,6 +187,17 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 
 - **Output device selection was broken**: `tuidaw_set_output_device()` only stores the device index — it does NOT restart the playback device. The playback device is created once in the constructor and never restarted. To switch devices, must call `tuidaw_stop_playback_device()` + `tuidaw_start_playback_device()` after setting the index. Input devices worked because each recording creates a new `ma_device`.
 
+### Web UI architecture:
+
+- **Dual-mode entry point**: `index.ts` is a 15-line dispatcher — `--host` flag dynamically imports `web/server.ts`, no flag imports `tui.ts`
+- **WASM audio engine**: Same `tuidaw_audio.c` compiled to WASM via Emscripten (`native/build-wasm.sh`). miniaudio auto-selects Web Audio backend. SharedArrayBuffer required (COOP/COEP headers).
+- **Emscripten SDK**: Installed at `native/emsdk/` (v5.0.3, gitignored, ~400MB). Build with `-sUSE_PTHREADS=1 -sAUDIO_WORKLET=1 -sWASM_WORKERS=1 -sMODULARIZE=1`
+- **AudioBridge**: Typed wrapper around WASM exports with string→numeric track ID mapping and WASM heap memory management
+- **Bun HTTP server**: `web/server.ts` bundles `web/app.ts` via `Bun.build` at startup, serves static files from `web/` with COOP/COEP headers
+- **Separate tsconfigs**: Root tsconfig excludes browser files (`web/app.ts`, `web/audio-bridge.ts`); `web/tsconfig.json` extends root with DOM libs, includes only browser files
+- **Canvas 2D rendering**: Waveforms, beat grid, playhead, track sidebar all rendered via Canvas 2D API
+- **WAV import**: Built-in parser in browser (16/24-bit PCM, 32-bit float, stereo downmix, auto-resample to 48kHz) — no server round-trip needed
+
 ### OpenTUI Mouse Event API:
 
 - Mouse enabled via `createCliRenderer({ useMouse: true })`
@@ -256,6 +274,9 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 60. **Fix output device selection (F3)**: F3 device selection now actually switches the audio output device. Native engine tracks `active_device_index` (the device that was used when `tuidaw_start_playback_device()` last succeeded) separately from `output_device_index` (requested). `AudioEngine.setOutputDevice()` compares requested vs active index and only restarts the device when they differ — avoids unnecessary stop+start that can confuse PipeWire/PulseAudio routing policies. `AudioEngine.forceRestartOutputDevice()` always restarts (used by F3 callback). F3 callback has try-catch + status message. `playAll()` uses smart `setOutputDevice()` (skip if same). New native export: `tuidaw_get_active_device_index()`.
 61. **Fix input device selection (F2)**: F2 callback now immediately syncs input device to native engine via `audioEngine.syncTrack()` so the input device is ready for recording right after selection (previously only synced on `playAll()`). Shows status message with selected device name.
 62. **Output device applied on project open (F6)**: When opening a saved project, the restored `outputDeviceId` is immediately applied via `setOutputDevice()` instead of waiting for the next play.
+63. **Web UI foundation (feature/webui branch)**: Dual-mode entry point (`index.ts` dispatcher), Bun HTTP server on port 3666 with COOP/COEP headers for SharedArrayBuffer, Canvas 2D waveform rendering, beat grid, playhead animation, track sidebar, transport controls (Space/M/S/R/C/+/-), keyboard shortcuts, mouse interaction, WAV file import with built-in parser (16/24-bit PCM, 32-bit float, auto-resample to 48kHz).
+64. **WASM audio engine**: Same `tuidaw_audio.c` compiled to WebAssembly via Emscripten. miniaudio auto-selects Web Audio backend. Typed `AudioBridge` wrapper maps string track IDs to numeric IDs, manages WASM heap memory for sample buffers. All 37 `tuidaw_*` exports available.
+65. **TUI refactoring**: `index.ts` (was 1043 lines) split into 15-line dispatcher + `tui.ts` (1048 lines). TUI functionality preserved.
 
 ## File structure
 
@@ -265,21 +286,26 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 ├── LICENSE                   # MIT License
 ├── README.md                 # Full setup instructions, feature list, shortcuts
 ├── setup.sh                  # Bootstrap: downloads Zig, bun install, builds native lib
-├── index.ts                  # Main entry - app init, transport logic, keyboard handling,
-│                              # mouse handler setup, punchInTrack/punchOutTrack,
-│                              # refreshLivePlayback, shouldTrackPlay,
-│                              # ensurePlayheadVisible, autoScroll. ~1043 lines.
-├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit), test (bun test)
-├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false
+├── index.ts                  # Entry point dispatcher (~15 lines):
+│                              #   --host flag → web/server.ts (Web UI on port 3666)
+│                              #   no flag    → tui.ts (Terminal UI)
+├── tui.ts                    # TUI mode — all OpenTUI terminal logic (~1048 lines).
+│                              # Transport, keyboard handling, mouse handlers,
+│                              # punchInTrack/punchOutTrack, refreshLivePlayback,
+│                              # shouldTrackPlay, ensurePlayheadVisible, autoScroll.
+├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit && tsc --noEmit -p web/tsconfig.json), test (bun test)
+├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false, excludes native/emsdk/** and web browser files
 ├── bun.lock
 ├── .github/
 │   └── workflows/
 │       └── build.yml         # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~1091 lines)
+│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~1151 lines)
 │   ├── miniaudio.h           # miniaudio single-header library (95,864 lines, committed)
-│   ├── build.sh              # Build script using zig cc
+│   ├── build.sh              # Build script using zig cc (native .so)
+│   ├── build-wasm.sh         # Build script using emcc (WASM for web UI)
 │   ├── libtuidaw_audio.so    # Pre-built shared library (x86_64 Linux, 32 exported symbols)
+│   ├── emsdk/                # Emscripten SDK v5.0.3 (NOT committed, ~400MB)
 │   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
 ├── src/
 │   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
@@ -311,6 +337,27 @@ Build a full-featured TUI DAW (Digital Audio Workstation) using OpenTUI and mini
 │                              # beat grid timeline, playhead), status bar, help overlay,
 │                              # device selector overlay, file picker overlay.
 │                              # ~1218 lines.
+├── web/
+│   ├── server.ts             # Bun HTTP server on port 3666 (~115 lines).
+│   │                          # Bundles app.ts via Bun.build for browser.
+│   │                          # Serves static files with COOP/COEP headers
+│   │                          # (required for SharedArrayBuffer / WASM pthreads).
+│   ├── index.html            # HTML shell with Tokyo Night CSS theme, layout structure
+│   │                          # (topbar, sidebar, dual canvas, statusbar), loading overlay.
+│   ├── app.ts                # Main browser app (~580 lines): Canvas 2D waveform rendering,
+│   │                          # beat grid, playhead animation, track sidebar, transport
+│   │                          # controls, keyboard shortcuts, mouse interaction, WAV import
+│   │                          # with built-in parser (16/24-bit PCM, 32-bit float, resample).
+│   ├── audio-bridge.ts       # Typed wrapper (~220 lines) around WASM tuidaw_* exports.
+│   │                          # Track ID mapping (string→numeric), WASM heap memory
+│   │                          # management for sample buffers, transport/click/loop/speed.
+│   ├── tsconfig.json         # Extends root, adds DOM/DOM.Iterable libs. Includes only
+│   │                          # app.ts and audio-bridge.ts (browser files).
+│   ├── wasm/                 # WASM build output (gitignored):
+│   │   ├── tuidaw_audio.js   #   Emscripten JS glue (~43KB)
+│   │   └── tuidaw_audio.wasm #   Compiled WASM module (~108KB)
+│   └── dist/                 # Bun.build output (gitignored):
+│       └── app.js            #   Bundled browser JS (created at server start)
 ├── recordings/               # Auto-created directory for saved WAV files
 ├── tests/
 │   ├── click-precision.test.ts # 8 tests for click timing precision (all pass)
@@ -360,7 +407,7 @@ When mute/solo changes during transport, `refreshLivePlayback()` syncs all track
 
 ### Mouse handler architecture
 
-`UIRenderer.setupMouseHandlers(callbacks)` is called once after `setup()`, attaching `onMouseScroll` handlers to `mainFB` and `sidebarFB`. The handlers compute which track/zone the cursor is over and invoke the appropriate callback. The callbacks live in `index.ts` and have access to `state` and `render()`.
+`UIRenderer.setupMouseHandlers(callbacks)` is called once after `setup()`, attaching `onMouseScroll` handlers to `mainFB` and `sidebarFB`. The handlers compute which track/zone the cursor is over and invoke the appropriate callback. The callbacks live in `tui.ts` and have access to `state` and `render()`.
 
 ### Playhead visibility
 
@@ -415,3 +462,8 @@ Mouse zones for sidebar scroll:
 
 ## TODO:
 
+- Extract shared pure functions to `src/utils/` (WAV parsing, BPM detection, DSP) — used by both TUI and Web UI
+- Web recording support
+- Project save/load in web UI
+- Volume/pan sliders in web UI
+- Loop region UI in web canvas

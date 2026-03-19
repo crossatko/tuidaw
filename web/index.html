@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tuidaw — Web DAW</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      /* Tokyo Night palette */
+      --bg: #1a1b26;
+      --bg-dark: #16161e;
+      --bg-highlight: #292e42;
+      --fg: #c0caf5;
+      --fg-dim: #565f89;
+      --comment: #565f89;
+      --blue: #7aa2f7;
+      --cyan: #7dcfff;
+      --green: #9ece6a;
+      --magenta: #bb9af7;
+      --red: #f7768e;
+      --orange: #ff9e64;
+      --yellow: #e0af68;
+
+      --sidebar-width: 220px;
+      --topbar-height: 48px;
+      --statusbar-height: 32px;
+      --track-height: 80px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 13px;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Top Bar ────────────────────────────────────────── */
+    #topbar {
+      height: var(--topbar-height);
+      background: var(--bg-dark);
+      border-bottom: 1px solid var(--bg-highlight);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .transport-btn {
+      background: var(--bg-highlight);
+      color: var(--fg);
+      border: 1px solid var(--bg-highlight);
+      border-radius: 4px;
+      padding: 6px 14px;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .transport-btn:hover {
+      background: var(--bg);
+      border-color: var(--fg-dim);
+    }
+    .transport-btn.active {
+      background: var(--green);
+      color: var(--bg-dark);
+      border-color: var(--green);
+    }
+    .transport-btn.recording {
+      background: var(--red);
+      color: var(--bg-dark);
+      border-color: var(--red);
+    }
+
+    #bpm-display {
+      color: var(--cyan);
+      font-size: 15px;
+      font-weight: bold;
+      min-width: 80px;
+    }
+
+    #time-display {
+      color: var(--fg-dim);
+      font-size: 13px;
+      min-width: 100px;
+    }
+
+    #speed-display {
+      color: var(--orange);
+      font-size: 12px;
+    }
+
+    #status-message {
+      color: var(--yellow);
+      font-size: 12px;
+      margin-left: auto;
+      transition: opacity 0.3s;
+    }
+
+    /* ── Main Area ──────────────────────────────────────── */
+    #main-area {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ────────────────────────────────────────── */
+    #sidebar {
+      width: var(--sidebar-width);
+      background: var(--bg-dark);
+      border-right: 1px solid var(--bg-highlight);
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .track-row {
+      height: var(--track-height);
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--bg-highlight);
+      cursor: pointer;
+      transition: background 0.1s;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .track-row:hover {
+      background: var(--bg-highlight);
+    }
+    .track-row.selected {
+      background: var(--bg-highlight);
+      border-left: 3px solid var(--blue);
+      padding-left: 5px;
+    }
+    .track-row.click-track {
+      height: 36px;
+      padding: 4px 8px;
+    }
+
+    .track-name {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .track-color-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .track-controls {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .track-btn {
+      background: var(--bg);
+      color: var(--fg-dim);
+      border: 1px solid var(--bg-highlight);
+      border-radius: 2px;
+      padding: 1px 5px;
+      font-family: inherit;
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    .track-btn:hover { border-color: var(--fg-dim); }
+    .track-btn.muted { background: var(--orange); color: var(--bg-dark); border-color: var(--orange); }
+    .track-btn.solo { background: var(--yellow); color: var(--bg-dark); border-color: var(--yellow); }
+    .track-btn.armed { background: var(--red); color: var(--bg-dark); border-color: var(--red); }
+
+    .track-params {
+      display: flex;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--fg-dim);
+    }
+
+    /* ── Waveform Canvas ────────────────────────────────── */
+    #canvas-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #timeline-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 24px;
+    }
+
+    #waveform-canvas {
+      position: absolute;
+      top: 24px;
+      left: 0;
+      width: 100%;
+      height: calc(100% - 24px);
+    }
+
+    /* ── Status Bar ─────────────────────────────────────── */
+    #statusbar {
+      height: var(--statusbar-height);
+      background: var(--bg-dark);
+      border-top: 1px solid var(--bg-highlight);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      flex-shrink: 0;
+    }
+
+    #statusbar kbd {
+      background: var(--bg-highlight);
+      padding: 1px 4px;
+      border-radius: 2px;
+      font-size: 10px;
+      margin: 0 1px;
+    }
+
+    /* ── Loading Overlay ────────────────────────────────── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 100;
+      transition: opacity 0.3s;
+    }
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #loading h1 {
+      font-size: 24px;
+      color: var(--blue);
+    }
+    #loading p {
+      color: var(--fg-dim);
+    }
+  </style>
+</head>
+<body>
+  <!-- Loading overlay -->
+  <div id="loading">
+    <h1>tuidaw</h1>
+    <p id="loading-status">Initializing audio engine...</p>
+  </div>
+
+  <div id="app">
+    <!-- Top bar: transport, BPM, time -->
+    <div id="topbar">
+      <button class="transport-btn" id="btn-play" title="Play/Stop (Space)">&#9654; Play</button>
+      <button class="transport-btn" id="btn-stop" title="Stop (Space)">&#9632; Stop</button>
+      <button class="transport-btn" id="btn-record" title="Record (Space when armed)">&#9679; Rec</button>
+      <div id="bpm-display">120 BPM</div>
+      <div id="speed-display"></div>
+      <div id="time-display">0:00.0</div>
+      <div id="status-message"></div>
+    </div>
+
+    <!-- Main: sidebar + waveform canvas -->
+    <div id="main-area">
+      <div id="sidebar">
+        <!-- Track rows populated by JS -->
+      </div>
+      <div id="canvas-container">
+        <canvas id="timeline-canvas"></canvas>
+        <canvas id="waveform-canvas"></canvas>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div id="statusbar">
+      <kbd>Space</kbd> Play/Stop &nbsp;
+      <kbd>R</kbd> Arm &nbsp;
+      <kbd>M</kbd> Mute &nbsp;
+      <kbd>S</kbd> Solo &nbsp;
+      <kbd>C</kbd> Click &nbsp;
+      <kbd>+/-</kbd> BPM &nbsp;
+      <kbd>I</kbd> Import WAV
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

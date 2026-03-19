@@ -36,8 +36,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # recordings
 recordings/
 
-# native build toolchain (downloaded on demand)
+# native build toolchains (downloaded on demand)
 native/zig-toolchain/
+native/emsdk/
 
 # local test/debug scripts (contain user-specific paths)
 test-bpm.ts
