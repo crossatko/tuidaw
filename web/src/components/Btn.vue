@@ -34,9 +34,9 @@ const btnStyle = computed(() => {
 
 <template>
   <button
-    class="inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1 border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
+    class="inline-flex shrink-0 cursor-pointer touch-manipulation items-center justify-center gap-1 border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
     :class="{
-      'text-fg w-9 justify-center px-0 text-base': square,
+      'text-fg w-9 px-0 text-base': square,
       'px-3': !square,
       'text-surface border-(--btn-border) bg-(--btn-color)': !!variant,
       'bg-surface border-(--btn-outline) text-(--btn-outline)':
