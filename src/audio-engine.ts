@@ -116,6 +116,7 @@ const lib = dlopen(findLibrary(), {
   tuidaw_start_monitoring: { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_stop_monitoring: { returns: FFIType.void, args: [FFIType.i32] },
   tuidaw_is_monitoring: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_has_jack_monitoring: { returns: FFIType.i32, args: [] },
   tuidaw_get_backend_name: {
     returns: FFIType.i32,
     args: [FFIType.ptr, FFIType.i32]
@@ -489,10 +490,9 @@ export class AudioEngine {
   }
 
   // ── Input Monitoring ──────────────────────────────────────────────────
-  // Low-latency input passthrough: routes capture audio directly to the
-  // playback output via a SPSC ring buffer in the native engine.
-  // Latency is ~5.3ms (256 frames at 48kHz). Monitoring is independent
-  // of recording and transport — it works while stopped.
+  // Low-latency input passthrough using a full-duplex device. When JACK is
+  // available (via PipeWire), uses a dedicated JACK context for ~2-5ms
+  // round-trip latency. Falls back to PulseAudio otherwise.
 
   startMonitoring(trackId: string): boolean {
     const nid = getNativeId(trackId)
@@ -510,6 +510,10 @@ export class AudioEngine {
     const nid = trackIdMap.get(trackId)
     if (nid === undefined) return false
     return lib.symbols.tuidaw_is_monitoring(nid) !== 0
+  }
+
+  hasJackMonitoring(): boolean {
+    return lib.symbols.tuidaw_has_jack_monitoring() !== 0
   }
 
   getBackendName(): string {

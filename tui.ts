@@ -890,7 +890,10 @@ export default async function main() {
           const ok = audioEngine.startMonitoring(track.id)
           if (ok) {
             track.monitoring = true
-            ui.showStatusMessage(`Monitoring ON: ${track.name}`)
+            const monBackend = audioEngine.hasJackMonitoring()
+              ? 'JACK'
+              : audioEngine.getBackendName()
+            ui.showStatusMessage(`Monitoring ON: ${track.name} [${monBackend}]`)
           } else {
             ui.showStatusMessage(
               'Failed to start monitoring — check input device (F2)'

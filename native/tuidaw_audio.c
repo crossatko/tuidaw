@@ -89,6 +89,12 @@ typedef struct {
     ma_device     playback_device;
     int           playback_active;
 
+    // Low-latency JACK context for input monitoring.
+    // JACK via PipeWire gives ~2-5ms round-trip vs PulseAudio's ~40-50ms.
+    // Only used for monitoring duplex devices; falls back to main context if unavailable.
+    ma_context    jack_context;
+    int           jack_available;
+
     TrackState    tracks[MAX_TRACKS];
 
     _Atomic int   playing;               // transport running
@@ -625,6 +631,19 @@ EXPORT int tuidaw_init(void) {
         return -1;
     }
 
+    // Try to initialize a JACK context for low-latency monitoring.
+    // JACK via PipeWire gives ~2-5ms round-trip vs PulseAudio's ~40-50ms.
+    // If JACK is unavailable, monitoring falls back to the main context.
+    {
+        ma_backend jack_backends[] = { ma_backend_jack };
+        ma_context_config jackCfg = ma_context_config_init();
+        jackCfg.jack.pClientName = "tuidaw-monitor";
+        jackCfg.jack.tryStartServer = MA_FALSE;
+        if (ma_context_init(jack_backends, 1, &jackCfg, &g_engine.jack_context) == MA_SUCCESS) {
+            g_engine.jack_available = 1;
+        }
+    }
+
     // Enumerate devices
     ma_context_get_devices(&g_engine.context,
         &g_engine.playback_infos, &g_engine.playback_count,
@@ -705,6 +724,10 @@ EXPORT void tuidaw_deinit(void) {
     }
 
     ma_context_uninit(&g_engine.context);
+    if (g_engine.jack_available) {
+        ma_context_uninit(&g_engine.jack_context);
+        g_engine.jack_available = 0;
+    }
 }
 
 // ── Device Enumeration ──────────────────────────────────────────────────────
@@ -1184,10 +1207,13 @@ EXPORT int tuidaw_get_recording_length(int id) {
 }
 
 // ── Input Monitoring ────────────────────────────────────────────────────────
-// Zero-latency input passthrough using a full-duplex device. The duplex
+// Low-latency input passthrough using a full-duplex device. The duplex
 // device captures from the track's input and plays to the current output
 // device in a SINGLE callback — no ring buffer, no inter-thread hop.
-// Latency is just 1 period (~2.7ms at 128 frames/48kHz).
+//
+// When available, uses a dedicated JACK context (via PipeWire) for ~2-5ms
+// round-trip latency. JACK only supports default devices, so pDeviceID is
+// not set. Falls back to the main PulseAudio context if JACK is unavailable.
 
 // Start input monitoring on a track. Opens a full-duplex device that routes
 // capture audio directly to the output. Returns 0 on success, -1 on failure.
@@ -1205,23 +1231,54 @@ EXPORT int tuidaw_start_monitoring(int id) {
     config.sampleRate        = SAMPLE_RATE;
     config.dataCallback      = duplex_monitor_callback;
     config.pUserData         = tk;
-    config.periodSizeInFrames = 128;  // ~2.7ms
-    config.periods = 2;
+    config.noFixedSizedCallback = MA_TRUE;  // avoid extra buffering layer
 
-    // Set capture device (track's input device)
-    if (tk->rec_device_index >= 0 &&
-        (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
-        config.capture.pDeviceID = &g_engine.capture_infos[tk->rec_device_index].id;
+    // Choose context: prefer JACK for low latency, fallback to main context.
+    // JACK only supports default devices (no pDeviceID), so device selection
+    // is skipped when using JACK. For PulseAudio fallback, set device IDs.
+    ma_context* mon_ctx;
+    if (g_engine.jack_available) {
+        mon_ctx = &g_engine.jack_context;
+        // JACK controls buffer size — periodSizeInFrames is ignored.
+        // PipeWire JACK typically uses quantum 64-256 (~1.3-5.3ms).
+    } else {
+        mon_ctx = &g_engine.context;
+        config.periodSizeInFrames = 128;  // ~2.7ms (PulseAudio may override)
+        config.periods = 2;
+
+        // Set capture device (track's input device)
+        if (tk->rec_device_index >= 0 &&
+            (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+            config.capture.pDeviceID = &g_engine.capture_infos[tk->rec_device_index].id;
+        }
+
+        // Set playback device (same as main output)
+        if (g_engine.output_device_index >= 0 &&
+            (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
+            config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
+        }
     }
 
-    // Set playback device (same as main output)
-    if (g_engine.output_device_index >= 0 &&
-        (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
-        config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
-    }
-
-    if (ma_device_init(&g_engine.context, &config, &tk->mon_device) != MA_SUCCESS) {
-        return -1;
+    if (ma_device_init(mon_ctx, &config, &tk->mon_device) != MA_SUCCESS) {
+        // If JACK failed, try fallback to main context
+        if (mon_ctx == &g_engine.jack_context) {
+            mon_ctx = &g_engine.context;
+            config.periodSizeInFrames = 128;
+            config.periods = 2;
+            if (tk->rec_device_index >= 0 &&
+                (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+                config.capture.pDeviceID = &g_engine.capture_infos[tk->rec_device_index].id;
+            }
+            if (g_engine.output_device_index >= 0 &&
+                (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
+                config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
+            }
+            if (ma_device_init(mon_ctx, &config, &tk->mon_device) != MA_SUCCESS) {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
     }
 
     if (ma_device_start(&tk->mon_device) != MA_SUCCESS) {
@@ -1252,6 +1309,12 @@ EXPORT int tuidaw_is_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return 0;
     return atomic_load(&tk->monitoring);
+}
+
+// Check if JACK backend is available for monitoring.
+// Returns 1 if JACK context was successfully initialized, 0 otherwise.
+EXPORT int tuidaw_has_jack_monitoring(void) {
+    return g_engine.jack_available;
 }
 
 // ── Speed / WSOLA control ───────────────────────────────────────────────────
