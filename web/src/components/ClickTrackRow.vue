@@ -98,31 +98,29 @@ function resetClickPan() {
 
     <!-- Row 2: Volume + Pan sliders (side-by-side, half-width each) -->
     <div class="flex gap-2 overflow-hidden">
-      <div class="min-w-0 flex-1">
-        <MiniSlider
-          label="V"
-          :model-value="clickVolFrac"
-          :max="2"
-          :color="
-            state.clickEnabled ? 'var(--color-accent-cyan)' : 'var(--color-dim)'
-          "
-          :dimmed="!state.clickEnabled"
-          @update:model-value="setClickVolFrac"
-          @dblclick="resetClickVol"
-        />
-      </div>
-      <div class="min-w-0 flex-1">
-        <MiniSlider
-          label="P"
-          :model-value="clickPanFrac"
-          :color="
-            state.clickEnabled ? 'var(--color-accent-cyan)' : 'var(--color-dim)'
-          "
-          :dimmed="!state.clickEnabled"
-          @update:model-value="setClickPanFrac"
-          @dblclick="resetClickPan"
-        />
-      </div>
+      <MiniSlider
+        class="flex-1"
+        label="V"
+        :model-value="clickVolFrac"
+        :max="2"
+        :color="
+          state.clickEnabled ? 'var(--color-accent-cyan)' : 'var(--color-dim)'
+        "
+        :dimmed="!state.clickEnabled"
+        @update:model-value="setClickVolFrac"
+        @dblclick="resetClickVol"
+      />
+      <MiniSlider
+        class="flex-1"
+        label="P"
+        :model-value="clickPanFrac"
+        :color="
+          state.clickEnabled ? 'var(--color-accent-cyan)' : 'var(--color-dim)'
+        "
+        :dimmed="!state.clickEnabled"
+        @update:model-value="setClickPanFrac"
+        @dblclick="resetClickPan"
+      />
     </div>
   </div>
 </template>

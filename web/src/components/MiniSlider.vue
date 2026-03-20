@@ -37,8 +37,8 @@ function onInput(e: Event) {
 
 <template>
   <div
-    class="flex h-5 items-center gap-1"
-    :class="dimmed ? 'opacity-50' : ''"
+    class="flex h-5 min-w-0 items-center gap-1"
+    :class="{ 'opacity-50': dimmed }"
     @dblclick="emit('dblclick')"
   >
     <!-- Label -->
@@ -53,7 +53,7 @@ function onInput(e: Event) {
       max="1"
       step="0.005"
       :value="modelValue"
-      class="h-1.5 flex-1 cursor-pointer appearance-auto"
+      class="h-1.5 min-w-0 flex-1 cursor-pointer appearance-auto"
       :style="{ accentColor: color }"
       @input="onInput"
     />
