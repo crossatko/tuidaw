@@ -109,7 +109,10 @@ const durationText = computed(() => {
 <template>
   <div
     class="border-border relative flex h-(--track-h) cursor-pointer flex-col border-b"
-    :class="isSelected ? 'bg-surface-highlight' : 'bg-transparent'"
+    :class="{
+      'bg-surface-highlight': isSelected,
+      'bg-transparent': !isSelected
+    }"
     @click="emit('select', index)"
   >
     <!-- Selection indicator -->
@@ -140,11 +143,10 @@ const durationText = computed(() => {
       <!-- Mute -->
       <button
         class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
-        :class="
-          track.muted
-            ? 'bg-accent-orange text-surface'
-            : 'border-border bg-surface-highlight text-dim border'
-        "
+        :class="{
+          'bg-accent-orange text-surface': track.muted,
+          'border-border bg-surface-highlight text-dim border': !track.muted
+        }"
         @click.stop="toggleMute"
       >
         M
@@ -152,11 +154,10 @@ const durationText = computed(() => {
       <!-- Solo -->
       <button
         class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
-        :class="
-          track.solo
-            ? 'bg-accent-yellow text-surface'
-            : 'border-border bg-surface-highlight text-dim border'
-        "
+        :class="{
+          'bg-accent-yellow text-surface': track.solo,
+          'border-border bg-surface-highlight text-dim border': !track.solo
+        }"
         @click.stop="toggleSolo"
       >
         S
@@ -164,11 +165,10 @@ const durationText = computed(() => {
       <!-- Record -->
       <button
         class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
-        :class="
-          track.armed
-            ? 'bg-accent-red text-surface'
-            : 'border-border bg-surface-highlight text-dim border'
-        "
+        :class="{
+          'bg-accent-red text-surface': track.armed,
+          'border-border bg-surface-highlight text-dim border': !track.armed
+        }"
         @click.stop="toggleArm"
       >
         R
@@ -180,11 +180,10 @@ const durationText = computed(() => {
           <!-- Channel badge (tappable) -->
           <button
             class="bg-surface-highlight shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold"
-            :class="
-              track.armed
-                ? 'border-accent-red text-accent-red'
-                : 'border-accent-cyan text-accent-cyan'
-            "
+            :class="{
+              'border-accent-red text-accent-red': track.armed,
+              'border-accent-cyan text-accent-cyan': !track.armed
+            }"
             @click.stop="cycleChannel"
           >
             {{ getChannelLabel(track.inputChannel) }}

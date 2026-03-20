@@ -71,21 +71,21 @@ function onBackdropClick(e: MouseEvent) {
           v-for="dev in deviceList"
           :key="dev.deviceId ?? 'default'"
           class="flex w-full items-center rounded border px-3 py-2.5"
-          :class="
-            dev.deviceId === currentDeviceId
-              ? 'border-accent-cyan bg-surface-highlight'
-              : 'border-transparent bg-transparent'
-          "
+          :class="{
+            'border-accent-cyan bg-surface-highlight':
+              dev.deviceId === currentDeviceId,
+            'border-transparent bg-transparent':
+              dev.deviceId !== currentDeviceId
+          }"
           @click="selectDevice(dev.deviceId)"
         >
           <div class="flex flex-1 flex-col items-start">
             <span
               class="text-xs"
-              :class="
-                dev.deviceId === currentDeviceId
-                  ? 'text-accent-cyan font-bold'
-                  : 'text-fg'
-              "
+              :class="{
+                'text-accent-cyan font-bold': dev.deviceId === currentDeviceId,
+                'text-fg': dev.deviceId !== currentDeviceId
+              }"
             >
               {{ dev.label }}
             </span>
