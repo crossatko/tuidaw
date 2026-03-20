@@ -13,7 +13,8 @@ const state = useAppState()
     </span>
     <span v-else>
       Space Play &nbsp; P Loop &nbsp; R Arm &nbsp; M Mute &nbsp; S Solo &nbsp; C
-      Click &nbsp; +/- BPM &nbsp; I Import &nbsp; Dbl-click slider = reset
+      Click &nbsp; +/- BPM &nbsp; I Import &nbsp; E Export &nbsp; Dbl-click
+      slider = reset
     </span>
   </div>
 </template>

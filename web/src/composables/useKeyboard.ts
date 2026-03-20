@@ -30,7 +30,7 @@ import {
   syncLoopAfterSeek,
   nudgeTrack
 } from './useTransport'
-import { importWav } from './useProject'
+import { importWav, exportMixdown } from './useProject'
 
 export function useKeyboard(): void {
   function onKeyDown(e: KeyboardEvent) {
@@ -324,6 +324,11 @@ export function useKeyboard(): void {
       case 'i':
       case 'I':
         importWav()
+        break
+
+      case 'e':
+      case 'E':
+        exportMixdown()
         break
 
       default:
