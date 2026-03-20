@@ -1,5 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import { X, VolumeX, Volume2, CircleDot } from 'lucide-vue-next'
 import MiniSlider from './MiniSlider.vue'
 import type { WebTrack } from '../../audio-bridge'
 import {
@@ -134,7 +135,7 @@ const durationText = computed(() => {
         class="border-border bg-surface-highlight text-dim flex h-6 w-7 shrink-0 items-center justify-center rounded border text-xs font-bold active:opacity-70"
         @click.stop="emit('delete', index)"
       >
-        ×
+        <X :size="12" />
       </button>
     </div>
 
@@ -149,7 +150,7 @@ const durationText = computed(() => {
         }"
         @click.stop="toggleMute"
       >
-        M
+        <VolumeX :size="14" />
       </button>
       <!-- Solo -->
       <button
@@ -160,7 +161,7 @@ const durationText = computed(() => {
         }"
         @click.stop="toggleSolo"
       >
-        S
+        <Volume2 :size="14" />
       </button>
       <!-- Record -->
       <button
@@ -171,7 +172,7 @@ const durationText = computed(() => {
         }"
         @click.stop="toggleArm"
       >
-        R
+        <CircleDot :size="14" />
       </button>
 
       <!-- Input device info / duration (right of MSR) -->

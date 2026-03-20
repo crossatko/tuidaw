@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@opentui/core": "^0.1.88",
+    "lucide-vue-next": "^0.577.0",
     "vue": "3.6.0-beta.8"
   }
 }
