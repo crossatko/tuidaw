@@ -5,32 +5,36 @@
 import { reactive } from 'vue'
 import type { WebTrack, InputDeviceInfo } from '../../audio-bridge'
 
-// ── OLED Color Palette ──────────────────────────────────────────────────
+// ── Catppuccin Mocha + OLED Black Palette ───────────────────────────────
 export const C = {
   bg: '#000000',
-  bgHighlight: '#1a1a1a',
-  border: '#2a2a2a',
-  fg: '#e8e8e8',
-  fgDim: '#666666',
-  blue: '#5b9cf5',
-  cyan: '#56d4f0',
-  green: '#6cc644',
-  magenta: '#c678dd',
-  red: '#f05060',
-  orange: '#e89040',
-  yellow: '#e0c050',
-  purple: '#b080e0'
+  bgHighlight: '#313244', // Surface 0
+  border: '#45475a', // Surface 1
+  fg: '#cdd6f4', // Text
+  fgDim: '#a6adc8', // Subtext 0
+  blue: '#89b4fa',
+  cyan: '#89dceb', // Sky
+  green: '#a6e3a1',
+  magenta: '#cba6f7', // Mauve
+  red: '#f38ba8',
+  orange: '#fab387', // Peach
+  yellow: '#f9e2af',
+  purple: '#b4befe', // Lavender
+  teal: '#94e2d5',
+  pink: '#f5c2e7'
 } as const
 
 export const TRACK_COLORS = [
-  '#5b9cf5',
-  '#6cc644',
-  '#f05060',
-  '#e89040',
-  '#c678dd',
-  '#56d4f0',
-  '#e0c050',
-  '#4ec9a0'
+  '#89b4fa', // Blue
+  '#a6e3a1', // Green
+  '#f38ba8', // Red
+  '#fab387', // Peach
+  '#cba6f7', // Mauve
+  '#89dceb', // Sky
+  '#f9e2af', // Yellow
+  '#94e2d5', // Teal
+  '#f5c2e7', // Pink
+  '#b4befe' // Lavender
 ]
 
 // ── Layout Constants ────────────────────────────────────────────────────
@@ -43,7 +47,7 @@ export const TRACK_H = 120
 export const CLICK_ROW_H = TIMELINE_H // must match so sidebar aligns with waveform
 
 // Button sizing
-export const MSR_BTN_W = 32
+export const MSR_BTN_W = 28
 export const MSR_BTN_H = 28
 
 // Slider dimensions

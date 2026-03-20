@@ -112,7 +112,7 @@ const durationText = computed(() => {
   <div
     class="border-border relative flex h-(--track-h) cursor-pointer flex-col border-b"
     :class="{
-      'bg-surface-highlight': isSelected,
+      'bg-white/10': isSelected,
       'bg-transparent': !isSelected
     }"
     @click="emit('select', index)"
@@ -120,7 +120,8 @@ const durationText = computed(() => {
     <!-- Selection indicator -->
     <div
       v-if="isSelected"
-      class="bg-accent-blue absolute top-0 left-0 h-full w-[3px]"
+      class="absolute top-0 left-0 h-full w-[3px]"
+      :style="{ backgroundColor: track.color }"
     />
 
     <!-- Row 1: Color dot + Name + Delete button -->
@@ -133,7 +134,7 @@ const durationText = computed(() => {
         {{ track.name }}
       </span>
       <button
-        class="border-border bg-surface-highlight text-dim flex h-6 w-7 shrink-0 items-center justify-center rounded border text-xs font-bold active:opacity-70"
+        class="bg-surface text-dim flex h-6 w-7 shrink-0 items-center justify-center border border-white/20 text-xs font-bold active:opacity-70"
         @click.stop="emit('delete', index)"
       >
         <Icon :d="icons.x" :size="12" />
@@ -144,36 +145,36 @@ const durationText = computed(() => {
     <div class="flex items-center gap-1.5 px-2 pt-1">
       <!-- Mute -->
       <button
-        class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
+        class="flex h-7 w-7 items-center justify-center border text-[11px] font-bold active:opacity-70"
         :class="{
-          'bg-accent-orange text-surface': track.muted,
-          'border-border bg-surface-highlight text-dim border': !track.muted
+          'bg-accent-orange text-surface border-accent-orange/50': track.muted,
+          'bg-surface text-dim border-white/20': !track.muted
         }"
         @click.stop="toggleMute"
       >
-        <Icon :d="icons.volumeX" :size="14" />
+        M
       </button>
       <!-- Solo -->
       <button
-        class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
+        class="flex h-7 w-7 items-center justify-center border text-[11px] font-bold active:opacity-70"
         :class="{
-          'bg-accent-yellow text-surface': track.solo,
-          'border-border bg-surface-highlight text-dim border': !track.solo
+          'bg-accent-yellow text-surface border-accent-yellow/50': track.solo,
+          'bg-surface text-dim border-white/20': !track.solo
         }"
         @click.stop="toggleSolo"
       >
-        <Icon :d="icons.volume2" :size="14" />
+        S
       </button>
       <!-- Record -->
       <button
-        class="flex h-7 w-8 items-center justify-center rounded text-[11px] font-bold active:opacity-70"
+        class="flex h-7 w-7 items-center justify-center border text-[11px] font-bold active:opacity-70"
         :class="{
-          'bg-accent-red text-surface': track.armed,
-          'border-border bg-surface-highlight text-dim border': !track.armed
+          'bg-accent-red text-surface border-accent-red/50': track.armed,
+          'bg-surface text-dim border-white/20': !track.armed
         }"
         @click.stop="toggleArm"
       >
-        <Icon :d="icons.circleDot" :size="14" />
+        R
       </button>
 
       <!-- Input device info / duration (right of MSR) -->
@@ -181,7 +182,7 @@ const durationText = computed(() => {
         <template v-if="track.armed || isSelected">
           <!-- Channel badge (tappable) -->
           <button
-            class="bg-surface-highlight shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold"
+            class="bg-surface shrink-0 border px-1.5 py-0.5 text-[10px] font-bold"
             :class="{
               'border-accent-red text-accent-red': track.armed,
               'border-accent-cyan text-accent-cyan': !track.armed

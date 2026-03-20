@@ -1,20 +1,101 @@
 @import 'tailwindcss';
 
+/* ── IBM Plex Mono (self-hosted for offline PWA) ─────────────────────── */
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-400-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-700-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-700-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-400i-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-400i-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
 @theme {
-  /* OLED color palette */
+  /* Catppuccin Mocha + OLED black background */
   --color-surface: #000000;
-  --color-surface-highlight: #1a1a1a;
-  --color-border: #2a2a2a;
-  --color-fg: #e8e8e8;
-  --color-dim: #666666;
-  --color-accent-blue: #5b9cf5;
-  --color-accent-cyan: #56d4f0;
-  --color-accent-green: #6cc644;
-  --color-accent-magenta: #c678dd;
-  --color-accent-red: #f05060;
-  --color-accent-orange: #e89040;
-  --color-accent-yellow: #e0c050;
-  --color-accent-purple: #b080e0;
+  --color-surface-highlight: #313244; /* Catppuccin Surface 0 */
+  --color-border: #45475a; /* Catppuccin Surface 1 */
+  --color-fg: #cdd6f4; /* Catppuccin Text */
+  --color-dim: #a6adc8; /* Catppuccin Subtext 0 */
+  --color-accent-blue: #89b4fa; /* Catppuccin Blue */
+  --color-accent-cyan: #89dceb; /* Catppuccin Sky */
+  --color-accent-green: #a6e3a1; /* Catppuccin Green */
+  --color-accent-magenta: #cba6f7; /* Catppuccin Mauve */
+  --color-accent-red: #f38ba8; /* Catppuccin Red */
+  --color-accent-orange: #fab387; /* Catppuccin Peach */
+  --color-accent-yellow: #f9e2af; /* Catppuccin Yellow */
+  --color-accent-purple: #b4befe; /* Catppuccin Lavender */
+  --color-accent-teal: #94e2d5; /* Catppuccin Teal */
+  --color-accent-pink: #f5c2e7; /* Catppuccin Pink */
+
+  /* Typography */
+  --font-mono:
+    'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
 
   /* Layout */
   --topbar-h: 56px;

@@ -63,7 +63,7 @@ function resetClickPan() {
   <div
     class="border-border relative flex h-(--click-row-h) cursor-pointer flex-col justify-center border-b px-2"
     :class="{
-      'bg-surface-highlight': isSelected,
+      'bg-white/10': isSelected,
       'bg-transparent': !isSelected
     }"
     @click="select"

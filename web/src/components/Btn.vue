@@ -24,6 +24,7 @@ const btnStyle = computed(() => {
   if (props.variant) {
     const c = VARIANT_COLORS[props.variant]
     s['--btn-color'] = c
+    s['--btn-border'] = `color-mix(in srgb, ${c} 50%, black)`
   } else if (props.outline) {
     s['--btn-outline'] = VARIANT_COLORS[props.outline]
   }
@@ -33,13 +34,14 @@ const btnStyle = computed(() => {
 
 <template>
   <button
-    class="border-border inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1 rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
+    class="inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1 border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
     :class="{
-      'text-fg w-9 px-0 text-base': square,
+      'text-fg w-9 justify-center px-0 text-base': square,
       'px-3': !square,
-      'text-surface border-(--btn-color) bg-(--btn-color)': !!variant,
-      'border-(--btn-outline) text-(--btn-outline)': !!outline && !variant,
-      'bg-surface-highlight text-dim': !variant && !outline
+      'text-surface border-(--btn-border) bg-(--btn-color)': !!variant,
+      'bg-surface border-(--btn-outline) text-(--btn-outline)':
+        !!outline && !variant,
+      'bg-surface text-dim border-white/20': !variant && !outline
     }"
     :style="btnStyle"
   >

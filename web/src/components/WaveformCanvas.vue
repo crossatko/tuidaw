@@ -159,7 +159,7 @@ function drawTimeline(snap: RenderSnapshot) {
 
     if (isBar) {
       ctx.fillStyle = C.fgDim
-      ctx.font = '10px monospace'
+      ctx.font = "10px 'IBM Plex Mono', monospace"
       ctx.fillText(`${Math.floor(beat / 4) + 1}`, x + 3, 11)
     }
   }
@@ -390,13 +390,13 @@ function drawWaveformArea(snap: RenderSnapshot) {
       ctx.globalAlpha = 1
     } else {
       ctx.fillStyle = C.fgDim
-      ctx.font = '11px monospace'
+      ctx.font = "11px 'IBM Plex Mono', monospace"
       ctx.fillText('(empty)', 8, ty + TRACK_H / 2 + 4)
     }
 
     // Selected track highlight
     if (i === selectedIdx) {
-      ctx.strokeStyle = C.blue
+      ctx.strokeStyle = track.color
       ctx.lineWidth = 2
       ctx.strokeRect(0, ty + 1, w - 1, TRACK_H - 2)
 
@@ -414,7 +414,7 @@ function drawWaveformArea(snap: RenderSnapshot) {
         ctx.lineWidth = 1
         ctx.strokeRect(leftBtnX, btnY, NUDGE_BTN_W, NUDGE_BTN_H)
         ctx.fillStyle = C.fg
-        ctx.font = 'bold 16px monospace'
+        ctx.font = "bold 16px 'IBM Plex Mono', monospace"
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(

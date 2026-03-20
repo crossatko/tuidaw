@@ -131,7 +131,7 @@ function onInputClick() {
     style="touch-action: none"
   >
     <!-- Play -->
-    <Btn :variant="playVariant" @click="onPlayClick">
+    <Btn class="min-w-[76px]" :variant="playVariant" @click="onPlayClick">
       <Icon v-if="isRecording" :d="icons.circle" :size="14" />
       <Icon v-else-if="isPlaying" :d="icons.square" :size="14" />
       <Icon v-else :d="icons.play" :size="14" />
@@ -140,6 +140,7 @@ function onInputClick() {
 
     <!-- Loop -->
     <Btn
+      class="min-w-[76px]"
       :variant="hasLoop ? 'purple' : undefined"
       :outline="settingLoop && !hasLoop ? 'purple' : undefined"
       @click="toggleLoop"
