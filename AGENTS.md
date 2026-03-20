@@ -7,7 +7,7 @@ Full-featured DAW with two UIs sharing the same native miniaudio audio engine:
 1. **TUI** (`bun run start`): OpenTUI terminal UI with braille waveforms, keyboard/mouse
 2. **Web** (`bun run start --host`): Vue 3.6 Vapor + Tailwind 4 + Canvas 2D on port 3666
 
-Features: sidebar with tracks, waveform display, playhead, BPM/click, recording, loop region, project save/open, WAV import (with BPM detection + beat-phase alignment), export mixdown, WSOLA time-stretch, per-track input device selection.
+Features: sidebar with tracks, waveform display, playhead, BPM/click, recording, loop region, project save/open, WAV import (with BPM detection + beat-phase alignment), export mixdown, WSOLA time-stretch, per-track input device selection, low-latency input monitoring.
 
 ## Workflow
 
@@ -49,14 +49,14 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored).
+C shared library (`native/tuidaw_audio.c`, ~1299 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored).
 
 ### API surface (all `EXPORT`ed):
 
 | Category  | Functions                                                                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                            |
-| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`                                                                |
+| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                     |
 | Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                              |
 | Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                         |
 | Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                          |
@@ -64,6 +64,7 @@ C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Buil
 | Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                       |
 | Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                          |
 | Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                       |
+| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)` — full-duplex passthrough                                                        |
 | Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                   |
 
 ### Key behaviors
@@ -85,6 +86,7 @@ C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Buil
 | SPACE      | Play/stop (record if armed)                   | Yes (stop)        |
 | R          | Arm/disarm (punch in/out during transport)    | Yes               |
 | M/S        | Mute/solo toggle                              | Yes               |
+| O          | Toggle input monitoring (full-duplex)         | Yes               |
 | C          | Click toggle                                  | Yes               |
 | +/-        | BPM change (WSOLA speed if BPM unlocked)      | Yes               |
 | B          | Toggle BPM lock                               | -                 |
@@ -138,6 +140,9 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Vue Vapor**: root component must be VDOM. VDOM components crash inside Vapor (no `lucide-vue-next`).
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
+- **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop. Monitoring auto-pauses during recording to avoid dual capture device conflicts on same input.
+- **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
+- **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
 
 ## File Structure
 
@@ -149,7 +154,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1151 lines, 32+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~1299 lines, 32+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)
@@ -179,7 +184,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 │   │   └── components/   # TopBar, SideBar, TrackRow, ClickTrackRow, WaveformCanvas,
 │   │                     # Btn, MiniSlider, StatusBar, InputOverlay, Icon
 │   └── public/           # Static: _headers, sw.js, manifest.json, icons, fonts/, wasm/
-├── tests/                # click-precision, loop-wsola, loop-playhead, playhead-sync (26 tests)
+├── tests/                # click-precision, loop-wsola, loop-playhead, playhead-sync (30 tests)
 └── recordings/           # Auto-created for saved WAVs
 ```
 
