@@ -1,6 +1,6 @@
 // tuidaw Service Worker — offline PWA support
 // Cache version: bump this to force update on all clients
-const CACHE_VERSION = 'v1'
+const CACHE_VERSION = 'v2'
 const CACHE_NAME = `tuidaw-${CACHE_VERSION}`
 
 // Assets to pre-cache on install
@@ -12,7 +12,13 @@ const PRECACHE_URLS = [
   '/wasm/tuidaw_audio.wasm',
   '/manifest.json',
   '/icon-192.svg',
-  '/icon-512.svg'
+  '/icon-512.svg',
+  '/fonts/ibm-plex-mono-400-latin.woff2',
+  '/fonts/ibm-plex-mono-400-latin-ext.woff2',
+  '/fonts/ibm-plex-mono-700-latin.woff2',
+  '/fonts/ibm-plex-mono-700-latin-ext.woff2',
+  '/fonts/ibm-plex-mono-400i-latin.woff2',
+  '/fonts/ibm-plex-mono-400i-latin-ext.woff2'
 ]
 
 // Install: pre-cache all app assets

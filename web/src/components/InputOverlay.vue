@@ -57,7 +57,7 @@ function onBackdropClick(e: MouseEvent) {
     @keydown.escape="emit('close')"
   >
     <div
-      class="border-border w-full max-w-[400px] overflow-hidden rounded-lg border bg-[#111111]"
+      class="border-border w-full max-w-[400px] overflow-hidden border bg-[#181825]"
     >
       <!-- Header -->
       <div class="flex items-center gap-2 px-4 py-3">
@@ -72,7 +72,7 @@ function onBackdropClick(e: MouseEvent) {
         <button
           v-for="dev in deviceList"
           :key="dev.deviceId ?? 'default'"
-          class="flex w-full items-center rounded border px-3 py-2.5"
+          class="flex w-full items-center border px-3 py-2.5"
           :class="{
             'border-accent-cyan bg-surface-highlight':
               dev.deviceId === currentDeviceId,

@@ -28,7 +28,7 @@
         style.position = 'fixed'
         style.inset = '0'
         style.background = 'rgba(0,0,0,0.95)'
-        style.color = '#f05060'
+        style.color = '#f38ba8'
         style.font = '13px/1.5 monospace'
         style.padding = '16px'
         style.overflowY = 'auto'
@@ -42,9 +42,9 @@
           if (!hidden || !isInfo) style.display = 'block'
           var div = document.createElement('div')
           div.style.cssText =
-            'margin-bottom:8px;padding:6px 8px;background:#1a1a1a;border-left:3px solid ' +
-            (isInfo ? '#56d4f0' : '#f05060')
-          if (isInfo) div.style.color = '#56d4f0'
+            'margin-bottom:8px;padding:6px 8px;background:#313244;border-left:3px solid ' +
+            (isInfo ? '#89dceb' : '#f38ba8')
+          if (isInfo) div.style.color = '#89dceb'
           div.textContent = new Date().toLocaleTimeString() + ' ' + msg
           log.appendChild(div)
         }
