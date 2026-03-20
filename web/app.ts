@@ -1469,6 +1469,11 @@ async function stopTransport() {
     }
     trackRecordStartPositions.clear()
     trackRecordedSamples.clear()
+
+    // Disarm all armed tracks after recording stops
+    for (const track of state.tracks) {
+      if (track.armed) track.armed = false
+    }
   }
 
   audio.stop()
