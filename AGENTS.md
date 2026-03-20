@@ -319,6 +319,8 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
     - **Components**: `Btn.vue` (generic button with variant/outline), `MiniSlider.vue` (native range with accent-color), `TopBar.vue`, `StatusBar.vue`, `ClickTrackRow.vue`, `TrackRow.vue`, `SideBar.vue`, `InputOverlay.vue`, `WaveformCanvas.vue` (canvas for timeline + waveform + playhead + loop + nudge buttons)
     - **Theme**: OLED colors defined as Tailwind `@theme` variables in `main.css`. Colors available as utilities: `bg-surface`, `text-fg`, `text-accent-cyan`, etc.
     - **Type checking**: `bun run check` runs prettier + tsc + vue-tsc (root tsconfig excludes `web/src/**`, vue-tsc uses `web/tsconfig.json` with DOM libs)
+    - **Mic permissions fix**: Removed eager `audio.requestMicAccess()` from `ensureAudioReady()` — mic access is now deferred to input overlay open or recording start. Eliminates unwanted browser mic permission prompt on first play.
+    - **Canvas render perf optimization**: `RenderSnapshot` pattern — all reactive state read once per frame into a plain object, eliminating Vue Proxy `get` trap overhead in hot drawing loops (waveform inner loop reads millions of samples per frame). Also: render coalescing via `scheduleRender()` with RAF dirty-flag pattern for watch-driven re-renders; off-screen track culling skips tracks fully outside the visible area.
 
 ## File structure
 

@@ -31,6 +31,26 @@ let dpr = 1
 let W = 0 // logical width of the canvas
 let H = 0 // logical height of the canvas
 
+// ── Render coalescing ───────────────────────────────────────────────────
+// Multiple sources can request renders in the same frame (transport polling,
+// reactive watch, pointer events). We coalesce them into a single draw call
+// using a dirty flag + RAF scheduling.
+let renderDirty = false
+let renderRafId: number | null = null
+
+function scheduleRender(): void {
+  renderDirty = true
+  if (renderRafId === null) {
+    renderRafId = requestAnimationFrame(() => {
+      renderRafId = null
+      if (renderDirty) {
+        renderDirty = false
+        render()
+      }
+    })
+  }
+}
+
 // ── Drag state ──────────────────────────────────────────────────────────
 interface DragState {
   type: 'timeline' | 'waveform-scroll'
@@ -65,14 +85,46 @@ function resize() {
 }
 
 // ── Drawing ─────────────────────────────────────────────────────────────
-function render() {
-  if (!ctx || W === 0 || H === 0) return
-  ctx.clearRect(0, 0, W, H)
-  drawTimeline()
-  drawWaveformArea()
+
+// Snapshot of reactive state read once per frame to avoid Proxy overhead
+// in hot drawing loops (each state.xxx access goes through Vue's Proxy get
+// trap — fine for occasional reads, but ~millions of times per frame in the
+// waveform inner loop is measurably expensive).
+interface RenderSnapshot {
+  scrollOffset: number
+  playheadPosition: number
+  originalBpm: number
+  loopStart: number | null
+  loopEnd: number | null
+  selectedTrackIndex: number
+  transportState: string
+  trackScrollY: number
+  trackCount: number
 }
 
-function drawTimeline() {
+function takeSnapshot(): RenderSnapshot {
+  return {
+    scrollOffset: state.scrollOffset,
+    playheadPosition: state.playheadPosition,
+    originalBpm: state.originalBpm,
+    loopStart: state.loopStart,
+    loopEnd: state.loopEnd,
+    selectedTrackIndex: state.selectedTrackIndex,
+    transportState: state.transportState,
+    trackScrollY: state.trackScrollY,
+    trackCount: state.tracks.length
+  }
+}
+
+function render() {
+  if (!ctx || W === 0 || H === 0) return
+  const snap = takeSnapshot()
+  ctx.clearRect(0, 0, W, H)
+  drawTimeline(snap)
+  drawWaveformArea(snap)
+}
+
+function drawTimeline(snap: RenderSnapshot) {
   if (!ctx) return
   const w = W
   const h = TIMELINE_H
@@ -84,16 +136,17 @@ function drawTimeline() {
   ctx.fillStyle = C.border
   ctx.fillRect(0, h - 1, w, 1)
 
-  const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+  const samplesPerBeat = Math.round((60 / snap.originalBpm) * SAMPLE_RATE)
   const samplesPerCol = getSamplesPerCol()
+  const scrollOff = snap.scrollOffset
 
-  const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
-  const endSample = state.scrollOffset + w * samplesPerCol
+  const startBeat = Math.floor(scrollOff / samplesPerBeat)
+  const endSample = scrollOff + w * samplesPerCol
   const endBeat = Math.ceil(endSample / samplesPerBeat)
 
   for (let beat = startBeat; beat <= endBeat; beat++) {
     const samplePos = beat * samplesPerBeat
-    const x = (samplePos - state.scrollOffset) / samplesPerCol
+    const x = (samplePos - scrollOff) / samplesPerCol
     if (x < 0 || x >= w) continue
 
     const isBar = beat % 4 === 0
@@ -112,11 +165,10 @@ function drawTimeline() {
   }
 
   // Loop region
-  drawLoopRegionOnTimeline(w, h, samplesPerCol)
+  drawLoopRegionOnTimeline(snap, w, h, samplesPerCol)
 
   // Playhead
-  const playheadX =
-    (state.playheadPosition - state.scrollOffset) / samplesPerCol
+  const playheadX = (snap.playheadPosition - scrollOff) / samplesPerCol
   if (playheadX >= 0 && playheadX <= w) {
     ctx.strokeStyle = C.green
     ctx.lineWidth = 2
@@ -127,12 +179,18 @@ function drawTimeline() {
   }
 }
 
-function drawLoopRegionOnTimeline(w: number, h: number, samplesPerCol: number) {
+function drawLoopRegionOnTimeline(
+  snap: RenderSnapshot,
+  w: number,
+  h: number,
+  samplesPerCol: number
+) {
   if (!ctx) return
+  const scrollOff = snap.scrollOffset
 
-  if (state.loopStart !== null && state.loopEnd !== null) {
-    const lx1 = (state.loopStart - state.scrollOffset) / samplesPerCol
-    const lx2 = (state.loopEnd - state.scrollOffset) / samplesPerCol
+  if (snap.loopStart !== null && snap.loopEnd !== null) {
+    const lx1 = (snap.loopStart - scrollOff) / samplesPerCol
+    const lx2 = (snap.loopEnd - scrollOff) / samplesPerCol
     ctx.fillStyle = 'rgba(176, 128, 224, 0.25)'
     const clampX1 = Math.max(0, lx1)
     const clampX2 = Math.min(w, lx2)
@@ -174,8 +232,8 @@ function drawLoopRegionOnTimeline(w: number, h: number, samplesPerCol: number) {
   }
 
   // Loop start indicator (dashed, when setting)
-  if (state.loopStart !== null && state.loopEnd === null) {
-    const lx = (state.loopStart - state.scrollOffset) / samplesPerCol
+  if (snap.loopStart !== null && snap.loopEnd === null) {
+    const lx = (snap.loopStart - scrollOff) / samplesPerCol
     if (lx >= 0 && lx <= w) {
       ctx.strokeStyle = C.purple
       ctx.lineWidth = 2
@@ -196,29 +254,30 @@ function drawLoopRegionOnTimeline(w: number, h: number, samplesPerCol: number) {
   }
 }
 
-function drawWaveformArea() {
+function drawWaveformArea(snap: RenderSnapshot) {
   if (!ctx) return
   const w = W
   const y0 = TIMELINE_H
   const areaH = H - TIMELINE_H
+  const scrollOff = snap.scrollOffset
 
   ctx.fillStyle = C.bg
   ctx.fillRect(0, y0, w, areaH)
 
-  if (state.tracks.length === 0) return
+  if (snap.trackCount === 0) return
 
   const samplesPerCol = getSamplesPerCol()
-  const samplesPerBeat = Math.round((60 / state.originalBpm) * SAMPLE_RATE)
+  const samplesPerBeat = Math.round((60 / snap.originalBpm) * SAMPLE_RATE)
   const gridH = areaH
 
   // Beat grid
-  const startBeat = Math.floor(state.scrollOffset / samplesPerBeat)
-  const endSample = state.scrollOffset + w * samplesPerCol
+  const startBeat = Math.floor(scrollOff / samplesPerBeat)
+  const endSample = scrollOff + w * samplesPerCol
   const endBeat = Math.ceil(endSample / samplesPerBeat)
 
   for (let beat = startBeat; beat <= endBeat; beat++) {
     const samplePos = beat * samplesPerBeat
-    const x = (samplePos - state.scrollOffset) / samplesPerCol
+    const x = (samplePos - scrollOff) / samplesPerCol
     if (x < 0 || x >= w) continue
 
     const isBar = beat % 4 === 0
@@ -231,9 +290,9 @@ function drawWaveformArea() {
   }
 
   // Loop region in waveform area
-  if (state.loopStart !== null && state.loopEnd !== null) {
-    const lx1 = (state.loopStart - state.scrollOffset) / samplesPerCol
-    const lx2 = (state.loopEnd - state.scrollOffset) / samplesPerCol
+  if (snap.loopStart !== null && snap.loopEnd !== null) {
+    const lx1 = (snap.loopStart - scrollOff) / samplesPerCol
+    const lx2 = (snap.loopEnd - scrollOff) / samplesPerCol
     ctx.fillStyle = 'rgba(176, 128, 224, 0.08)'
     const clampX1 = Math.max(0, lx1)
     const clampX2 = Math.min(w, lx2)
@@ -258,8 +317,8 @@ function drawWaveformArea() {
   }
 
   // Loop start indicator (dashed)
-  if (state.loopStart !== null && state.loopEnd === null) {
-    const lx = (state.loopStart - state.scrollOffset) / samplesPerCol
+  if (snap.loopStart !== null && snap.loopEnd === null) {
+    const lx = (snap.loopStart - scrollOff) / samplesPerCol
     if (lx >= 0 && lx <= w) {
       ctx.strokeStyle = C.purple
       ctx.lineWidth = 1.5
@@ -278,10 +337,17 @@ function drawWaveformArea() {
   ctx.rect(0, y0, w, areaH)
   ctx.clip()
 
-  for (let i = 0; i < state.tracks.length; i++) {
+  const scrollY = snap.trackScrollY
+  const selectedIdx = snap.selectedTrackIndex
+  const isStopped = snap.transportState === 'stopped'
+
+  for (let i = 0; i < snap.trackCount; i++) {
     const track = state.tracks[i]
-    const ty = y0 + i * TRACK_H - state.trackScrollY
+    const ty = y0 + i * TRACK_H - scrollY
     const waveH = TRACK_H - 4
+
+    // Skip tracks fully outside the visible area
+    if (ty + TRACK_H < y0 || ty > y0 + areaH) continue
 
     // Track separator
     if (i > 0) {
@@ -294,29 +360,30 @@ function drawWaveformArea() {
     }
 
     // Waveform
-    if (track.samples && track.samples.length > 0) {
+    const samples = track.samples
+    if (samples && samples.length > 0) {
       const color = track.muted ? C.fgDim : track.color
+      const volume = track.volume
       ctx.fillStyle = color
       ctx.globalAlpha = track.muted ? 0.3 : 0.7
 
+      const centerY = ty + 2 + waveH / 2
+
       for (let col = 0; col < w; col++) {
-        const startSample = Math.floor(state.scrollOffset + col * samplesPerCol)
-        const endSampleIdx = Math.floor(
-          state.scrollOffset + (col + 1) * samplesPerCol
-        )
-        if (startSample >= track.samples.length) break
+        const startSample = Math.floor(scrollOff + col * samplesPerCol)
+        if (startSample >= samples.length) break
+        const endSampleIdx = Math.floor(scrollOff + (col + 1) * samplesPerCol)
         if (endSampleIdx < 0) continue
 
         let peak = 0
         const s = Math.max(0, startSample)
-        const e = Math.min(track.samples.length, endSampleIdx)
+        const e = Math.min(samples.length, endSampleIdx)
         for (let j = s; j < e; j++) {
-          const v = Math.abs(track.samples[j])
+          const v = Math.abs(samples[j])
           if (v > peak) peak = v
         }
 
-        const barH = peak * waveH * track.volume
-        const centerY = ty + 2 + waveH / 2
+        const barH = peak * waveH * volume
         ctx.fillRect(col, centerY - barH / 2, 1, Math.max(1, barH))
       }
 
@@ -328,17 +395,13 @@ function drawWaveformArea() {
     }
 
     // Selected track highlight
-    if (i === state.selectedTrackIndex) {
+    if (i === selectedIdx) {
       ctx.strokeStyle = C.blue
       ctx.lineWidth = 2
       ctx.strokeRect(0, ty + 1, w - 1, TRACK_H - 2)
 
       // Nudge buttons (< >) on right side of selected track
-      if (
-        track.samples &&
-        track.samples.length > 0 &&
-        state.transportState === 'stopped'
-      ) {
+      if (samples && samples.length > 0 && isStopped) {
         const btnY = ty + Math.round(TRACK_H / 2 - NUDGE_BTN_H / 2)
         const rightEdge = w - NUDGE_BTN_PAD
         const rightBtnX = rightEdge - NUDGE_BTN_W
@@ -382,8 +445,7 @@ function drawWaveformArea() {
   ctx.restore()
 
   // Playhead
-  const playheadX =
-    (state.playheadPosition - state.scrollOffset) / samplesPerCol
+  const playheadX = (snap.playheadPosition - scrollOff) / samplesPerCol
   if (playheadX >= 0 && playheadX <= w) {
     ctx.strokeStyle = C.green
     ctx.lineWidth = 1.5
@@ -601,6 +663,12 @@ onMounted(() => {
 onUnmounted(() => {
   setRenderCallback(() => {})
 
+  // Cancel any pending coalesced render
+  if (renderRafId !== null) {
+    cancelAnimationFrame(renderRafId)
+    renderRafId = null
+  }
+
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -625,7 +693,7 @@ watch(
     state.originalBpm,
     state.trackScrollY
   ],
-  () => render()
+  () => scheduleRender()
 )
 </script>
 
