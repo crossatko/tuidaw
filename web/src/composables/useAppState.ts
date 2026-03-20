@@ -196,6 +196,30 @@ export function showStatus(msg: string): void {
 }
 
 // ── Track Scroll ────────────────────────────────────────────────────────
+// The sidebar's native scroll is the source of truth — its @scroll handler
+// writes state.trackScrollY so the canvas can read it. When code needs to
+// scroll programmatically (keyboard nav, project open), it calls
+// scrollTrackList(y) which invokes the sidebar's registered scrollTo callback.
+
+let _scrollTrackListFn: ((y: number) => void) | null = null
+
+/** Called by SideBar.vue on mount to register its scrollTo callback */
+export function registerTrackListScroller(fn: (y: number) => void): void {
+  _scrollTrackListFn = fn
+}
+
+/** Called by SideBar.vue on unmount */
+export function unregisterTrackListScroller(): void {
+  _scrollTrackListFn = null
+}
+
+/** Programmatically scroll the sidebar track list to a given y offset */
+function scrollTrackList(y: number): void {
+  const s = useAppState()
+  s.trackScrollY = y
+  if (_scrollTrackListFn) _scrollTrackListFn(y)
+}
+
 /** Compute the maximum trackScrollY value (0 if all tracks fit on screen) */
 export function getMaxTrackScroll(): number {
   const s = useAppState()
@@ -206,8 +230,11 @@ export function getMaxTrackScroll(): number {
 
 /** Clamp trackScrollY to valid range */
 export function clampTrackScroll(): void {
-  const s = useAppState()
-  s.trackScrollY = Math.max(0, Math.min(getMaxTrackScroll(), s.trackScrollY))
+  const clamped = Math.max(
+    0,
+    Math.min(getMaxTrackScroll(), useAppState().trackScrollY)
+  )
+  scrollTrackList(clamped)
 }
 
 /** Ensure the selected track (by index) is visible in the scrolled sidebar */
@@ -217,10 +244,12 @@ export function ensureTrackVisible(trackIdx: number): void {
   const trackTop = trackIdx * TRACK_H
   const trackBottom = trackTop + TRACK_H
   const availableH = window.innerHeight - TOPBAR_H - STATUSBAR_H - CLICK_ROW_H
-  if (trackTop < s.trackScrollY) {
-    s.trackScrollY = trackTop
-  } else if (trackBottom > s.trackScrollY + availableH) {
-    s.trackScrollY = trackBottom - availableH
+  let newY = s.trackScrollY
+  if (trackTop < newY) {
+    newY = trackTop
+  } else if (trackBottom > newY + availableH) {
+    newY = trackBottom - availableH
   }
-  clampTrackScroll()
+  newY = Math.max(0, Math.min(getMaxTrackScroll(), newY))
+  scrollTrackList(newY)
 }

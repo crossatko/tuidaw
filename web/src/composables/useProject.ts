@@ -12,6 +12,7 @@ import {
   showStatus,
   createTrack,
   setNextTrackNum,
+  clampTrackScroll,
   SAMPLE_RATE,
   TRACK_COLORS
 } from './useAppState'
@@ -449,6 +450,7 @@ export function openProject(): void {
       )
       state.freeScroll = false
       state.trackScrollY = 0
+      clampTrackScroll()
 
       // Update nextTrackNum
       let maxNum = 0
