@@ -1,5 +1,7 @@
 <script setup vapor lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   /** Active variant color — when set, button gets filled background */
   variant?: 'green' | 'red' | 'purple' | 'cyan' | 'orange' | 'yellow'
   /** Outline-only active state (e.g. loop "setting" state) */
@@ -7,28 +9,39 @@ defineProps<{
   /** Compact square button (BPM +/-) */
   square?: boolean
 }>()
+
+const VARIANT_COLORS: Record<string, string> = {
+  green: 'var(--color-accent-green)',
+  red: 'var(--color-accent-red)',
+  purple: 'var(--color-accent-purple)',
+  cyan: 'var(--color-accent-cyan)',
+  orange: 'var(--color-accent-orange)',
+  yellow: 'var(--color-accent-yellow)'
+}
+
+const btnStyle = computed(() => {
+  const s: Record<string, string> = { height: '36px' }
+  if (props.variant) {
+    const c = VARIANT_COLORS[props.variant]
+    s['--btn-color'] = c
+  } else if (props.outline) {
+    s['--btn-outline'] = VARIANT_COLORS[props.outline]
+  }
+  return s
+})
 </script>
 
 <template>
   <button
     class="border-border shrink-0 cursor-pointer touch-manipulation rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
-    :class="[
-      square ? 'text-fg w-9 px-0 text-base' : 'px-3',
-      variant === 'green' && 'border-accent-green bg-accent-green text-surface',
-      variant === 'red' && 'border-accent-red bg-accent-red text-surface',
-      variant === 'purple' &&
-        'border-accent-purple bg-accent-purple text-surface',
-      variant === 'cyan' && 'border-accent-cyan bg-accent-cyan text-surface',
-      variant === 'orange' &&
-        'border-accent-orange bg-accent-orange text-surface',
-      variant === 'yellow' &&
-        'border-accent-yellow bg-accent-yellow text-surface',
-      outline === 'purple' &&
-        !variant &&
-        'border-accent-purple text-accent-purple',
-      !variant && !outline && 'bg-surface-highlight text-dim'
-    ]"
-    style="height: 36px"
+    :class="{
+      'text-fg w-9 px-0 text-base': square,
+      'px-3': !square,
+      'text-surface border-(--btn-color) bg-(--btn-color)': !!variant,
+      'border-(--btn-outline) text-(--btn-outline)': !!outline && !variant,
+      'bg-surface-highlight text-dim': !variant && !outline
+    }"
+    :style="btnStyle"
   >
     <slot />
   </button>

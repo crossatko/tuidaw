@@ -60,7 +60,10 @@ function resetClickPan() {
 <template>
   <div
     class="border-border relative flex h-(--click-row-h) cursor-pointer flex-col justify-center border-b px-2"
-    :class="isSelected ? 'bg-surface-highlight' : 'bg-transparent'"
+    :class="{
+      'bg-surface-highlight': isSelected,
+      'bg-transparent': !isSelected
+    }"
     @click="select"
   >
     <!-- Selection indicator -->
@@ -73,14 +76,20 @@ function resetClickPan() {
     <div class="flex items-center gap-2">
       <span
         class="cursor-pointer text-sm"
-        :class="state.clickEnabled ? 'text-accent-cyan' : 'text-dim'"
+        :class="{
+          'text-accent-cyan': state.clickEnabled,
+          'text-dim': !state.clickEnabled
+        }"
         @click.stop="toggleClick"
       >
         ♩
       </span>
       <span
         class="cursor-pointer text-xs font-bold"
-        :class="state.clickEnabled ? 'text-fg' : 'text-dim'"
+        :class="{
+          'text-fg': state.clickEnabled,
+          'text-dim': !state.clickEnabled
+        }"
         @click.stop="toggleClick"
       >
         Click
