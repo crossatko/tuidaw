@@ -92,7 +92,16 @@ export class WebAudioBridge {
   /** Initialize the WASM audio engine. Call once before any other method. */
   async init(): Promise<void> {
     // Load the Emscripten JS glue which defines the TuidawAudio factory
-    // The glue is loaded as a script tag and defines TuidawAudio globally
+    if (!(window as any).TuidawAudio) {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = '/wasm/tuidaw_audio.js'
+        script.onload = () => resolve()
+        script.onerror = () =>
+          reject(new Error('Failed to load WASM glue script'))
+        document.head.appendChild(script)
+      })
+    }
     const mod = await (window as any).TuidawAudio({
       locateFile: (path: string) => `/wasm/${path}`
     })
