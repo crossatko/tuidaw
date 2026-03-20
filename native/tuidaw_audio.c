@@ -20,6 +20,106 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <dlfcn.h>
+
+// ── JACK API (dynamically loaded via dlopen) ────────────────────────────────
+// We load libjack.so.0 at runtime to avoid a hard build/link dependency.
+// This allows the binary to work on systems without JACK installed — monitoring
+// simply falls back to PulseAudio duplex.
+//
+// Direct JACK API bypasses miniaudio's JACK backend, which fails for duplex
+// devices on PipeWire because miniaudio uses JackPortIsPhysical to find ports,
+// and PipeWire's split/filter ports (e.g., Scarlett Inst/Line input) don't have
+// that flag. By using jack_get_ports() without JackPortIsPhysical and connecting
+// manually, we get working duplex with ~42ms round-trip vs ~68ms via PulseAudio.
+
+// JACK types (minimal subset needed for monitoring)
+typedef int32_t jack_nframes_t;
+typedef int     jack_options_t;
+typedef int     jack_status_t;
+typedef float   jack_default_audio_sample_t;
+typedef struct _jack_client jack_client_t;
+typedef struct _jack_port   jack_port_t;
+
+// JACK constants
+#define JACK_DEFAULT_AUDIO_TYPE "32 bit float mono audio"
+#define JackPortIsInput   0x1
+#define JackPortIsOutput  0x2
+#define JackNullOption    0x00
+#define JackNoStartServer 0x01
+
+// JACK process callback type
+typedef int (*JackProcessCallback)(jack_nframes_t nframes, void* arg);
+
+// JACK function pointer table (loaded via dlopen)
+typedef struct {
+    void* lib_handle;  // dlopen handle
+
+    jack_client_t* (*client_open)(const char* name, jack_options_t options,
+                                  jack_status_t* status);
+    int            (*client_close)(jack_client_t* client);
+    int            (*activate)(jack_client_t* client);
+    int            (*deactivate)(jack_client_t* client);
+    jack_nframes_t (*get_sample_rate)(jack_client_t* client);
+    jack_nframes_t (*get_buffer_size)(jack_client_t* client);
+    jack_port_t*   (*port_register)(jack_client_t* client, const char* name,
+                                    const char* type, unsigned long flags,
+                                    unsigned long buffer_size);
+    int            (*port_unregister)(jack_client_t* client, jack_port_t* port);
+    void*          (*port_get_buffer)(jack_port_t* port, jack_nframes_t nframes);
+    const char*    (*port_name)(const jack_port_t* port);
+    const char**   (*get_ports)(jack_client_t* client, const char* port_name_pattern,
+                                const char* type_name_pattern, unsigned long flags);
+    int            (*connect)(jack_client_t* client, const char* src, const char* dst);
+    int            (*disconnect)(jack_client_t* client, const char* src, const char* dst);
+    int            (*set_process_callback)(jack_client_t* client,
+                                          JackProcessCallback callback, void* arg);
+    void           (*free)(void* ptr);
+} JackFunctions;
+
+static JackFunctions g_jack = {0};
+
+// Load JACK library and resolve function pointers.
+// Returns 1 on success, 0 if JACK is not available.
+static int jack_load(void) {
+    if (g_jack.lib_handle) return 1;  // already loaded
+
+    g_jack.lib_handle = dlopen("libjack.so.0", RTLD_NOW | RTLD_LOCAL);
+    if (!g_jack.lib_handle) {
+        g_jack.lib_handle = dlopen("libjack.so", RTLD_NOW | RTLD_LOCAL);
+    }
+    if (!g_jack.lib_handle) return 0;
+
+    #define LOAD_SYM(name) \
+        g_jack.name = dlsym(g_jack.lib_handle, "jack_" #name); \
+        if (!g_jack.name) { dlclose(g_jack.lib_handle); g_jack.lib_handle = NULL; return 0; }
+
+    LOAD_SYM(client_open)
+    LOAD_SYM(client_close)
+    LOAD_SYM(activate)
+    LOAD_SYM(deactivate)
+    LOAD_SYM(get_sample_rate)
+    LOAD_SYM(get_buffer_size)
+    LOAD_SYM(port_register)
+    LOAD_SYM(port_unregister)
+    LOAD_SYM(port_get_buffer)
+    LOAD_SYM(port_name)
+    LOAD_SYM(get_ports)
+    LOAD_SYM(connect)
+    LOAD_SYM(disconnect)
+    LOAD_SYM(set_process_callback)
+    LOAD_SYM(free)
+
+    #undef LOAD_SYM
+    return 1;
+}
+
+static void jack_unload(void) {
+    if (g_jack.lib_handle) {
+        dlclose(g_jack.lib_handle);
+        memset(&g_jack, 0, sizeof(g_jack));
+    }
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -75,8 +175,15 @@ typedef struct {
 
     // Input monitoring state (low-latency full-duplex passthrough)
     _Atomic int   monitoring;        // input monitoring enabled
-    ma_device     mon_device;        // full-duplex device for monitoring (capture+playback in one callback)
+    ma_device     mon_device;        // full-duplex device for monitoring (PulseAudio fallback)
     int           mon_device_active; // is mon_device initialized and started
+
+    // Direct JACK monitoring state (preferred — ~42ms vs ~68ms PulseAudio)
+    jack_client_t* jack_client;      // JACK client for this track's monitoring
+    jack_port_t*   jack_capture;     // JACK input port (receives from Scarlett)
+    jack_port_t*   jack_playback_L;  // JACK output port (sends to output L)
+    jack_port_t*   jack_playback_R;  // JACK output port (sends to output R)
+    int            jack_mon_active;  // is JACK monitoring active
 
     // WSOLA time-stretch state
     WsolaState    wsola;
@@ -89,10 +196,9 @@ typedef struct {
     ma_device     playback_device;
     int           playback_active;
 
-    // Low-latency JACK context for input monitoring.
-    // JACK via PipeWire gives ~2-5ms round-trip vs PulseAudio's ~40-50ms.
-    // Only used for monitoring duplex devices; falls back to main context if unavailable.
-    ma_context    jack_context;
+    // Direct JACK API availability (loaded via dlopen at init time).
+    // When available, monitoring uses JACK for lower latency (~42ms round-trip)
+    // vs PulseAudio fallback (~68ms round-trip).
     int           jack_available;
 
     TrackState    tracks[MAX_TRACKS];
@@ -604,6 +710,38 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
     }
 }
 
+// ── JACK Monitor Process Callback ───────────────────────────────────────────
+// Direct JACK API process callback for input monitoring. Receives mono capture
+// audio and outputs stereo with volume/pan applied. Same logic as the miniaudio
+// duplex callback above, but uses JACK port buffers directly.
+
+static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
+    TrackState* tk = (TrackState*)arg;
+
+    float* in = (float*)g_jack.port_get_buffer(tk->jack_capture, nframes);
+    float* out_L = (float*)g_jack.port_get_buffer(tk->jack_playback_L, nframes);
+    float* out_R = (float*)g_jack.port_get_buffer(tk->jack_playback_R, nframes);
+
+    if (!tk || !atomic_load(&tk->monitoring)) {
+        memset(out_L, 0, nframes * sizeof(float));
+        memset(out_R, 0, nframes * sizeof(float));
+        return 0;
+    }
+
+    float vol = atomic_load(&tk->volume);
+    float pan = atomic_load(&tk->pan);
+    float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+    float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+
+    for (jack_nframes_t i = 0; i < nframes; i++) {
+        float sample = in[i] * vol;
+        out_L[i] = sample * left_gain;
+        out_R[i] = sample * right_gain;
+    }
+
+    return 0;
+}
+
 // ── Exported API ────────────────────────────────────────────────────────────
 
 #ifdef _WIN32
@@ -631,18 +769,10 @@ EXPORT int tuidaw_init(void) {
         return -1;
     }
 
-    // Try to initialize a JACK context for low-latency monitoring.
-    // JACK via PipeWire gives ~2-5ms round-trip vs PulseAudio's ~40-50ms.
-    // If JACK is unavailable, monitoring falls back to the main context.
-    {
-        ma_backend jack_backends[] = { ma_backend_jack };
-        ma_context_config jackCfg = ma_context_config_init();
-        jackCfg.jack.pClientName = "tuidaw-monitor";
-        jackCfg.jack.tryStartServer = MA_FALSE;
-        if (ma_context_init(jack_backends, 1, &jackCfg, &g_engine.jack_context) == MA_SUCCESS) {
-            g_engine.jack_available = 1;
-        }
-    }
+    // Try to load JACK library for low-latency monitoring.
+    // Direct JACK API gives ~42ms round-trip vs PulseAudio's ~68ms.
+    // If JACK is unavailable, monitoring falls back to PulseAudio duplex.
+    g_engine.jack_available = jack_load();
 
     // Enumerate devices
     ma_context_get_devices(&g_engine.context,
@@ -702,6 +832,14 @@ EXPORT void tuidaw_deinit(void) {
     for (int i = 0; i < MAX_TRACKS; i++) {
         TrackState* tk = &g_engine.tracks[i];
         atomic_store(&tk->monitoring, 0);
+        // Clean up JACK monitoring
+        if (tk->jack_mon_active && g_jack.lib_handle) {
+            g_jack.deactivate(tk->jack_client);
+            g_jack.client_close(tk->jack_client);
+            tk->jack_client = NULL;
+            tk->jack_mon_active = 0;
+        }
+        // Clean up PulseAudio monitoring fallback
         if (tk->mon_device_active) {
             ma_device_uninit(&tk->mon_device);
             tk->mon_device_active = 0;
@@ -724,8 +862,10 @@ EXPORT void tuidaw_deinit(void) {
     }
 
     ma_context_uninit(&g_engine.context);
+
+    // Unload JACK library
     if (g_engine.jack_available) {
-        ma_context_uninit(&g_engine.jack_context);
+        jack_unload();
         g_engine.jack_available = 0;
     }
 }
@@ -1207,46 +1347,159 @@ EXPORT int tuidaw_get_recording_length(int id) {
 }
 
 // ── Input Monitoring ────────────────────────────────────────────────────────
-// Low-latency input passthrough using a full-duplex device. The duplex
-// device captures from the track's input and plays to the current output
-// device in a SINGLE callback — no ring buffer, no inter-thread hop.
+// Low-latency input passthrough. Two strategies:
 //
-// When available, uses a dedicated JACK context (via PipeWire) for ~2-5ms
-// round-trip latency. JACK only supports default devices, so pDeviceID is
-// not set. Falls back to the main PulseAudio context if JACK is unavailable.
+// 1. DIRECT JACK API (preferred, ~42ms round-trip): Bypasses miniaudio entirely.
+//    Uses dlopen'd libjack.so.0 to register ports and manually connect to the
+//    correct capture/playback ports by name pattern. This avoids miniaudio's
+//    JackPortIsPhysical filtering that breaks with PipeWire's split/filter ports.
+//    PIPEWIRE_LATENCY env var hints PipeWire to lower the quantum for this
+//    client's driver group only, without affecting other apps globally.
+//
+// 2. PULSEAUDIO DUPLEX FALLBACK (~68ms round-trip): Uses miniaudio full-duplex
+//    device on the main PulseAudio context. Higher latency but works everywhere.
 
-// Start input monitoring on a track. Opens a full-duplex device that routes
-// capture audio directly to the output. Returns 0 on success, -1 on failure.
+// ── Input Monitoring ────────────────────────────────────────────────────────
 EXPORT int tuidaw_start_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return -1;
-    if (tk->mon_device_active) return 0; // already monitoring
+    if (tk->jack_mon_active || tk->mon_device_active) return 0; // already monitoring
 
-    // Set up full-duplex device for monitoring
-    ma_device_config config = ma_device_config_init(ma_device_type_duplex);
-    config.capture.format    = ma_format_f32;
-    config.capture.channels  = 1;
-    config.playback.format   = ma_format_f32;
-    config.playback.channels = 2;
-    config.sampleRate        = SAMPLE_RATE;
-    config.dataCallback      = duplex_monitor_callback;
-    config.pUserData         = tk;
-    config.noFixedSizedCallback = MA_TRUE;  // avoid extra buffering layer
-
-    // Choose context: prefer JACK for low latency, fallback to main context.
-    // JACK only supports default devices (no pDeviceID), so device selection
-    // is skipped when using JACK. For PulseAudio fallback, set device IDs.
-    ma_context* mon_ctx;
-    int used_jack = 0;
-    if (g_engine.jack_available) {
-        mon_ctx = &g_engine.jack_context;
-        // JACK controls buffer size — periodSizeInFrames is ignored.
-        // PIPEWIRE_LATENCY hints PipeWire to lower the quantum for this
-        // client's driver group only, without affecting other apps globally.
+    // ── Strategy 1: Direct JACK API ────────────────────────────────────
+    if (g_engine.jack_available && !g_engine.use_null_backend) {
+        // Set PIPEWIRE_LATENCY before opening the client so PipeWire assigns
+        // a low quantum to this client's driver group.
         setenv("PIPEWIRE_LATENCY", "256/48000", 1);
-    } else {
-        mon_ctx = &g_engine.context;
-        config.periodSizeInFrames = 128;  // ~2.7ms (PulseAudio may override)
+
+        // Create a unique JACK client name per track
+        char client_name[64];
+        snprintf(client_name, sizeof(client_name), "tuidaw-mon-%d", id);
+
+        jack_status_t status;
+        tk->jack_client = g_jack.client_open(client_name, JackNoStartServer, &status);
+
+        // Unset env var immediately to avoid affecting child processes
+        unsetenv("PIPEWIRE_LATENCY");
+
+        if (!tk->jack_client) goto jack_failed;
+
+        // Register our ports
+        tk->jack_capture = g_jack.port_register(tk->jack_client, "input",
+            JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        tk->jack_playback_L = g_jack.port_register(tk->jack_client, "output_L",
+            JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+        tk->jack_playback_R = g_jack.port_register(tk->jack_client, "output_R",
+            JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+        if (!tk->jack_capture || !tk->jack_playback_L || !tk->jack_playback_R) {
+            g_jack.client_close(tk->jack_client);
+            tk->jack_client = NULL;
+            goto jack_failed;
+        }
+
+        // Set process callback
+        g_jack.set_process_callback(tk->jack_client, jack_monitor_process, tk);
+
+        // Activate client (starts the process callback)
+        if (g_jack.activate(tk->jack_client) != 0) {
+            g_jack.client_close(tk->jack_client);
+            tk->jack_client = NULL;
+            goto jack_failed;
+        }
+
+        // Find and connect to the right ports.
+        // We search ALL ports (not just physical) to find PipeWire's split/filter ports
+        // like "Scarlett Solo (3rd Gen.) Input 2 Inst/Line:capture_MONO".
+        const char** all_ports = g_jack.get_ports(tk->jack_client, NULL,
+            JACK_DEFAULT_AUDIO_TYPE, 0);
+
+        if (!all_ports) {
+            g_jack.deactivate(tk->jack_client);
+            g_jack.client_close(tk->jack_client);
+            tk->jack_client = NULL;
+            goto jack_failed;
+        }
+
+        // Find capture port: prefer "Inst" (instrument input), fallback to any capture
+        char cap_name[256] = {0};
+        char pb_L_name[256] = {0};
+        char pb_R_name[256] = {0};
+
+        for (int i = 0; all_ports[i]; i++) {
+            if (cap_name[0] == 0 && strstr(all_ports[i], "Inst") &&
+                strstr(all_ports[i], "capture")) {
+                strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+            }
+            if (pb_L_name[0] == 0 && strstr(all_ports[i], "playback_FL")) {
+                strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
+            }
+            if (pb_R_name[0] == 0 && strstr(all_ports[i], "playback_FR")) {
+                strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
+            }
+        }
+
+        // Fallback: any capture port
+        if (cap_name[0] == 0) {
+            for (int i = 0; all_ports[i]; i++) {
+                if (strstr(all_ports[i], "capture")) {
+                    strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+                    break;
+                }
+            }
+        }
+
+        // Fallback: any playback ports
+        if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+            for (int i = 0; all_ports[i]; i++) {
+                if (pb_L_name[0] == 0 && strstr(all_ports[i], "playback") &&
+                    (strstr(all_ports[i], "FL") || strstr(all_ports[i], "_1"))) {
+                    strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
+                }
+                if (pb_R_name[0] == 0 && strstr(all_ports[i], "playback") &&
+                    (strstr(all_ports[i], "FR") || strstr(all_ports[i], "_2"))) {
+                    strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
+                }
+            }
+        }
+
+        g_jack.free(all_ports);
+
+        if (cap_name[0] == 0 || pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+            g_jack.deactivate(tk->jack_client);
+            g_jack.client_close(tk->jack_client);
+            tk->jack_client = NULL;
+            goto jack_failed;
+        }
+
+        // Connect: external capture -> our input
+        const char* our_input = g_jack.port_name(tk->jack_capture);
+        const char* our_out_L = g_jack.port_name(tk->jack_playback_L);
+        const char* our_out_R = g_jack.port_name(tk->jack_playback_R);
+
+        g_jack.connect(tk->jack_client, cap_name, our_input);
+        g_jack.connect(tk->jack_client, our_out_L, pb_L_name);
+        g_jack.connect(tk->jack_client, our_out_R, pb_R_name);
+
+        tk->jack_mon_active = 1;
+        atomic_store(&tk->monitoring, 1);
+        return 0;
+
+    jack_failed:;
+        // Fall through to PulseAudio duplex
+    }
+
+    // ── Strategy 2: PulseAudio Duplex Fallback ─────────────────────────
+    {
+        ma_device_config config = ma_device_config_init(ma_device_type_duplex);
+        config.capture.format    = ma_format_f32;
+        config.capture.channels  = 1;
+        config.playback.format   = ma_format_f32;
+        config.playback.channels = 2;
+        config.sampleRate        = SAMPLE_RATE;
+        config.dataCallback      = duplex_monitor_callback;
+        config.pUserData         = tk;
+        config.noFixedSizedCallback = MA_TRUE;
+        config.periodSizeInFrames = 128;
         config.periods = 2;
 
         // Set capture device (track's input device)
@@ -1260,50 +1513,38 @@ EXPORT int tuidaw_start_monitoring(int id) {
             (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
             config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
         }
-    }
 
-    if (ma_device_init(mon_ctx, &config, &tk->mon_device) != MA_SUCCESS) {
-        // If JACK failed, try fallback to main context
-        if (mon_ctx == &g_engine.jack_context) {
-            unsetenv("PIPEWIRE_LATENCY");
-            mon_ctx = &g_engine.context;
-            config.periodSizeInFrames = 128;
-            config.periods = 2;
-            if (tk->rec_device_index >= 0 &&
-                (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
-                config.capture.pDeviceID = &g_engine.capture_infos[tk->rec_device_index].id;
-            }
-            if (g_engine.output_device_index >= 0 &&
-                (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
-                config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
-            }
-            if (ma_device_init(mon_ctx, &config, &tk->mon_device) != MA_SUCCESS) {
-                return -1;
-            }
-        } else {
+        if (ma_device_init(&g_engine.context, &config, &tk->mon_device) != MA_SUCCESS) {
             return -1;
         }
-    } else if (mon_ctx == &g_engine.jack_context) {
-        used_jack = 1;
-        unsetenv("PIPEWIRE_LATENCY");
-    }
 
-    if (ma_device_start(&tk->mon_device) != MA_SUCCESS) {
-        ma_device_uninit(&tk->mon_device);
-        return -1;
-    }
+        if (ma_device_start(&tk->mon_device) != MA_SUCCESS) {
+            ma_device_uninit(&tk->mon_device);
+            return -1;
+        }
 
-    tk->mon_device_active = 1;
-    atomic_store(&tk->monitoring, 1);
-    return 0;
+        tk->mon_device_active = 1;
+        atomic_store(&tk->monitoring, 1);
+        return 0;
+    }
 }
 
-// Stop input monitoring on a track. Closes the duplex device.
+// Stop input monitoring on a track. Closes JACK client or duplex device.
 EXPORT void tuidaw_stop_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return;
 
     atomic_store(&tk->monitoring, 0);
+
+    if (tk->jack_mon_active && g_jack.lib_handle) {
+        g_jack.deactivate(tk->jack_client);
+        g_jack.client_close(tk->jack_client);
+        tk->jack_client = NULL;
+        tk->jack_capture = NULL;
+        tk->jack_playback_L = NULL;
+        tk->jack_playback_R = NULL;
+        tk->jack_mon_active = 0;
+    }
 
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
@@ -1319,7 +1560,7 @@ EXPORT int tuidaw_is_monitoring(int id) {
 }
 
 // Check if JACK backend is available for monitoring.
-// Returns 1 if JACK context was successfully initialized, 0 otherwise.
+// Returns 1 if libjack.so was successfully loaded via dlopen, 0 otherwise.
 EXPORT int tuidaw_has_jack_monitoring(void) {
     return g_engine.jack_available;
 }

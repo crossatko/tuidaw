@@ -49,23 +49,23 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1362 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Two `ma_context` instances: main (PulseAudio) for playback/recording, optional JACK context for low-latency monitoring.
+C shared library (`native/tuidaw_audio.c`, ~1610 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
 
 ### API surface (all `EXPORT`ed):
 
-| Category  | Functions                                                                                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                             |
-| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                      |
-| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                               |
-| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                          |
-| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                           |
-| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)`  |
-| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                        |
-| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                           |
-| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                        |
-| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)`, `tuidaw_has_jack_monitoring()` — full-duplex passthrough via JACK when available |
-| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                    |
+| Category  | Functions                                                                                                                                                                                    |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                                                |
+| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                                         |
+| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                                                  |
+| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                                             |
+| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                                              |
+| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)`                     |
+| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                                           |
+| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                                              |
+| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                                           |
+| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)`, `tuidaw_has_jack_monitoring()` — direct JACK API passthrough via dlopen, PulseAudio duplex fallback |
+| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                                       |
 
 ### Key behaviors
 
@@ -141,11 +141,12 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
 - **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop.
-- **JACK backend for low-latency monitoring**: Separate `ma_context` with `ma_backend_jack` for monitoring duplex devices gives ~2-5ms round-trip vs ~40-50ms via PulseAudio. PipeWire exposes a JACK interface that respects low quantum values. JACK only supports default devices (no `pDeviceID`). Falls back to main PulseAudio context if JACK unavailable. `noFixedSizedCallback = MA_TRUE` avoids miniaudio's internal fixed-size buffering.
-- **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `PIPEWIRE_LATENCY=256/48000` env var set before `ma_device_init` on the JACK context — PipeWire lowers the quantum for this client's driver group only, without affecting other apps. `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other applications (Discord chipmunk effect). `unsetenv` after device init to avoid leaking to child processes.
+- **Direct JACK API for monitoring**: miniaudio's JACK backend fails for duplex on PipeWire because it uses `JackPortIsPhysical` to find ports, and PipeWire's split/filter ports (e.g., Scarlett Inst/Line input) don't have that flag. Fix: bypass miniaudio entirely — `dlopen("libjack.so.0")`, register ports via `jack_port_register`, find correct capture/playback ports by name pattern (searching ALL ports, not just physical), and connect manually via `jack_connect`. Result: ~42ms round-trip vs ~68ms via PulseAudio duplex.
+- **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `PIPEWIRE_LATENCY=256/48000` env var set before `jack_client_open` — PipeWire lowers the quantum for this client's driver group only, without affecting other apps. `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other applications (Discord chipmunk effect). `unsetenv` after client open to avoid leaking to child processes.
 - **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
 - **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
+- **Scarlett Solo USB latency floor**: Physical loopback measurement (output → instrument input) shows ~42ms round-trip minimum via JACK. PipeWire quantum locks at 256 frames (5.33ms) regardless of requesting lower values. The remaining ~31ms is USB audio interface buffering + PipeWire graph traversal.
 
 ## File Structure
 
@@ -157,7 +158,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1362 lines, 36+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~1610 lines, 36+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)
