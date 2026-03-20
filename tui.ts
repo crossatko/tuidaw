@@ -295,31 +295,18 @@ export default async function main() {
   // Record – starts native recording on each armed track while also playing
   // back non-armed tracks. New audio is written from the current playhead
   // position forward; existing audio before the playhead is preserved.
-  const monitoringPausedForRecording = new Set<string>()
-
   async function startRecording() {
     const armedTracks = getArmedTracks(state)
     if (armedTracks.length === 0) return
 
     state.transportState = 'recording'
     trackRecordStartPositions.clear()
-    monitoringPausedForRecording.clear()
 
     renderer.requestLive()
 
     // Remember the start position for each armed track
     for (const track of armedTracks) {
       trackRecordStartPositions.set(track.id, state.playheadPosition)
-    }
-
-    // Pause monitoring on armed tracks to avoid capture device conflict
-    // (two capture devices on the same input via PulseAudio can deadlock)
-    for (const track of armedTracks) {
-      if (track.monitoring) {
-        audioEngine.stopMonitoring(track.id)
-        monitoringPausedForRecording.add(track.id)
-        // Keep track.monitoring = true so UI still shows it
-      }
     }
 
     // Sync all tracks and start native transport (plays non-muted tracks)
@@ -388,11 +375,6 @@ export default async function main() {
     track: Track,
     startPosition: number
   ): Promise<void> {
-    // Pause monitoring to avoid capture device conflict
-    if (track.monitoring) {
-      audioEngine.stopMonitoring(track.id)
-      monitoringPausedForRecording.add(track.id)
-    }
     trackRecordStartPositions.set(track.id, startPosition)
     await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
   }
@@ -434,15 +416,6 @@ export default async function main() {
     // Save the recorded audio to file
     if (track.samples) {
       await audioEngine.saveTrackToFile(track)
-    }
-
-    // Restart monitoring if it was paused for this track's recording
-    if (monitoringPausedForRecording.has(track.id)) {
-      monitoringPausedForRecording.delete(track.id)
-      if (track.monitoring) {
-        audioEngine.syncTrack(track)
-        audioEngine.startMonitoring(track.id)
-      }
     }
   }
 
@@ -491,16 +464,6 @@ export default async function main() {
           track.armed = false
         }
       }
-
-      // Restart monitoring on tracks that had it paused for recording
-      for (const trackId of monitoringPausedForRecording) {
-        const track = state.tracks.find((t) => t.id === trackId)
-        if (track && track.monitoring) {
-          audioEngine.syncTrack(track)
-          audioEngine.startMonitoring(track.id)
-        }
-      }
-      monitoringPausedForRecording.clear()
     }
 
     // Stop native transport (stops playback + click)
