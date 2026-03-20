@@ -321,6 +321,7 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
     - **Type checking**: `bun run check` runs prettier + tsc + vue-tsc (root tsconfig excludes `web/src/**`, vue-tsc uses `web/tsconfig.json` with DOM libs)
     - **Mic permissions fix**: Removed eager `audio.requestMicAccess()` from `ensureAudioReady()` — mic access is now deferred to input overlay open or recording start. Eliminates unwanted browser mic permission prompt on first play.
     - **Canvas render perf optimization**: `RenderSnapshot` pattern — all reactive state read once per frame into a plain object, eliminating Vue Proxy `get` trap overhead in hot drawing loops (waveform inner loop reads millions of samples per frame). Also: render coalescing via `scheduleRender()` with RAF dirty-flag pattern for watch-driven re-renders; off-screen track culling skips tracks fully outside the visible area.
+    - **Export mixdown (Web UI)**: Offline render via WASM `tuidaw_render()` — renders entire project through native mixer (handles volume, pan, mute/solo, click, WSOLA time-stretch) in 16384-frame chunks. Output encoded as stereo 16-bit PCM WAV and triggered as browser download. No ffmpeg needed. Respects click enabled/volume/pan, speed/WSOLA, mute/solo. Saves/restores engine state (playhead, speed, loop, click) around the render. `E` keyboard shortcut added. `WebAudioBridge.render(frameCount)` wraps `_tuidaw_render` with WASM heap allocation and copy-out.
 
 ## File structure
 
@@ -578,4 +579,4 @@ Mouse zones for sidebar scroll:
 
 ## TODO:
 
-- Export mixdown in web UI
+(none)

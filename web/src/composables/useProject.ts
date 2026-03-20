@@ -4,7 +4,7 @@
 
 import type { WebTrack } from '../../audio-bridge'
 import type { ProjectDescriptor, TrackDescriptor } from '@shared/types'
-import { parseWav, encodeWav } from '@shared/utils/wav'
+import { parseWav, encodeWav, buildWavHeader } from '@shared/utils/wav'
 import { detectBPM, findBeatOffset } from '@shared/utils/bpm'
 import { resample } from '@shared/utils/dsp'
 import {
@@ -16,7 +16,7 @@ import {
   SAMPLE_RATE,
   TRACK_COLORS
 } from './useAppState'
-import { getAudio } from './useAudio'
+import { getAudio, getClickDuration } from './useAudio'
 
 // ── Tar utilities (pure JS, browser-compatible, USTAR format) ───────────
 
@@ -476,4 +476,167 @@ export function openProject(): void {
   })
 
   input.click()
+}
+
+// ── Export Mixdown ──────────────────────────────────────────────────────
+// Renders the project offline through the native WASM mixer (which handles
+// volume, pan, mute/solo, click, and WSOLA time-stretch), encodes the
+// interleaved stereo output as a 16-bit PCM WAV, and triggers a browser
+// download. No ffmpeg needed — the native engine does all the mixing.
+
+export async function exportMixdown(): Promise<void> {
+  const state = useAppState()
+  const audio = getAudio()
+
+  if (!audio.isReady) {
+    showStatus('Audio engine not ready')
+    return
+  }
+
+  if (state.transportState !== 'stopped') {
+    showStatus('Stop transport first')
+    return
+  }
+
+  // Check there's something to export
+  const hasSolo = state.tracks.some((t) => t.solo)
+  const hasAudio = state.tracks.some((t) => {
+    if (!t.samples || t.samples.length === 0) return false
+    if (t.muted) return false
+    if (hasSolo && !t.solo) return false
+    return true
+  })
+
+  if (!hasAudio && !state.clickEnabled) {
+    showStatus('Nothing to export — all tracks empty or muted')
+    return
+  }
+
+  showStatus('Exporting mixdown...')
+
+  // Allow status to render before blocking
+  await new Promise((r) => setTimeout(r, 50))
+
+  try {
+    // Calculate total duration in source-sample space
+    let maxSamples = 0
+    for (const t of state.tracks) {
+      if (!t.samples || t.samples.length === 0) continue
+      if (t.muted) continue
+      if (hasSolo && !t.solo) continue
+      if (t.samples.length > maxSamples) maxSamples = t.samples.length
+    }
+
+    if (maxSamples === 0 && state.clickEnabled) {
+      // Click only — render 4 bars
+      const samplesPerBeat = Math.round((60 / state.bpm) * SAMPLE_RATE)
+      maxSamples = samplesPerBeat * 16
+    }
+
+    if (maxSamples === 0) {
+      showStatus('Nothing to export')
+      return
+    }
+
+    // Output frames = source samples / speed (WSOLA time-stretch)
+    const speed = state.bpm / state.originalBpm
+    const totalOutputFrames = Math.ceil(maxSamples / speed)
+
+    // Save current engine state
+    const savedPlayhead = audio.getPlayhead()
+    const savedSpeed = audio.getSpeed()
+
+    // Set up for offline render
+    audio.setSpeed(speed)
+    audio.setLoop(null, null) // disable loop for export
+
+    // Set up click if enabled
+    if (state.clickEnabled) {
+      const clickDur = Math.max(
+        totalOutputFrames + 60 * SAMPLE_RATE,
+        10 * 60 * SAMPLE_RATE
+      )
+      audio.generateClick(state.bpm, clickDur)
+      audio.setClick(true, state.bpm)
+      audio.setClickVolume(state.clickVolume)
+      audio.setClickPan(state.clickPan)
+    }
+
+    // Start playback from position 0 (puts engine in playing state so
+    // the callback advances the playhead and mixes tracks)
+    audio.play(0)
+
+    // Render in chunks to avoid huge WASM allocations
+    const CHUNK_FRAMES = 16384
+    const totalStereoSamples = totalOutputFrames * 2
+    const outputBuf = new Float32Array(totalStereoSamples)
+    let framesRendered = 0
+
+    while (framesRendered < totalOutputFrames) {
+      const remaining = totalOutputFrames - framesRendered
+      const chunkSize = Math.min(CHUNK_FRAMES, remaining)
+      const chunk = audio.render(chunkSize)
+      outputBuf.set(chunk, framesRendered * 2)
+      framesRendered += chunkSize
+    }
+
+    // Stop the engine and restore state
+    audio.stop()
+    audio.setPlayhead(savedPlayhead)
+    audio.setSpeed(savedSpeed)
+
+    // Restore loop
+    if (state.loopStart !== null && state.loopEnd !== null) {
+      audio.setLoop(state.loopStart, state.loopEnd)
+    }
+
+    // Restore click state
+    if (state.clickEnabled) {
+      // Regenerate click buffer for live playback duration
+      audio.generateClick(state.bpm, getClickDuration())
+      audio.setClick(true, state.bpm)
+      audio.setClickVolume(state.clickVolume)
+      audio.setClickPan(state.clickPan)
+    } else {
+      audio.setClick(false, 0)
+    }
+
+    // Encode to stereo 16-bit PCM WAV
+    const pcmData = new Uint8Array(totalStereoSamples * 2) // 16-bit = 2 bytes
+    const pcmView = new DataView(pcmData.buffer)
+    for (let i = 0; i < totalStereoSamples; i++) {
+      const s = Math.max(-1, Math.min(1, outputBuf[i]))
+      const val = Math.round(s * 32767)
+      pcmView.setInt16(i * 2, Math.max(-32768, Math.min(32767, val)), true)
+    }
+
+    const header = buildWavHeader(SAMPLE_RATE, 2, 16, pcmData.length)
+    const wav = new Uint8Array(header.length + pcmData.length)
+    wav.set(header)
+    wav.set(pcmData, header.length)
+
+    // Trigger browser download
+    const blob = new Blob([wav.buffer as ArrayBuffer], {
+      type: 'audio/wav'
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${state.projectName}.wav`
+    a.click()
+    URL.revokeObjectURL(url)
+
+    const durationSec = (totalOutputFrames / SAMPLE_RATE).toFixed(1)
+    showStatus(`Exported: ${state.projectName}.wav (${durationSec}s, stereo)`)
+  } catch (err) {
+    showStatus(`Export error: ${err}`)
+    console.error('Export mixdown failed:', err)
+
+    // Try to stop engine in case of error
+    try {
+      audio.stop()
+    } catch {
+      // ignore
+    }
+  }
 }

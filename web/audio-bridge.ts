@@ -317,6 +317,35 @@ export class WebAudioBridge {
     return this.m._tuidaw_get_speed()
   }
 
+  // ── Offline Render ────────────────────────────────────────────────────
+
+  /** Render `frameCount` frames of audio offline into an interleaved stereo
+   *  Float32Array (L R L R...). The native playback callback is called directly,
+   *  bypassing the audio device. Set up transport state (playhead, speed, click,
+   *  loop) before calling. Returns a Float32Array of length frameCount * 2. */
+  render(frameCount: number): Float32Array {
+    const byteLen = frameCount * 2 * 4 // stereo, 4 bytes per float
+    const ptr = this.m._malloc(byteLen)
+    if (!ptr) throw new Error('WASM malloc failed for render buffer')
+
+    try {
+      // Zero the buffer before render (native callback does this too, but be safe)
+      const floatOffset = ptr / 4
+      this.m.HEAPF32.fill(0, floatOffset, floatOffset + frameCount * 2)
+
+      this.m._tuidaw_render(ptr, frameCount)
+
+      // Copy out before freeing
+      const result = new Float32Array(frameCount * 2)
+      result.set(
+        this.m.HEAPF32.subarray(floatOffset, floatOffset + frameCount * 2)
+      )
+      return result
+    } finally {
+      this.m._free(ptr)
+    }
+  }
+
   // ── Recording (getUserMedia + ChannelSplitter + ScriptProcessorNode) ────
   // One shared MediaStream per unique input device. Each armed track selects
   // a specific channel (or mono mix) via ChannelSplitterNode routing.

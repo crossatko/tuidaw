@@ -16,7 +16,12 @@ import {
   getClickDuration
 } from '../composables/useAudio'
 import { play, stopTransport, toggleLoop } from '../composables/useTransport'
-import { importWav, saveProject, openProject } from '../composables/useProject'
+import {
+  importWav,
+  saveProject,
+  openProject,
+  exportMixdown
+} from '../composables/useProject'
 
 const state = useAppState()
 
@@ -194,7 +199,7 @@ function onInputClick() {
     <Btn @click="importWav"
       ><Icon :d="icons.fileAudio" :size="14" /> Import</Btn
     >
-    <Btn @click="showStatus('Export not yet implemented')"
+    <Btn @click="exportMixdown"
       ><Icon :d="icons.fileOutput" :size="14" /> Export</Btn
     >
     <Btn
