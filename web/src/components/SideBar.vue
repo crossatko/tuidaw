@@ -1,38 +1,34 @@
 <script setup vapor lang="ts">
-import { ref, watch } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import ClickTrackRow from './ClickTrackRow.vue'
 import TrackRow from './TrackRow.vue'
-import { useAppState, showStatus } from '../composables/useAppState'
+import {
+  useAppState,
+  showStatus,
+  registerTrackListScroller,
+  unregisterTrackListScroller
+} from '../composables/useAppState'
 import { getAudio } from '../composables/useAudio'
 
 const state = useAppState()
 const trackListRef = ref<HTMLElement | null>(null)
 
-// Guard to prevent circular scroll updates
-let scrollSyncFromCode = false
-
 // Sidebar native scroll → state.trackScrollY (drives canvas waveform offset)
 function onTrackListScroll(e: Event) {
-  if (scrollSyncFromCode) return
   const el = e.target as HTMLElement
   state.trackScrollY = el.scrollTop
 }
 
-// state.trackScrollY → sidebar native scroll (keyboard nav, ensureTrackVisible)
-watch(
-  () => state.trackScrollY,
-  (val) => {
+onMounted(() => {
+  registerTrackListScroller((y: number) => {
     const el = trackListRef.value
-    if (!el) return
-    if (Math.abs(el.scrollTop - val) < 1) return
-    scrollSyncFromCode = true
-    el.scrollTo({ top: val })
-    // Reset guard after browser processes the scroll
-    requestAnimationFrame(() => {
-      scrollSyncFromCode = false
-    })
-  }
-)
+    if (el) el.scrollTop = y
+  })
+})
+
+onUnmounted(() => {
+  unregisterTrackListScroller()
+})
 
 function selectTrack(index: number) {
   state.selectedTrackIndex = index
