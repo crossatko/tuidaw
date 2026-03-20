@@ -1,20 +1,7 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import {
-  Play,
-  Square,
-  Circle,
-  Repeat,
-  Metronome,
-  Minus,
-  Plus,
-  Save,
-  FolderOpen,
-  FileAudio,
-  FileOutput,
-  Mic,
-  PlusCircle
-} from 'lucide-vue-next'
+import Icon from './Icon.vue'
+import { icons } from '../composables/useIcons'
 import Btn from './Btn.vue'
 import {
   SAMPLE_RATE,
@@ -140,9 +127,9 @@ function onInputClick() {
   >
     <!-- Play -->
     <Btn :variant="playVariant" @click="onPlayClick">
-      <Circle v-if="isRecording" :size="14" class="shrink-0" />
-      <Square v-else-if="isPlaying" :size="14" class="shrink-0" />
-      <Play v-else :size="14" class="shrink-0" />
+      <Icon v-if="isRecording" :d="icons.circle" :size="14" />
+      <Icon v-else-if="isPlaying" :d="icons.square" :size="14" />
+      <Icon v-else :d="icons.play" :size="14" />
       {{ playLabel }}
     </Btn>
 
@@ -152,7 +139,7 @@ function onInputClick() {
       :outline="settingLoop && !hasLoop ? 'purple' : undefined"
       @click="toggleLoop"
     >
-      <Repeat :size="14" class="shrink-0" />
+      <Icon :d="icons.repeat" :size="14" />
       {{ loopLabel }}
     </Btn>
 
@@ -161,7 +148,7 @@ function onInputClick() {
       :variant="state.clickEnabled ? 'cyan' : undefined"
       @click="onClickToggle"
     >
-      <Metronome :size="14" class="shrink-0" />
+      <Icon :d="icons.metronome" :size="14" />
       Click
     </Btn>
 
@@ -169,14 +156,14 @@ function onInputClick() {
     <div class="w-2" />
 
     <!-- BPM controls -->
-    <Btn square @click="onBpmMinus"><Minus :size="14" /></Btn>
+    <Btn square @click="onBpmMinus"><Icon :d="icons.minus" :size="14" /></Btn>
     <span
       class="text-accent-cyan cursor-pointer px-1 text-sm font-bold whitespace-nowrap"
       @click="onBpmDblClick"
     >
       {{ state.bpm }} BPM
     </span>
-    <Btn square @click="onBpmPlus"><Plus :size="14" /></Btn>
+    <Btn square @click="onBpmPlus"><Icon :d="icons.plus" :size="14" /></Btn>
 
     <!-- Speed -->
     <span v-if="speedText" class="text-accent-orange text-xs whitespace-nowrap">
@@ -200,24 +187,24 @@ function onInputClick() {
     </span>
 
     <!-- File operations -->
-    <Btn @click="saveProject"><Save :size="14" class="shrink-0" /> Save</Btn>
+    <Btn @click="saveProject"><Icon :d="icons.save" :size="14" /> Save</Btn>
     <Btn @click="openProject"
-      ><FolderOpen :size="14" class="shrink-0" /> Open</Btn
+      ><Icon :d="icons.folderOpen" :size="14" /> Open</Btn
     >
     <Btn @click="importWav"
-      ><FileAudio :size="14" class="shrink-0" /> Import</Btn
+      ><Icon :d="icons.fileAudio" :size="14" /> Import</Btn
     >
     <Btn @click="showStatus('Export not yet implemented')"
-      ><FileOutput :size="14" class="shrink-0" /> Export</Btn
+      ><Icon :d="icons.fileOutput" :size="14" /> Export</Btn
     >
     <Btn
       :variant="state.showInputOverlay ? 'orange' : undefined"
       @click="onInputClick"
     >
-      <Mic :size="14" class="shrink-0" /> Input
+      <Icon :d="icons.mic" :size="14" /> Input
     </Btn>
     <Btn @click="onAddTrack"
-      ><PlusCircle :size="14" class="shrink-0" /> Track</Btn
+      ><Icon :d="icons.plusCircle" :size="14" /> Track</Btn
     >
   </div>
 </template>
