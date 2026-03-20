@@ -216,15 +216,11 @@ export class UIRenderer {
       const dir = event.scroll.direction
       const delta = dir === 'up' || dir === 'left' ? 1 : -1
 
-      // localY within the sidebar content area (below header)
-      const localY = event.y - TOPBAR_HEIGHT
-      if (localY < 0) return
-
-      // Subtract header row
-      const contentY = localY - 1
+      // localY within the sidebar content area
+      const contentY = event.y - TOPBAR_HEIGHT
       if (contentY < 0) return
 
-      // Click track content occupies rows [0, CLICK_ROW_HEIGHT), then SEPARATOR_HEIGHT separator rows
+      // Click track content occupies rows [0, CLICK_ROW_HEIGHT), no separator after it
       if (contentY < CLICK_ROW_HEIGHT) {
         // On click track row — pan zone: x >= 9 (where Pan: label is drawn)
         if (event.x >= 9) {
@@ -235,10 +231,9 @@ export class UIRenderer {
         return
       }
 
-      // Regular track area starts after click content + separator
-      const trackAreaStart = CLICK_ROW_HEIGHT + SEPARATOR_HEIGHT
+      // Regular track area starts right after click content
+      const trackAreaStart = CLICK_ROW_HEIGHT
       const trackContentY = contentY - trackAreaStart
-      if (trackContentY < 0) return // on separator row
       const trackStride = TRACK_ROW_HEIGHT + SEPARATOR_HEIGHT
       const rowInTrack = trackContentY % trackStride
 
@@ -258,11 +253,7 @@ export class UIRenderer {
     // Sidebar: click to select track
     this.sidebarFB.onMouse = (event: MouseEvent) => {
       if (event.type !== 'down') return
-      const localY = event.y - TOPBAR_HEIGHT
-      if (localY < 0) return
-
-      // Subtract header row
-      const contentY = localY - 1
+      const contentY = event.y - TOPBAR_HEIGHT
       if (contentY < 0) return
 
       // Click track content occupies rows [0, CLICK_ROW_HEIGHT)
@@ -272,10 +263,9 @@ export class UIRenderer {
         return
       }
 
-      // Regular tracks start after click content + separator
-      const trackAreaStart = CLICK_ROW_HEIGHT + SEPARATOR_HEIGHT
+      // Regular tracks start right after click content
+      const trackAreaStart = CLICK_ROW_HEIGHT
       const trackContentY = contentY - trackAreaStart
-      if (trackContentY < 0) return // on separator row
       const trackStride = TRACK_ROW_HEIGHT + SEPARATOR_HEIGHT
       const trackIndex = Math.floor(trackContentY / trackStride)
       const rowInTrack = trackContentY % trackStride
@@ -295,23 +285,16 @@ export class UIRenderer {
       if (event.type === 'down') {
         if (localX < 0 || localY < 0) return
         if (localY === 0) {
-          // Timeline row — set playhead position and start drag tracking
+          // Timeline row (also click track) — set playhead + select click track
           draggingTimeline = true
           callbacks.onTimelineClick(localX, this.mainFB.width)
+          callbacks.onTrackClick(CLICK_TRACK_INDEX)
         } else {
           // Waveform area — select track
           draggingTimeline = false
-          // Click track content occupies rows [1, 1 + CLICK_ROW_HEIGHT)
-          const waveformY = localY - 1 // subtract timeline row
-          if (waveformY < CLICK_ROW_HEIGHT) {
-            // Click on click waveform row — select click track
-            callbacks.onTrackClick(CLICK_TRACK_INDEX)
-            return
-          }
-          // Regular tracks start after click content + separator
-          const trackAreaStart = CLICK_ROW_HEIGHT + SEPARATOR_HEIGHT
-          const trackContentY = waveformY - trackAreaStart
-          if (trackContentY < 0) return // on separator row
+          // Regular tracks start at row 1 (right after timeline)
+          const trackContentY = localY - 1
+          if (trackContentY < 0) return
           const trackStride = TRACK_ROW_HEIGHT + SEPARATOR_HEIGHT
           const trackIndex = Math.floor(trackContentY / trackStride)
           const rowInTrack = trackContentY % trackStride
@@ -515,17 +498,14 @@ export class UIRenderer {
 
     fb.fillRect(0, 0, w, h, BG_SIDEBAR)
 
-    // Header
-    fb.drawText('  TRACKS', 0, 0, FG_ACCENT, BG_SIDEBAR, TextAttributes.BOLD)
-
     // Right border
     for (let y = 0; y < h; y++) {
       fb.setCell(w - 1, y, '│', FG_DIM, BG_SIDEBAR)
     }
 
-    // Click track row — always shown (CLICK_ROW_HEIGHT=1 content row + SEPARATOR_HEIGHT separator)
+    // Click track row at top (CLICK_ROW_HEIGHT=1 content row, no separator)
     // Single row: ♩ V:xx% Pan:C
-    let y = 1
+    let y = 0
     {
       const isSelected = state.selectedTrackIndex === CLICK_TRACK_INDEX
       const isEnabled = state.clickEnabled
@@ -557,20 +537,7 @@ export class UIRenderer {
       }
       fb.drawText(`Pan:${panStr}`, 9, y, isEnabled ? CLICK_COLOR : FG_DIM, bg)
 
-      // Separator rows drawn AFTER content
-      for (let sepRow = 0; sepRow < SEPARATOR_HEIGHT; sepRow++) {
-        for (let x = 0; x < w - 1; x++) {
-          fb.setCell(
-            x,
-            y + CLICK_ROW_HEIGHT + sepRow,
-            '─',
-            RGBA.fromHex('#292e42'),
-            BG_SIDEBAR
-          )
-        }
-      }
-
-      y += CLICK_ROW_HEIGHT + SEPARATOR_HEIGHT
+      y += CLICK_ROW_HEIGHT
     }
 
     // Track list
@@ -736,55 +703,11 @@ export class UIRenderer {
     )
     const samplesPerSubCol = baseSamplesPerSubCol
 
-    // Timeline header (1 row)
+    // Timeline header (1 row) — also serves as click track visualization
     this.renderTimeline(fb, w, state, samplesPerSubCol)
 
-    // Click track waveform row — always shown above regular tracks (CLICK_ROW_HEIGHT content rows + SEPARATOR_HEIGHT separator)
-    // Uses bright CLICK_COLOR when enabled, FG_DIM when disabled.
-    // Shows | characters at beat positions (not braille) for a grid-like look.
+    // Render each track's waveform (starts right after timeline)
     let y = 1
-    {
-      const isEnabled = state.clickEnabled
-      const clickH = Math.min(CLICK_ROW_HEIGHT, h - y)
-      if (clickH > 0) {
-        const isSelected = state.selectedTrackIndex === CLICK_TRACK_INDEX
-        const rowBg = isSelected ? BG_SELECTED : BG
-        fb.fillRect(0, y, w, clickH, rowBg)
-
-        // Generate beat tick marks using ┊ characters across all content rows
-        // Uses originalBpm because coordinates are in content-space
-        // Must use the same beat detection logic as renderTimeline for alignment
-        const samplesPerBeat = Math.round(
-          (60 / state.originalBpm) * state.sampleRate
-        )
-        const samplesPerCol = samplesPerSubCol * 2
-        const beatColor = isEnabled ? CLICK_COLOR : FG_DIM
-
-        for (let x = 0; x < w; x++) {
-          const samplePos = state.scrollOffset + x * samplesPerCol
-          const sampleInBeat = samplePos % samplesPerBeat
-
-          if (sampleInBeat < samplesPerCol) {
-            for (let row = 0; row < clickH; row++) {
-              fb.setCell(x, y + row, '┊', beatColor, rowBg)
-            }
-          }
-        }
-
-        // Separator rows drawn AFTER content
-        for (let sepRow = 0; sepRow < SEPARATOR_HEIGHT; sepRow++) {
-          if (y + clickH + sepRow < h) {
-            for (let x = 0; x < w; x++) {
-              fb.setCell(x, y + clickH + sepRow, '─', GRID_COLOR, BG)
-            }
-          }
-        }
-
-        y += clickH + SEPARATOR_HEIGHT
-      }
-    }
-
-    // Render each track's waveform
     for (let i = 0; i < state.tracks.length; i++) {
       const trackH = Math.min(TRACK_ROW_HEIGHT, h - y)
       if (trackH <= 0) break
@@ -876,7 +799,12 @@ export class UIRenderer {
     state: ProjectState,
     samplesPerSubCol: number
   ): void {
-    fb.fillRect(0, 0, width, 1, BG_DARKER)
+    // Timeline doubles as click track visualization:
+    // - When click is enabled, beat ticks use CLICK_COLOR
+    // - When click track is selected, background uses BG_SELECTED
+    const isClickSelected = state.selectedTrackIndex === CLICK_TRACK_INDEX
+    const timelineBg = isClickSelected ? BG_SELECTED : BG_DARKER
+    fb.fillRect(0, 0, width, 1, timelineBg)
 
     // Beat positions are in content-space, so use originalBpm
     // (the actual tempo of the source audio)
@@ -885,6 +813,9 @@ export class UIRenderer {
     )
     const samplesPerBar = samplesPerBeat * 4
     const samplesPerCol = samplesPerSubCol * 2
+
+    // Beat tick color: CLICK_COLOR when click enabled, FG_DIM otherwise
+    const beatTickColor = state.clickEnabled ? CLICK_COLOR : FG_DIM
 
     // Paint loop region on timeline with purple tint
     if (state.loopStart !== null && state.loopEnd !== null) {
@@ -913,7 +844,7 @@ export class UIRenderer {
         state.loopEnd !== null &&
         samplePos >= state.loopStart &&
         samplePos < state.loopEnd
-      const cellBg = inLoop ? RGBA.fromHex('#2d2050') : BG_DARKER
+      const cellBg = inLoop ? RGBA.fromHex('#2d2050') : timelineBg
 
       // Mark bar boundaries
       if (beatNum % 4 === 0 && sampleInBeat < samplesPerCol) {
@@ -923,7 +854,7 @@ export class UIRenderer {
           fb.drawText(label, x, 0, FG_ACCENT, cellBg)
         }
       } else if (sampleInBeat < samplesPerCol) {
-        fb.setCell(x, 0, '┊', FG_DIM, cellBg)
+        fb.setCell(x, 0, '┊', beatTickColor, cellBg)
       }
     }
   }

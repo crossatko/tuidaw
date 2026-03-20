@@ -53,18 +53,18 @@ C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Buil
 
 ### API surface (all `EXPORT`ed):
 
-| Category | Functions |
-|----------|-----------|
-| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests) |
-| Devices | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` |
-| Output | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` |
-| Tracks | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` |
-| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` |
-| Click | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)` |
-| Loop | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection |
-| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length` |
-| Speed | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x |
-| Render | `tuidaw_render(output, frame_count)` — offline render for tests/export |
+| Category  | Functions                                                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                            |
+| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`                                                                |
+| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                              |
+| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                         |
+| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                          |
+| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)` |
+| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                       |
+| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                          |
+| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                       |
+| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                   |
 
 ### Key behaviors
 
@@ -80,28 +80,28 @@ C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Buil
 
 ## Keyboard Shortcuts (TUI)
 
-| Key | Action | During transport? |
-|-----|--------|-------------------|
-| SPACE | Play/stop (record if armed) | Yes (stop) |
-| R | Arm/disarm (punch in/out during transport) | Yes |
-| M/S | Mute/solo toggle | Yes |
-| C | Click toggle | Yes |
-| +/- | BPM change (WSOLA speed if BPM unlocked) | Yes |
-| B | Toggle BPM lock | - |
-| A/D | Add/delete track (blocked during transport) | No |
-| D | Two-step: 1st=clear content, 2nd=delete track | - |
-| Up/Down | Track selection | Yes |
-| Left/Right | Scroll view 1 beat (Shift: 1 bar) | - |
-| [ / ] | Scrub playhead ±1 bar | Yes |
-| { / } | Nudge track ±1/16 beat | - |
-| Home/0/End | Jump to start/end | Yes |
-| V | Volume adjust | - |
-| < / > | Pan ±0.1 | - |
-| F1 | Help overlay | - |
-| F2/F3 | Input/output device selector | - |
-| F5/F6 | Save/open project (.tuidaw) | - |
-| I/E | Import WAV / export mixdown | - |
-| Q | Quit | - |
+| Key        | Action                                        | During transport? |
+| ---------- | --------------------------------------------- | ----------------- |
+| SPACE      | Play/stop (record if armed)                   | Yes (stop)        |
+| R          | Arm/disarm (punch in/out during transport)    | Yes               |
+| M/S        | Mute/solo toggle                              | Yes               |
+| C          | Click toggle                                  | Yes               |
+| +/-        | BPM change (WSOLA speed if BPM unlocked)      | Yes               |
+| B          | Toggle BPM lock                               | -                 |
+| A/D        | Add/delete track (blocked during transport)   | No                |
+| D          | Two-step: 1st=clear content, 2nd=delete track | -                 |
+| Up/Down    | Track selection                               | Yes               |
+| Left/Right | Scroll view 1 beat (Shift: 1 bar)             | -                 |
+| [ / ]      | Scrub playhead ±1 bar                         | Yes               |
+| { / }      | Nudge track ±1/16 beat                        | -                 |
+| Home/0/End | Jump to start/end                             | Yes               |
+| V          | Volume adjust                                 | -                 |
+| < / >      | Pan ±0.1                                      | -                 |
+| F1         | Help overlay                                  | -                 |
+| F2/F3      | Input/output device selector                  | -                 |
+| F5/F6      | Save/open project (.tuidaw)                   | -                 |
+| I/E        | Import WAV / export mixdown                   | -                 |
+| Q          | Quit                                          | -                 |
 
 File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't work in OpenTUI.
 
@@ -189,18 +189,23 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ## Architecture Patterns
 
 ### Native engine: C → miniaudio → flat API → FFI/WASM
+
 Audio callback on separate thread: mixing + pan + volume + click + loop + WSOLA. All params atomic.
 
 ### FFI bridge (`audio-engine.ts`)
+
 String↔int track ID mapping. Pinned Float32Array refs (prevent GC while native holds pointers). Poll-based recording.
 
 ### Recording
+
 TUI: native capture devices with ring buffers, polled every ~33ms. Web: getUserMedia + ScriptProcessorNode per armed track, shared DeviceCapture per device (ref-counted). Punch-in/out during transport.
 
 ### UI rendering
+
 TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouseHandlers(callbacks)` for zone-based mouse handling. Web: Vue composables + Canvas for waveforms.
 
 ### Playhead visibility
+
 `ensurePlayheadVisible()` recenters on manual moves. `autoScroll()` at 80% threshold during playback. Free-scroll mode on manual scroll — re-engages when playhead enters visible area.
 
 ## TUI Sidebar Layout (TRACK_ROW_HEIGHT=4)
@@ -213,7 +218,8 @@ y+3: [▌] [level meter / input device / "(empty)"]
 ─── separator (SEPARATOR_HEIGHT=1) ───
 ```
 
-Click track (CLICK_ROW_HEIGHT=1, always at top): `[▌] ♩ V:xx%  Pan:C`
+Click track (CLICK_ROW_HEIGHT=1, row 0 of sidebar): `[▌] ♩ V:xx%  Pan:C`
+Timeline row in main area doubles as click track visualization (beat ticks use CLICK_COLOR when enabled).
 
 ## TODO
 
