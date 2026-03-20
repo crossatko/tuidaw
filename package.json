@@ -7,7 +7,7 @@
     "start": "bun run index.ts",
     "check": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "bun test",
-    "install:all": "bash setup.sh && bash native/build-wasm.sh",
+    "install": "bash setup.sh && bash native/build-wasm.sh",
     "build": "bun run check && bun test && bash native/build.sh && bash native/build-wasm.sh"
   },
   "devDependencies": {
