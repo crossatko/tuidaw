@@ -97,8 +97,8 @@ function resetClickPan() {
     </div>
 
     <!-- Row 2: Volume + Pan sliders (side-by-side, half-width each) -->
-    <div class="flex gap-2 px-0">
-      <div class="flex-1">
+    <div class="flex gap-2 overflow-hidden">
+      <div class="min-w-0 flex-1">
         <MiniSlider
           label="V"
           :model-value="clickVolFrac"
@@ -111,7 +111,7 @@ function resetClickPan() {
           @dblclick="resetClickVol"
         />
       </div>
-      <div class="flex-1">
+      <div class="min-w-0 flex-1">
         <MiniSlider
           label="P"
           :model-value="clickPanFrac"
