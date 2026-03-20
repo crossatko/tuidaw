@@ -390,6 +390,11 @@ export default async function main() {
         }
       }
       trackRecordStartPositions.clear()
+
+      // Disarm all armed tracks after recording stops
+      for (const track of state.tracks) {
+        if (track.armed) track.armed = false
+      }
     }
 
     // Stop native transport (stops playback + click)
