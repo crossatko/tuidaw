@@ -312,6 +312,13 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 88. **Per-track input device and channel selection (Web UI)**: Each track has `inputDeviceId` (string|null, null="Default") and `inputChannel` (0=mono mix, 1..N=specific channel). Multi-channel recording via shared `getUserMedia` streams per unique device (reference-counted `DeviceCapture` with `ChannelSplitterNode`). `InputDeviceInfo` interface with `deviceId`, `label`, `channelCount`. Device enumeration via `enumerateInputDevices()` with `devicechange` listener. Shared stream architecture: one `getUserMedia` per unique deviceId, `ChannelSplitterNode` routes to per-track `ScriptProcessorNode`. Channel 0 = GainNode averaging all channels (mono mix). Channel 1..N = specific splitter output (1-indexed for UI, 0-indexed internally).
 89. **Input device overlay (Web UI)**: Topbar "Input" button opens a centered overlay dialog for selecting input device on the currently selected track. Overlay lists all available input devices with active device highlighted (checkmark + cyan border). First click on Input button requests mic permission + enumerates devices if not yet done. Overlay dismisses on device selection, click outside, or Escape key. All keyboard shortcuts blocked while overlay is open. Channel cycling remains in sidebar via tappable channel badge (Mix → Ch 1 → Ch N → Mix). Removed `sidebar-input-device` hit zone — device selection is now exclusively via the overlay. Input button highlights orange (`#e89040`) when overlay is open. `updateTopbar()` syncs Input button visual state.
 90. **Auto-disarm on stop after recording (TUI + Web)**: When transport stops after a recording session (`wasRecording`), all armed tracks are automatically disarmed. Normal play-stop cycles (no recording) don't affect arm state. Implemented in both `tui.ts` `stop()` and `web/app.ts` `stopTransport()`.
+91. **Vue 3.6 Vapor Mode migration (feature/vue-migration branch)**: Web UI being rewritten from monolithic Canvas 2D `app.ts` (~3308 lines) to Vite + Vue 3.6 (Vapor Mode) + Tailwind 4. Sidebar and track rows are DOM-based Vue components, waveform/timeline area is a canvas wrapped in a Vue component. State management uses composables with singleton pattern (no Pinia). `bun run dev` serves on port 3666.
+    - **Dependencies**: `vue@3.6.0-beta.8`, `vite@6.4.1`, `@vitejs/plugin-vue@6.0.5`, `tailwindcss@4.2.2`, `@tailwindcss/vite@4.2.2`, `vue-tsc@2.2.12`, `prettier@3.8.1`, `prettier-plugin-tailwindcss@0.7.2`
+    - **Vue SFC structure**: `<script setup vapor lang="ts">` first, then `<template>`, then `<style>` (rare — Tailwind used everywhere)
+    - **Composables**: `useAppState.ts` (reactive singleton + helpers), `useAudio.ts` (WASM bridge wrapper), `useTransport.ts` (play/stop/record/loop/seek), `useProject.ts` (save/open/import with tar/gzip), `useKeyboard.ts` (global keyboard shortcuts)
+    - **Components**: `Btn.vue` (generic button with variant/outline), `MiniSlider.vue` (native range with accent-color), `TopBar.vue`, `StatusBar.vue`, `ClickTrackRow.vue`, `TrackRow.vue`, `SideBar.vue`, `InputOverlay.vue`, `WaveformCanvas.vue` (canvas for timeline + waveform + playhead + loop + nudge buttons)
+    - **Theme**: OLED colors defined as Tailwind `@theme` variables in `main.css`. Colors available as utilities: `bg-surface`, `text-fg`, `text-accent-cyan`, etc.
+    - **Type checking**: `bun run check` runs prettier + tsc + vue-tsc (root tsconfig excludes `web/src/**`, vue-tsc uses `web/tsconfig.json` with DOM libs)
 
 ## File structure
 
@@ -434,7 +441,32 @@ The app has a left sidebar with tracks, a main window with waveforms (braille in
 │   │                          # InputDeviceInfo interface, enumerateInputDevices(),
 │   │                          # onDeviceChange listener, requestMicAccess().
 │   ├── tsconfig.json         # Extends root, adds DOM/DOM.Iterable libs. Includes only
-│   │                          # app.ts and audio-bridge.ts (browser files).
+│   │                          # app.ts, audio-bridge.ts, and src/**/* (browser files).
+│   ├── src/                   # Vue 3.6 Vapor Mode app (feature/vue-migration branch)
+│   │   ├── main.ts           #   Vue app entry point (7 lines)
+│   │   ├── main.css          #   Tailwind entry + @theme OLED colors + layout CSS vars
+│   │   ├── App.vue           #   Root layout: TopBar + SideBar + WaveformCanvas + StatusBar + InputOverlay
+│   │   ├── composables/
+│   │   │   ├── useAppState.ts #   Reactive singleton, C color palette, layout constants,
+│   │   │   │                  #   helpers (formatPan, formatTime, genId, createTrack),
+│   │   │   │                  #   track scroll (clampTrackScroll, ensureTrackVisible). ~230 lines.
+│   │   │   ├── useAudio.ts   #   WASM bridge wrapper, lazy init, click buffer. ~89 lines.
+│   │   │   ├── useTransport.ts #   Transport controls, playhead polling, auto-scroll, nudge,
+│   │   │   │                  #   seek, loop toggle, punch in/out, recording. ~412 lines.
+│   │   │   ├── useProject.ts #   Save/open/import with tar/gzip (browser-native). ~477 lines.
+│   │   │   └── useKeyboard.ts #   Global keyboard shortcuts (Space/p/m/s/r/c/+/-/arrows/
+│   │   │                      #   hjkl/[]/Home/End/a/d/</>/{}./i). ~280 lines.
+│   │   └── components/
+│   │       ├── Btn.vue       #   Generic button with variant/outline props
+│   │       ├── MiniSlider.vue #   Native range slider with accent-color
+│   │       ├── TopBar.vue    #   Transport, BPM, file ops, input device button
+│   │       ├── StatusBar.vue #   Shortcuts + status messages
+│   │       ├── ClickTrackRow.vue # Click track row with vol/pan sliders
+│   │       ├── TrackRow.vue  #   Track row with MSR buttons, name, vol/pan sliders
+│   │       ├── SideBar.vue   #   ClickTrackRow + scrollable TrackRow list
+│   │       ├── InputOverlay.vue # Modal input device picker
+│   │       └── WaveformCanvas.vue # Canvas for timeline + waveform + playhead + loop +
+│   │                          #   nudge buttons + pointer/wheel/touch handlers. ~650 lines.
 │   ├── wasm/                 # WASM build output (gitignored):
 │   │   ├── tuidaw_audio.js   #   Emscripten JS glue (~43KB)
 │   │   └── tuidaw_audio.wasm #   Compiled WASM module (~108KB)
