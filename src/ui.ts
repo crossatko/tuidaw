@@ -615,6 +615,16 @@ export class UIRenderer {
         track.armed ? TextAttributes.BOLD : 0
       )
 
+      const monColor = track.monitoring ? FG_GREEN : FG_DIM
+      fb.drawText(
+        ' O',
+        10,
+        y + 1,
+        monColor,
+        bg,
+        track.monitoring ? TextAttributes.BOLD : 0
+      )
+
       // Row 2: Volume + Pan
       const volStr = `V:${Math.round(track.volume * 100)}%`
       fb.drawText(volStr, 1, y + 2, FG_DIM, bg)
@@ -956,6 +966,7 @@ export class UIRenderer {
       'A:Add Track',
       'M:Mute',
       'S:Solo',
+      'O:Monitor',
       '[/]:Scrub',
       '{/}:Nudge',
       '</>:Pan',
@@ -989,7 +1000,7 @@ export class UIRenderer {
     const h = this.mainFB.height
 
     const boxW = 50
-    const boxH = 26
+    const boxH = 27
     const boxX = Math.floor((w - boxW) / 2)
     const boxY = Math.floor((h - boxH) / 2)
     const bgHelp = RGBA.fromHex('#181825')
@@ -1030,6 +1041,7 @@ export class UIRenderer {
       ['HOME / 0', 'Jump to beginning'],
       ['M', 'Toggle mute on selected track'],
       ['S', 'Toggle solo on selected track'],
+      ['O', 'Toggle input monitoring'],
       ['+', 'Increase BPM (speed up / relabel if locked)'],
       ['-', 'Decrease BPM (slow down / relabel if locked)'],
       ['B', 'Toggle BPM lock (label-only vs speed change)'],

@@ -41,6 +41,7 @@ export function createTrack(name?: string): Track {
     muted: false,
     solo: false,
     armed: false,
+    monitoring: false,
     volume: 0.8,
     pan: 0,
     samples: null,

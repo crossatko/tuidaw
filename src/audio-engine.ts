@@ -112,7 +112,14 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_get_speed: { returns: FFIType.f32 },
-  tuidaw_render: { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] }
+  tuidaw_render: { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
+  tuidaw_start_monitoring: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_stop_monitoring: { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_is_monitoring: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_get_backend_name: {
+    returns: FFIType.i32,
+    args: [FFIType.ptr, FFIType.i32]
+  }
 })
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
@@ -479,6 +486,39 @@ export class AudioEngine {
 
   get isRecording(): boolean {
     return this.recordingTracks.size > 0
+  }
+
+  // ── Input Monitoring ──────────────────────────────────────────────────
+  // Low-latency input passthrough: routes capture audio directly to the
+  // playback output via a SPSC ring buffer in the native engine.
+  // Latency is ~5.3ms (256 frames at 48kHz). Monitoring is independent
+  // of recording and transport — it works while stopped.
+
+  startMonitoring(trackId: string): boolean {
+    const nid = getNativeId(trackId)
+    const result = lib.symbols.tuidaw_start_monitoring(nid)
+    return result === 0
+  }
+
+  stopMonitoring(trackId: string): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_stop_monitoring(nid)
+  }
+
+  isMonitoring(trackId: string): boolean {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return false
+    return lib.symbols.tuidaw_is_monitoring(nid) !== 0
+  }
+
+  getBackendName(): string {
+    const buf = new Uint8Array(256)
+    lib.symbols.tuidaw_get_backend_name(ptr(buf), 256)
+    const nullIdx = buf.indexOf(0)
+    return new TextDecoder().decode(
+      buf.subarray(0, nullIdx > 0 ? nullIdx : 256)
+    )
   }
 
   // ── Transport ──────────────────────────────────────────────────────────
@@ -962,6 +1002,7 @@ export class AudioEngine {
           muted: false,
           solo: false,
           armed: false,
+          monitoring: false,
           volume: state.clickVolume,
           pan: state.clickPan,
           samples: clickSamples,
@@ -1154,6 +1195,7 @@ export class AudioEngine {
           muted: td.muted,
           solo: td.solo,
           armed: td.armed,
+          monitoring: false,
           volume: td.volume,
           pan: td.pan,
           samples,

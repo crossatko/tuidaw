@@ -73,6 +73,11 @@ typedef struct {
     ma_device     rec_device;        // capture device (active only while recording)
     int           rec_device_active; // is rec_device initialized and started
 
+    // Input monitoring state (low-latency full-duplex passthrough)
+    _Atomic int   monitoring;        // input monitoring enabled
+    ma_device     mon_device;        // full-duplex device for monitoring (capture+playback in one callback)
+    int           mon_device_active; // is mon_device initialized and started
+
     // WSOLA time-stretch state
     WsolaState    wsola;
 } TrackState;
@@ -305,7 +310,7 @@ static float wsola_read_sample(WsolaState* ws) {
 }
 
 // ── Playback Callback ───────────────────────────────────────────────────────
-// Called on the audio thread. Mixes all tracks + click into the output buffer.
+// Called on the audio thread. Mixes all tracks + click + monitoring into the output buffer.
 // When playback_speed != 1.0, uses WSOLA for pitch-preserving time stretch.
 //
 // Click is now a pre-baked buffer (one full beat: tone + silence) owned
@@ -321,110 +326,124 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
     float* out = (float*)pOutput;
     memset(out, 0, frameCount * 2 * sizeof(float));  // stereo output
 
-    if (!atomic_load(&g_engine.playing)) return;
+    int is_playing = atomic_load(&g_engine.playing);
 
-    long playhead = atomic_load(&g_engine.playhead_samples);
-    long loop_start = atomic_load(&g_engine.loop_start);
-    long loop_end = atomic_load(&g_engine.loop_end);
-    float speed = atomic_load(&g_engine.playback_speed);
+    long playhead = 0;
+    long loop_start = -1;
+    long loop_end = -1;
+    float speed = 1.0f;
+    int any_solo = 0;
+    int click_enabled = 0;
+    float click_vol = 0.0f;
+    float click_pan = 0.0f;
+    float* click_samples = NULL;
+    int click_samples_len = 0;
+    int use_wsola = 0;
 
-    // Clamp speed to sane range
-    if (speed < 0.25f) speed = 0.25f;
-    if (speed > 2.0f) speed = 2.0f;
+    if (is_playing) {
+        playhead = atomic_load(&g_engine.playhead_samples);
+        loop_start = atomic_load(&g_engine.loop_start);
+        loop_end = atomic_load(&g_engine.loop_end);
+        speed = atomic_load(&g_engine.playback_speed);
 
-    int any_solo = has_any_solo();
+        // Clamp speed to sane range
+        if (speed < 0.25f) speed = 0.25f;
+        if (speed > 2.0f) speed = 2.0f;
 
-    // Click state
-    int click_enabled = atomic_load(&g_engine.click_enabled);
-    float click_vol = atomic_load(&g_engine.click_volume);
-    float click_pan = atomic_load(&g_engine.click_pan);
-    float* click_samples = g_engine.click_samples;
-    int click_samples_len = atomic_load(&g_engine.click_samples_len);
+        any_solo = has_any_solo();
 
-    int use_wsola = (speed < 0.99f || speed > 1.01f);
+        // Click state
+        click_enabled = atomic_load(&g_engine.click_enabled);
+        click_vol = atomic_load(&g_engine.click_volume);
+        click_pan = atomic_load(&g_engine.click_pan);
+        click_samples = g_engine.click_samples;
+        click_samples_len = atomic_load(&g_engine.click_samples_len);
 
-    // If using WSOLA, ensure all active tracks have initialized state
-    if (use_wsola) {
-        for (int t = 0; t < MAX_TRACKS; t++) {
-            TrackState* tk = &g_engine.tracks[t];
-            if (!tk->active) continue;
-            if (!tk->wsola.initialized) {
-                wsola_reset(&tk->wsola, (double)playhead);
-            }
-            // Pre-generate WSOLA output for this callback
-            // Loop boundaries are passed in content-space so wsola_generate
-            // wraps input_pos at loop_end back to loop_start.
-            if (tk->samples && tk->samples_len > 0 &&
-                !atomic_load(&tk->muted) &&
-                !(any_solo && !atomic_load(&tk->solo)) &&
-                !atomic_load(&tk->recording)) {
-                wsola_generate(&tk->wsola, tk->samples, tk->samples_len,
-                               speed, loop_start, loop_end);
+        use_wsola = (speed < 0.99f || speed > 1.01f);
+
+        // If using WSOLA, ensure all active tracks have initialized state
+        if (use_wsola) {
+            for (int t = 0; t < MAX_TRACKS; t++) {
+                TrackState* tk = &g_engine.tracks[t];
+                if (!tk->active) continue;
+                if (!tk->wsola.initialized) {
+                    wsola_reset(&tk->wsola, (double)playhead);
+                }
+                // Pre-generate WSOLA output for this callback
+                // Loop boundaries are passed in content-space so wsola_generate
+                // wraps input_pos at loop_end back to loop_start.
+                if (tk->samples && tk->samples_len > 0 &&
+                    !atomic_load(&tk->muted) &&
+                    !(any_solo && !atomic_load(&tk->solo)) &&
+                    !atomic_load(&tk->recording)) {
+                    wsola_generate(&tk->wsola, tk->samples, tk->samples_len,
+                                   speed, loop_start, loop_end);
+                }
             }
         }
-
-        // (Click no longer uses WSOLA — it uses an output-space frame counter
-        // so the tone is never pitch-shifted regardless of playback speed.)
     }
 
     for (ma_uint32 frame = 0; frame < frameCount; frame++) {
-        long pos = playhead + (long)frame;
-
-        // Loop handling: wrap position (for non-WSOLA playback)
-        if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
-            long loop_len = loop_end - loop_start;
-            long overshoot = pos - loop_end;
-            pos = loop_start + (overshoot % loop_len);
-        }
-
         float left = 0.0f;
         float right = 0.0f;
 
-        // Mix tracks
-        for (int t = 0; t < MAX_TRACKS; t++) {
-            TrackState* tk = &g_engine.tracks[t];
-            if (!tk->active) continue;
-            if (atomic_load(&tk->muted)) continue;
-            if (any_solo && !atomic_load(&tk->solo)) continue;
-            if (atomic_load(&tk->recording)) continue;
-            if (!tk->samples || tk->samples_len == 0) continue;
+        // Track mixing + click only when transport is playing
+        if (is_playing) {
+            long pos = playhead + (long)frame;
 
-            float sample;
-            if (use_wsola) {
-                // Read from WSOLA output buffer (pitch-preserved time-stretched audio)
-                sample = wsola_read_sample(&tk->wsola);
-            } else {
-                // Normal playback: direct sample read
-                if (pos < 0 || pos >= tk->samples_len) continue;
-                sample = tk->samples[pos];
+            // Loop handling: wrap position (for non-WSOLA playback)
+            if (loop_start >= 0 && loop_end > loop_start && pos >= loop_end) {
+                long loop_len = loop_end - loop_start;
+                long overshoot = pos - loop_end;
+                pos = loop_start + (overshoot % loop_len);
             }
 
-            float vol = atomic_load(&tk->volume);
-            float pan = atomic_load(&tk->pan);
+            // Mix tracks
+            for (int t = 0; t < MAX_TRACKS; t++) {
+                TrackState* tk = &g_engine.tracks[t];
+                if (!tk->active) continue;
+                if (atomic_load(&tk->muted)) continue;
+                if (any_solo && !atomic_load(&tk->solo)) continue;
+                if (atomic_load(&tk->recording)) continue;
+                if (!tk->samples || tk->samples_len == 0) continue;
 
-            // Equal-power panning
-            float left_gain = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-            float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                float sample;
+                if (use_wsola) {
+                    // Read from WSOLA output buffer (pitch-preserved time-stretched audio)
+                    sample = wsola_read_sample(&tk->wsola);
+                } else {
+                    // Normal playback: direct sample read
+                    if (pos < 0 || pos >= tk->samples_len) continue;
+                    sample = tk->samples[pos];
+                }
 
-            left  += sample * vol * left_gain;
-            right += sample * vol * right_gain;
-        }
+                float vol = atomic_load(&tk->volume);
+                float pan = atomic_load(&tk->pan);
 
-        // Click (metronome) — pre-rendered long buffer in OUTPUT-SPACE.
-        // The click_samples buffer contains the full click track: click tones
-        // placed at exact beat positions (at display BPM) with silence between.
-        // We index by click_frame_counter (output-space time).
-        // On loop wrap, the counter is reset to correspond to loop_start.
-        if (click_enabled && click_samples && click_samples_len > 0) {
-            long counter = atomic_load(&g_engine.click_frame_counter) + (long)frame;
-            if (counter >= 0 && counter < (long)click_samples_len) {
-                float click_sample = click_samples[counter] * click_vol;
+                // Equal-power panning
+                float left_gain = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
 
-                // Equal-power panning for click
-                float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-                float cl_right = sinf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-                left  += click_sample * cl_left;
-                right += click_sample * cl_right;
+                left  += sample * vol * left_gain;
+                right += sample * vol * right_gain;
+            }
+
+            // Click (metronome) — pre-rendered long buffer in OUTPUT-SPACE.
+            // The click_samples buffer contains the full click track: click tones
+            // placed at exact beat positions (at display BPM) with silence between.
+            // We index by click_frame_counter (output-space time).
+            // On loop wrap, the counter is reset to correspond to loop_start.
+            if (click_enabled && click_samples && click_samples_len > 0) {
+                long counter = atomic_load(&g_engine.click_frame_counter) + (long)frame;
+                if (counter >= 0 && counter < (long)click_samples_len) {
+                    float click_sample = click_samples[counter] * click_vol;
+
+                    // Equal-power panning for click
+                    float cl_left  = cosf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                    float cl_right = sinf(((click_pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+                    left  += click_sample * cl_left;
+                    right += click_sample * cl_right;
+                }
             }
         }
 
@@ -438,93 +457,96 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         out[frame * 2 + 1] = right;
     }
 
-    // Advance playhead.
-    // All coordinates are in content-space (source sample positions).
-    // When WSOLA is active, the playhead tracks wsola.input_pos which
-    // advances at speed * hop per output hop — so at 0.5x speed, the
-    // playhead advances half as fast through the source material.
-    // When WSOLA is not active, playhead == wall-clock == content-space
-    // (since speed is 1.0).
-    long new_playhead;
+    // Advance playhead + click counter only when transport is playing
+    if (is_playing) {
+        // Advance playhead.
+        // All coordinates are in content-space (source sample positions).
+        // When WSOLA is active, the playhead tracks wsola.input_pos which
+        // advances at speed * hop per output hop — so at 0.5x speed, the
+        // playhead advances half as fast through the source material.
+        // When WSOLA is not active, playhead == wall-clock == content-space
+        // (since speed is 1.0).
+        long new_playhead;
 
-    if (use_wsola) {
-        // Derive playhead from WSOLA input_pos (content-space).
-        // This ensures playhead always tracks the actual source position
-        // being read, regardless of speed.
-        new_playhead = playhead + (long)frameCount; // fallback
-        for (int t = 0; t < MAX_TRACKS; t++) {
-            TrackState* tk = &g_engine.tracks[t];
-            if (!tk->active) continue;
-            if (atomic_load(&tk->muted)) continue;
-            if (atomic_load(&tk->recording)) continue;
-            if (!tk->samples || tk->samples_len == 0) continue;
-            if (tk->wsola.initialized) {
-                new_playhead = (long)tk->wsola.input_pos;
-                break;
+        if (use_wsola) {
+            // Derive playhead from WSOLA input_pos (content-space).
+            // This ensures playhead always tracks the actual source position
+            // being read, regardless of speed.
+            new_playhead = playhead + (long)frameCount; // fallback
+            for (int t = 0; t < MAX_TRACKS; t++) {
+                TrackState* tk = &g_engine.tracks[t];
+                if (!tk->active) continue;
+                if (atomic_load(&tk->muted)) continue;
+                if (atomic_load(&tk->recording)) continue;
+                if (!tk->samples || tk->samples_len == 0) continue;
+                if (tk->wsola.initialized) {
+                    new_playhead = (long)tk->wsola.input_pos;
+                    break;
+                }
+            }
+
+            // Handle loop wrapping (input_pos is already wrapped by wsola_generate,
+            // but clamp to be safe if it overshoots)
+            if (loop_start >= 0 && loop_end > loop_start) {
+                if (new_playhead >= loop_end) {
+                    long loop_len = loop_end - loop_start;
+                    long overshoot = new_playhead - loop_end;
+                    new_playhead = loop_start + (overshoot % loop_len);
+                }
+                // NOTE: Do NOT clamp new_playhead to loop_start when it's before
+                // the loop region. If the user seeks before the loop, playback
+                // should advance linearly until reaching loopEnd, then wrap.
+            }
+        } else {
+            // No WSOLA (speed == 1.0): playhead advances in real-time
+            // which equals content-space when speed is 1.0
+            new_playhead = playhead + (long)frameCount;
+
+            if (loop_start >= 0 && loop_end > loop_start) {
+                if (new_playhead >= loop_end) {
+                    long loop_len = loop_end - loop_start;
+                    long overshoot = new_playhead - loop_end;
+                    new_playhead = loop_start + (overshoot % loop_len);
+                }
             }
         }
 
-        // Handle loop wrapping (input_pos is already wrapped by wsola_generate,
-        // but clamp to be safe if it overshoots)
-        if (loop_start >= 0 && loop_end > loop_start) {
-            if (new_playhead >= loop_end) {
-                long loop_len = loop_end - loop_start;
-                long overshoot = new_playhead - loop_end;
-                new_playhead = loop_start + (overshoot % loop_len);
-            }
-            // NOTE: Do NOT clamp new_playhead to loop_start when it's before
-            // the loop region. If the user seeks before the loop, playback
-            // should advance linearly until reaching loopEnd, then wrap.
-        }
-    } else {
-        // No WSOLA (speed == 1.0): playhead advances in real-time
-        // which equals content-space when speed is 1.0
-        new_playhead = playhead + (long)frameCount;
+        // Advance click counter with loop-wrap handling.
+        // The click counter is ABSOLUTE output-space (content position / speed).
+        // The click buffer contains tones at GCD-exact beat positions in output-space.
+        //
+        // On loop: the click counter wraps when it reaches the output-space position
+        // corresponding to loop_end in content-space. Since the counter is absolute:
+        //   output_end = loop_end / speed
+        //   output_start = loop_start / speed
+        // The counter wraps from output_end back to output_start, so the click
+        // re-aligns with the content beat grid on each loop iteration.
+        //
+        // We detect the wrap from the counter itself (not from playhead comparison),
+        // because WSOLA look-ahead can cause the playhead to wrap before the output
+        // actually reaches the loop boundary.
+        if (click_enabled) {
+            long old_counter = atomic_load(&g_engine.click_frame_counter);
+            long new_counter = old_counter + (long)frameCount;
 
-        if (loop_start >= 0 && loop_end > loop_start) {
-            if (new_playhead >= loop_end) {
-                long loop_len = loop_end - loop_start;
-                long overshoot = new_playhead - loop_end;
-                new_playhead = loop_start + (overshoot % loop_len);
+            if (loop_start >= 0 && loop_end > loop_start && speed > 0.01f) {
+                double loop_output_end = (double)loop_end / (double)speed;
+                double loop_output_start = (double)loop_start / (double)speed;
+                double loop_output_len = loop_output_end - loop_output_start;
+
+                if (loop_output_len > 0 && (double)new_counter >= loop_output_end) {
+                    // Wrap counter to loop start, preserving fractional overshoot
+                    double overshoot = (double)new_counter - loop_output_end;
+                    double wrapped = loop_output_start + fmod(overshoot, loop_output_len);
+                    new_counter = (long)(wrapped + 0.5);
+                }
             }
+
+            atomic_store(&g_engine.click_frame_counter, new_counter);
         }
+
+        atomic_store(&g_engine.playhead_samples, new_playhead);
     }
-
-    // Advance click counter with loop-wrap handling.
-    // The click counter is ABSOLUTE output-space (content position / speed).
-    // The click buffer contains tones at GCD-exact beat positions in output-space.
-    //
-    // On loop: the click counter wraps when it reaches the output-space position
-    // corresponding to loop_end in content-space. Since the counter is absolute:
-    //   output_end = loop_end / speed
-    //   output_start = loop_start / speed
-    // The counter wraps from output_end back to output_start, so the click
-    // re-aligns with the content beat grid on each loop iteration.
-    //
-    // We detect the wrap from the counter itself (not from playhead comparison),
-    // because WSOLA look-ahead can cause the playhead to wrap before the output
-    // actually reaches the loop boundary.
-    if (click_enabled) {
-        long old_counter = atomic_load(&g_engine.click_frame_counter);
-        long new_counter = old_counter + (long)frameCount;
-
-        if (loop_start >= 0 && loop_end > loop_start && speed > 0.01f) {
-            double loop_output_end = (double)loop_end / (double)speed;
-            double loop_output_start = (double)loop_start / (double)speed;
-            double loop_output_len = loop_output_end - loop_output_start;
-
-            if (loop_output_len > 0 && (double)new_counter >= loop_output_end) {
-                // Wrap counter to loop start, preserving fractional overshoot
-                double overshoot = (double)new_counter - loop_output_end;
-                double wrapped = loop_output_start + fmod(overshoot, loop_output_len);
-                new_counter = (long)(wrapped + 0.5);
-            }
-        }
-
-        atomic_store(&g_engine.click_frame_counter, new_counter);
-    }
-
-    atomic_store(&g_engine.playhead_samples, new_playhead);
 }
 
 // ── Capture Callback (per-track recording) ──────────────────────────────────
@@ -545,6 +567,35 @@ static void capture_callback(ma_device* pDevice, void* pOutput, const void* pInp
     }
 
     atomic_store(&tk->rec_write_pos, write_pos);
+}
+
+// ── Full-Duplex Monitor Callback (zero-latency input passthrough) ───────────
+// In a full-duplex device, pInput and pOutput are provided in the SAME callback
+// invocation. We copy captured audio directly to the output buffer with
+// volume/pan applied. This eliminates all ring buffer latency — the only delay
+// is the device's own period size.
+
+static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+    TrackState* tk = (TrackState*)pDevice->pUserData;
+    if (!tk || !atomic_load(&tk->monitoring)) {
+        // Output silence
+        memset(pOutput, 0, frameCount * 2 * sizeof(float));
+        return;
+    }
+
+    const float* input = (const float*)pInput;
+    float* output = (float*)pOutput;
+
+    float vol = atomic_load(&tk->volume);
+    float pan = atomic_load(&tk->pan);
+    float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+    float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+
+    for (ma_uint32 i = 0; i < frameCount; i++) {
+        float sample = input[i] * vol;
+        output[i * 2 + 0] = sample * left_gain;
+        output[i * 2 + 1] = sample * right_gain;
+    }
 }
 
 // ── Exported API ────────────────────────────────────────────────────────────
@@ -628,9 +679,14 @@ EXPORT void tuidaw_deinit(void) {
     g_engine.click_samples = NULL;
     g_engine.click_samples_capacity = 0;
 
-    // Stop and free all recording devices
+    // Stop and free all recording and monitoring devices
     for (int i = 0; i < MAX_TRACKS; i++) {
         TrackState* tk = &g_engine.tracks[i];
+        atomic_store(&tk->monitoring, 0);
+        if (tk->mon_device_active) {
+            ma_device_uninit(&tk->mon_device);
+            tk->mon_device_active = 0;
+        }
         if (tk->rec_device_active) {
             ma_device_uninit(&tk->rec_device);
             tk->rec_device_active = 0;
@@ -703,6 +759,16 @@ EXPORT int tuidaw_is_device_default(int type, int index) {
     return infos[index].isDefault ? 1 : 0;
 }
 
+// Get the name of the audio backend in use (e.g. "ALSA", "PulseAudio", "JACK").
+// Writes into the provided buffer. Returns 0 on success.
+EXPORT int tuidaw_get_backend_name(char* out_name, int max_len) {
+    const char* name = ma_get_backend_name(g_engine.context.backend);
+    if (!name) return -1;
+    strncpy(out_name, name, max_len - 1);
+    out_name[max_len - 1] = '\0';
+    return 0;
+}
+
 // Set the output device index. -1 = default.
 // Takes effect on next tuidaw_start_playback_device() call.
 EXPORT void tuidaw_set_output_device(int index) {
@@ -732,7 +798,8 @@ EXPORT int tuidaw_start_playback_device(void) {
     config.playback.channels = 2;
     config.sampleRate        = SAMPLE_RATE;
     config.dataCallback      = playback_callback;
-    config.periodSizeInFrames = 256;  // ~5.3ms latency
+    config.periodSizeInFrames = 128;  // ~2.7ms latency
+    config.periods = 2;               // double-buffer (default is 3)
 
     if (g_engine.output_device_index >= 0 &&
         (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
@@ -783,6 +850,8 @@ EXPORT int tuidaw_add_track(int id) {
     tk->rec_buffer = NULL;
     tk->samples = NULL;
     tk->samples_len = 0;
+    atomic_store(&tk->monitoring, 0);
+    tk->mon_device_active = 0;
     return 0;
 }
 
@@ -790,6 +859,13 @@ EXPORT int tuidaw_add_track(int id) {
 EXPORT void tuidaw_remove_track(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return;
+
+    // Stop monitoring if active
+    atomic_store(&tk->monitoring, 0);
+    if (tk->mon_device_active) {
+        ma_device_uninit(&tk->mon_device);
+        tk->mon_device_active = 0;
+    }
 
     // Stop recording if active
     if (tk->rec_device_active) {
@@ -1055,7 +1131,8 @@ EXPORT int tuidaw_start_recording(int id) {
     config.sampleRate       = SAMPLE_RATE;
     config.dataCallback     = capture_callback;
     config.pUserData        = tk;
-    config.periodSizeInFrames = 256;  // ~5.3ms
+    config.periodSizeInFrames = 128;  // ~2.7ms for low recording latency
+    config.periods = 2;               // double-buffer
 
     if (tk->rec_device_index >= 0 &&
         (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
@@ -1104,6 +1181,77 @@ EXPORT int tuidaw_get_recording_length(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return 0;
     return atomic_load(&tk->rec_write_pos);
+}
+
+// ── Input Monitoring ────────────────────────────────────────────────────────
+// Zero-latency input passthrough using a full-duplex device. The duplex
+// device captures from the track's input and plays to the current output
+// device in a SINGLE callback — no ring buffer, no inter-thread hop.
+// Latency is just 1 period (~2.7ms at 128 frames/48kHz).
+
+// Start input monitoring on a track. Opens a full-duplex device that routes
+// capture audio directly to the output. Returns 0 on success, -1 on failure.
+EXPORT int tuidaw_start_monitoring(int id) {
+    TrackState* tk = find_track(id);
+    if (!tk) return -1;
+    if (tk->mon_device_active) return 0; // already monitoring
+
+    // Set up full-duplex device for monitoring
+    ma_device_config config = ma_device_config_init(ma_device_type_duplex);
+    config.capture.format    = ma_format_f32;
+    config.capture.channels  = 1;
+    config.playback.format   = ma_format_f32;
+    config.playback.channels = 2;
+    config.sampleRate        = SAMPLE_RATE;
+    config.dataCallback      = duplex_monitor_callback;
+    config.pUserData         = tk;
+    config.periodSizeInFrames = 128;  // ~2.7ms
+    config.periods = 2;
+
+    // Set capture device (track's input device)
+    if (tk->rec_device_index >= 0 &&
+        (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+        config.capture.pDeviceID = &g_engine.capture_infos[tk->rec_device_index].id;
+    }
+
+    // Set playback device (same as main output)
+    if (g_engine.output_device_index >= 0 &&
+        (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
+        config.playback.pDeviceID = &g_engine.playback_infos[g_engine.output_device_index].id;
+    }
+
+    if (ma_device_init(&g_engine.context, &config, &tk->mon_device) != MA_SUCCESS) {
+        return -1;
+    }
+
+    if (ma_device_start(&tk->mon_device) != MA_SUCCESS) {
+        ma_device_uninit(&tk->mon_device);
+        return -1;
+    }
+
+    tk->mon_device_active = 1;
+    atomic_store(&tk->monitoring, 1);
+    return 0;
+}
+
+// Stop input monitoring on a track. Closes the duplex device.
+EXPORT void tuidaw_stop_monitoring(int id) {
+    TrackState* tk = find_track(id);
+    if (!tk) return;
+
+    atomic_store(&tk->monitoring, 0);
+
+    if (tk->mon_device_active) {
+        ma_device_uninit(&tk->mon_device);
+        tk->mon_device_active = 0;
+    }
+}
+
+// Check if a track is currently monitoring input.
+EXPORT int tuidaw_is_monitoring(int id) {
+    TrackState* tk = find_track(id);
+    if (!tk) return 0;
+    return atomic_load(&tk->monitoring);
 }
 
 // ── Speed / WSOLA control ───────────────────────────────────────────────────

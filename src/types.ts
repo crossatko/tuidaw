@@ -17,6 +17,7 @@ export interface Track {
   muted: boolean
   solo: boolean
   armed: boolean // armed for recording
+  monitoring: boolean // input monitoring (hear input through output)
   volume: number // 0.0 - 1.0
   pan: number // -1.0 (L) to 1.0 (R)
   samples: Float32Array | null // raw PCM samples (mono, 48kHz)
