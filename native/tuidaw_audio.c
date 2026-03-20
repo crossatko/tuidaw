@@ -17,6 +17,7 @@
 #include "miniaudio.h"
 
 #include <string.h>
+#include <strings.h>  // strcasecmp
 #include <stdlib.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -180,9 +181,9 @@ typedef struct {
 
     // Direct JACK monitoring state (preferred — ~42ms vs ~68ms PulseAudio)
     jack_client_t* jack_client;      // JACK client for this track's monitoring
-    jack_port_t*   jack_capture;     // JACK input port (receives from Scarlett)
-    jack_port_t*   jack_playback_L;  // JACK output port (sends to output L)
-    jack_port_t*   jack_playback_R;  // JACK output port (sends to output R)
+    jack_port_t*   jack_capture;     // JACK input port (receives from selected capture device)
+    jack_port_t*   jack_playback_L;  // JACK output port (sends to selected output L)
+    jack_port_t*   jack_playback_R;  // JACK output port (sends to selected output R)
     int            jack_mon_active;  // is JACK monitoring active
 
     // WSOLA time-stretch state
@@ -1410,6 +1411,12 @@ EXPORT int tuidaw_start_monitoring(int id) {
         // Find and connect to the right ports.
         // We search ALL ports (not just physical) to find PipeWire's split/filter ports
         // like "Scarlett Solo (3rd Gen.) Input 2 Inst/Line:capture_MONO".
+        //
+        // Port selection uses the track's rec_device_index and the engine's
+        // output_device_index to find JACK ports belonging to the correct
+        // devices. miniaudio device names (via PulseAudio) correspond to JACK
+        // node names (the part before the colon in "node:port"). We extract a
+        // keyword from the miniaudio name and match against JACK port names.
         const char** all_ports = g_jack.get_ports(tk->jack_client, NULL,
             JACK_DEFAULT_AUDIO_TYPE, 0);
 
@@ -1420,25 +1427,109 @@ EXPORT int tuidaw_start_monitoring(int id) {
             goto jack_failed;
         }
 
-        // Find capture port: prefer "Inst" (instrument input), fallback to any capture
+        // Get the miniaudio device name for the track's selected input device.
+        // This will be used to find matching JACK capture ports.
+        const char* cap_device_name = NULL;
+        if (tk->rec_device_index >= 0 &&
+            (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+            cap_device_name = g_engine.capture_infos[tk->rec_device_index].name;
+        }
+
+        // Get the miniaudio device name for the selected output device.
+        const char* pb_device_name = NULL;
+        if (g_engine.output_device_index >= 0 &&
+            (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
+            pb_device_name = g_engine.playback_infos[g_engine.output_device_index].name;
+        }
+
+        // Helper: extract a short keyword from a miniaudio device name to match
+        // against JACK port names. PulseAudio names are verbose descriptions like
+        // "Scarlett Solo (3rd Gen.) Input 2 Inst/Line" while JACK node names are
+        // similar but not identical. We extract the first significant word (>3 chars)
+        // that isn't generic. If the name contains "Nano" we use that. If it
+        // contains "Scarlett" we use that. Otherwise use the first word >=4 chars.
+        // This is intentionally simple — we iterate all ports looking for matches
+        // and fall back to generic patterns if no match is found.
+
         char cap_name[256] = {0};
         char pb_L_name[256] = {0};
         char pb_R_name[256] = {0};
 
-        for (int i = 0; all_ports[i]; i++) {
-            if (cap_name[0] == 0 && strstr(all_ports[i], "Inst") &&
-                strstr(all_ports[i], "capture")) {
-                strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+        // ── Capture port selection ──
+        // Strategy: if we have a device name, find JACK capture ports whose
+        // node name (before ':') contains a significant part of the device name.
+        // We try progressively shorter substrings for matching.
+        if (cap_device_name) {
+            // Try to find capture ports matching the device name.
+            // JACK port format: "Node Name:port_name". We check if the device
+            // name (or a keyword from it) appears in the port's node part.
+            for (int i = 0; all_ports[i] && cap_name[0] == 0; i++) {
+                if (!strstr(all_ports[i], "capture")) continue;
+
+                // Extract node name (before ':')
+                const char* colon = strchr(all_ports[i], ':');
+                if (!colon) continue;
+                int node_len = (int)(colon - all_ports[i]);
+                char node[256] = {0};
+                if (node_len > 255) node_len = 255;
+                strncpy(node, all_ports[i], node_len);
+
+                // Check if the miniaudio device name appears in the JACK node name
+                // or vice versa. PipeWire usually makes them similar.
+                if (strstr(node, cap_device_name) || strstr(cap_device_name, node)) {
+                    strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+                }
             }
-            if (pb_L_name[0] == 0 && strstr(all_ports[i], "playback_FL")) {
-                strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
-            }
-            if (pb_R_name[0] == 0 && strstr(all_ports[i], "playback_FR")) {
-                strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
+
+            // If exact match failed, try keyword matching. Extract significant
+            // words from the device name and try each.
+            if (cap_name[0] == 0) {
+                // Build a list of keywords from the device name (words >=4 chars,
+                // skip generic words like "Input", "Output", "Line", "Audio")
+                char name_copy[256];
+                strncpy(name_copy, cap_device_name, sizeof(name_copy) - 1);
+                name_copy[sizeof(name_copy) - 1] = '\0';
+
+                char* keywords[16];
+                int kw_count = 0;
+                char* tok = strtok(name_copy, " ()-/.,");
+                while (tok && kw_count < 16) {
+                    if (strlen(tok) >= 4 &&
+                        strcasecmp(tok, "Input") != 0 &&
+                        strcasecmp(tok, "Output") != 0 &&
+                        strcasecmp(tok, "Line") != 0 &&
+                        strcasecmp(tok, "Audio") != 0 &&
+                        strcasecmp(tok, "Analog") != 0 &&
+                        strcasecmp(tok, "Digital") != 0 &&
+                        strcasecmp(tok, "Stereo") != 0 &&
+                        strcasecmp(tok, "Mono") != 0) {
+                        keywords[kw_count++] = tok;
+                    }
+                    tok = strtok(NULL, " ()-/.,");
+                }
+
+                // Try matching each keyword against capture ports
+                for (int k = 0; k < kw_count && cap_name[0] == 0; k++) {
+                    for (int i = 0; all_ports[i]; i++) {
+                        if (!strstr(all_ports[i], "capture")) continue;
+                        if (strstr(all_ports[i], keywords[k])) {
+                            strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+                            break;
+                        }
+                    }
+                }
             }
         }
 
-        // Fallback: any capture port
+        // Fallback: prefer "Inst" capture (instrument input), then any capture
+        if (cap_name[0] == 0) {
+            for (int i = 0; all_ports[i]; i++) {
+                if (strstr(all_ports[i], "Inst") && strstr(all_ports[i], "capture")) {
+                    strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+                    break;
+                }
+            }
+        }
         if (cap_name[0] == 0) {
             for (int i = 0; all_ports[i]; i++) {
                 if (strstr(all_ports[i], "capture")) {
@@ -1448,15 +1539,97 @@ EXPORT int tuidaw_start_monitoring(int id) {
             }
         }
 
-        // Fallback: any playback ports
-        if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+        // ── Playback port selection ──
+        // Strategy: if we have an output device name, find JACK playback ports
+        // whose node name matches. Need both FL/L and FR/R for stereo output.
+        if (pb_device_name) {
             for (int i = 0; all_ports[i]; i++) {
-                if (pb_L_name[0] == 0 && strstr(all_ports[i], "playback") &&
-                    (strstr(all_ports[i], "FL") || strstr(all_ports[i], "_1"))) {
+                if (!strstr(all_ports[i], "playback")) continue;
+
+                const char* colon = strchr(all_ports[i], ':');
+                if (!colon) continue;
+                int node_len = (int)(colon - all_ports[i]);
+                char node[256] = {0};
+                if (node_len > 255) node_len = 255;
+                strncpy(node, all_ports[i], node_len);
+
+                if (!strstr(node, pb_device_name) && !strstr(pb_device_name, node))
+                    continue;
+
+                // Match L/FL and R/FR channels
+                const char* port_part = colon + 1;
+                if (pb_L_name[0] == 0 &&
+                    (strstr(port_part, "FL") || strstr(port_part, "_1") ||
+                     strstr(port_part, "_L"))) {
                     strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
                 }
-                if (pb_R_name[0] == 0 && strstr(all_ports[i], "playback") &&
-                    (strstr(all_ports[i], "FR") || strstr(all_ports[i], "_2"))) {
+                if (pb_R_name[0] == 0 &&
+                    (strstr(port_part, "FR") || strstr(port_part, "_2") ||
+                     strstr(port_part, "_R"))) {
+                    strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
+                }
+            }
+
+            // Keyword fallback for playback (same as capture)
+            if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+                char name_copy[256];
+                strncpy(name_copy, pb_device_name, sizeof(name_copy) - 1);
+                name_copy[sizeof(name_copy) - 1] = '\0';
+
+                char* keywords[16];
+                int kw_count = 0;
+                char* tok = strtok(name_copy, " ()-/.,");
+                while (tok && kw_count < 16) {
+                    if (strlen(tok) >= 4 &&
+                        strcasecmp(tok, "Input") != 0 &&
+                        strcasecmp(tok, "Output") != 0 &&
+                        strcasecmp(tok, "Line") != 0 &&
+                        strcasecmp(tok, "Audio") != 0 &&
+                        strcasecmp(tok, "Analog") != 0 &&
+                        strcasecmp(tok, "Digital") != 0 &&
+                        strcasecmp(tok, "Stereo") != 0 &&
+                        strcasecmp(tok, "Mono") != 0) {
+                        keywords[kw_count++] = tok;
+                    }
+                    tok = strtok(NULL, " ()-/.,");
+                }
+
+                for (int k = 0; k < kw_count; k++) {
+                    for (int i = 0; all_ports[i]; i++) {
+                        if (!strstr(all_ports[i], "playback")) continue;
+                        if (!strstr(all_ports[i], keywords[k])) continue;
+                        const char* colon2 = strchr(all_ports[i], ':');
+                        const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
+                        if (pb_L_name[0] == 0 &&
+                            (strstr(port_part, "FL") || strstr(port_part, "_1") ||
+                             strstr(port_part, "_L"))) {
+                            strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
+                        }
+                        if (pb_R_name[0] == 0 &&
+                            (strstr(port_part, "FR") || strstr(port_part, "_2") ||
+                             strstr(port_part, "_R"))) {
+                            strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
+                        }
+                    }
+                    if (pb_L_name[0] != 0 && pb_R_name[0] != 0) break;
+                }
+            }
+        }
+
+        // Fallback: any playback ports with FL/FR or _1/_2
+        if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+            for (int i = 0; all_ports[i]; i++) {
+                if (!strstr(all_ports[i], "playback")) continue;
+                const char* colon2 = strchr(all_ports[i], ':');
+                const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
+                if (pb_L_name[0] == 0 &&
+                    (strstr(port_part, "FL") || strstr(port_part, "_1") ||
+                     strstr(port_part, "_L"))) {
+                    strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
+                }
+                if (pb_R_name[0] == 0 &&
+                    (strstr(port_part, "FR") || strstr(port_part, "_2") ||
+                     strstr(port_part, "_R"))) {
                     strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
                 }
             }

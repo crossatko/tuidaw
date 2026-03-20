@@ -49,7 +49,7 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1610 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
+C shared library (`native/tuidaw_audio.c`, ~1780 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
 
 ### API surface (all `EXPORT`ed):
 
@@ -142,6 +142,9 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
 - **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop.
 - **Direct JACK API for monitoring**: miniaudio's JACK backend fails for duplex on PipeWire because it uses `JackPortIsPhysical` to find ports, and PipeWire's split/filter ports (e.g., Scarlett Inst/Line input) don't have that flag. Fix: bypass miniaudio entirely — `dlopen("libjack.so.0")`, register ports via `jack_port_register`, find correct capture/playback ports by name pattern (searching ALL ports, not just physical), and connect manually via `jack_connect`. Result: ~42ms round-trip vs ~68ms via PulseAudio duplex.
+- **JACK port selection uses track's device**: JACK monitoring port connections respect `rec_device_index` and `output_device_index`. Maps miniaudio device names to JACK port node names (before ':') via substring matching with keyword fallback. Falls back to "Inst" capture / any capture if no device-specific match.
+- **Nano Cortex 8-channel surround**: Neural DSP Nano Cortex presents as 8-channel surround 7.1 (`s32le 8ch 48000Hz`) in PulseAudio. Guitar signal is on capture_FL (first channel). miniaudio handles 8→1 downmix for recording, but PulseAudio volume must be at 100% (not default 10% / -60dB) or recordings will be silent.
+- **PulseAudio source volume can silence recordings**: Some USB devices default to very low PulseAudio source volume (Nano Cortex: 10% / -60dB). JACK monitoring bypasses PulseAudio volume entirely (direct port connections), so monitoring works while recording captures silence. Fix: check `pactl list sources` for volume levels.
 - **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `PIPEWIRE_LATENCY=256/48000` env var set before `jack_client_open` — PipeWire lowers the quantum for this client's driver group only, without affecting other apps. `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other applications (Discord chipmunk effect). `unsetenv` after client open to avoid leaking to child processes.
 - **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
@@ -158,7 +161,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1610 lines, 36+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~1780 lines, 36+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)
