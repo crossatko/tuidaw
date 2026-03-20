@@ -10,7 +10,7 @@ export function refineBPM(
   sampleRate: number,
   coarseBPM: number,
   minBPM: number,
-  maxBPM: number,
+  maxBPM: number
 ): number {
   const searchRadius = 3 // ±3 BPM
   const step = 0.1
@@ -25,7 +25,11 @@ export function refineBPM(
   let bestBPM = coarseBPM
   let bestCorr = -Infinity
 
-  for (let bpm = coarseBPM - searchRadius; bpm <= coarseBPM + searchRadius; bpm += step) {
+  for (
+    let bpm = coarseBPM - searchRadius;
+    bpm <= coarseBPM + searchRadius;
+    bpm += step
+  ) {
     if (bpm < minBPM || bpm > maxBPM) continue
     const period = Math.round((sampleRate * 60) / bpm)
     if (period >= refineLen) continue
@@ -64,7 +68,7 @@ export function refineBPMMulti(
   sampleRate: number,
   candidates: number[],
   minBPM: number,
-  maxBPM: number,
+  maxBPM: number
 ): number {
   const searchRadius = 3 // ±3 BPM per candidate
   const step = 0.1
@@ -80,12 +84,18 @@ export function refineBPMMulti(
   for (const coarseBPM of candidates) {
     let bestBPM = coarseBPM
     let bestCorr = -Infinity
-    for (let bpm = coarseBPM - searchRadius; bpm <= coarseBPM + searchRadius; bpm += step) {
+    for (
+      let bpm = coarseBPM - searchRadius;
+      bpm <= coarseBPM + searchRadius;
+      bpm += step
+    ) {
       if (bpm < minBPM || bpm > maxBPM) continue
       const period = Math.round((sampleRate * 60) / bpm)
       if (period >= refineLen) continue
 
-      let sum = 0, norm1 = 0, norm2 = 0
+      let sum = 0,
+        norm1 = 0,
+        norm2 = 0
       const n = refineLen - period
       for (let i = 0; i < n; i += 10) {
         const s1 = samples[refineStart + i]
@@ -95,7 +105,10 @@ export function refineBPMMulti(
         norm2 += s2 * s2
       }
       const corr = sum / Math.sqrt(norm1 * norm2 + 1e-20)
-      if (corr > bestCorr) { bestCorr = corr; bestBPM = bpm }
+      if (corr > bestCorr) {
+        bestCorr = corr
+        bestBPM = bpm
+      }
     }
     refined.push({ bpm: bestBPM, corr: bestCorr })
   }
@@ -124,7 +137,7 @@ export function detectBPM(
   samples: Float32Array,
   sampleRate: number,
   minBPM: number = 60,
-  maxBPM: number = 300,
+  maxBPM: number = 300
 ): number | null {
   if (samples.length < sampleRate * 4) return null // need at least 4 seconds
 
@@ -137,7 +150,7 @@ export function detectBPM(
 
   // Compute short-time energy in overlapping frames
   const frameSize = Math.floor(sampleRate * 0.02) // 20ms frames
-  const hopSize = Math.floor(frameSize / 4)        // 75% overlap (~200 fps)
+  const hopSize = Math.floor(frameSize / 4) // 75% overlap (~200 fps)
   const numFrames = Math.floor((analysisLen - frameSize) / hopSize) + 1
   if (numFrames < 2) return null
 
@@ -186,7 +199,11 @@ export function detectBPM(
   }
 
   // Find peaks with parabolic interpolation
-  const parabolicPeakOffset = (left: number, center: number, right: number): number => {
+  const parabolicPeakOffset = (
+    left: number,
+    center: number,
+    right: number
+  ): number => {
     const denom = 2 * (2 * center - left - right)
     if (Math.abs(denom) < 1e-10) return 0
     return (left - right) / denom
@@ -209,7 +226,11 @@ export function detectBPM(
     if (acf[bestIdx] <= 0) return null
     let bestLag = bestIdx + minLag
     if (bestIdx > 0 && bestIdx < acf.length - 1) {
-      bestLag += parabolicPeakOffset(acf[bestIdx - 1], acf[bestIdx], acf[bestIdx + 1])
+      bestLag += parabolicPeakOffset(
+        acf[bestIdx - 1],
+        acf[bestIdx],
+        acf[bestIdx + 1]
+      )
     }
     const coarseBPM = (60 * onsetRate) / bestLag
     return refineBPM(samples, sampleRate, coarseBPM, minBPM, maxBPM)
@@ -247,15 +268,19 @@ export function detectBPM(
   const strengthThreshold = peaks[0].strength * 0.9
   // Exclude candidates that are 3:2 sub-harmonics of the promoted BPM,
   // as these are rhythmic subdivisions, not real tempo alternatives.
-  const harmonicRatios = [3/2]
+  const harmonicRatios = [3 / 2]
   for (const p of peaks) {
     const bpm = (60 * onsetRate) / p.lag
-    if (p.strength >= strengthThreshold && bpm > prePromotionBPM && bpm < promotedBPM) {
+    if (
+      p.strength >= strengthThreshold &&
+      bpm > prePromotionBPM &&
+      bpm < promotedBPM
+    ) {
       // Skip if this BPM is a simple harmonic sub-division of the promoted BPM
       const ratio = promotedBPM / bpm
-      const isHarmonic = harmonicRatios.some(hr => Math.abs(ratio - hr) < 0.1)
+      const isHarmonic = harmonicRatios.some((hr) => Math.abs(ratio - hr) < 0.1)
       if (isHarmonic) continue
-      const isDuplicate = candidates.some(c => Math.abs(c - bpm) < 5)
+      const isDuplicate = candidates.some((c) => Math.abs(c - bpm) < 5)
       if (!isDuplicate) candidates.push(bpm)
     }
   }
@@ -285,7 +310,11 @@ export function detectBPM(
  * 6. Refine the coarse winner at sample level using median onset strength
  *    (robust to outliers) rather than mean
  */
-export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: number): number {
+export function findBeatOffset(
+  samples: Float32Array,
+  sampleRate: number,
+  bpm: number
+): number {
   const samplesPerBeat = Math.round((60 / bpm) * sampleRate)
   if (samplesPerBeat <= 0 || samples.length < samplesPerBeat * 4) return 0
 
@@ -321,7 +350,10 @@ export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: n
   const beatsPerWindow = 32
   const windowFrames = beatsPerWindow * stepsPerBeat
   const windowHop = Math.floor(windowFrames / 2) // 50% overlap
-  const numWindows = Math.max(1, Math.floor((onset.length - windowFrames) / windowHop) + 1)
+  const numWindows = Math.max(
+    1,
+    Math.floor((onset.length - windowFrames) / windowHop) + 1
+  )
 
   // Accumulate phase scores across all windows
   const phaseScores = new Float64Array(stepsPerBeat)
@@ -411,7 +443,10 @@ export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: n
     Math.floor(sampleRate * 10),
     Math.floor(samples.length * 0.25)
   )
-  const refineEndSample = Math.min(samples.length - 1, skipSamples + Math.floor(sampleRate * 30))
+  const refineEndSample = Math.min(
+    samples.length - 1,
+    skipSamples + Math.floor(sampleRate * 30)
+  )
 
   let bestFineOffset = coarseOffset
   let bestFineScore = -Infinity
@@ -423,11 +458,14 @@ export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: n
   for (let off = refineStart; off < refineEnd; off++) {
     let count = 0
     // Find first beat position >= skipSamples aligned with phase 'off'
-    const firstBeat = off + Math.ceil((skipSamples - off) / samplesPerBeat) * samplesPerBeat
+    const firstBeat =
+      off + Math.ceil((skipSamples - off) / samplesPerBeat) * samplesPerBeat
     // Collect onset/transient strength at each beat position
-    for (let pos = firstBeat;
-         pos < refineEndSample - 1 && count < maxBeats;
-         pos += samplesPerBeat) {
+    for (
+      let pos = firstBeat;
+      pos < refineEndSample - 1 && count < maxBeats;
+      pos += samplesPerBeat
+    ) {
       // Short-window energy spike: sum abs differences in a ~1ms window
       let spike = 0
       const windowLen = Math.min(Math.floor(sampleRate * 0.001), 48) // ~1ms
@@ -441,9 +479,10 @@ export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: n
 
     // Median of beat-position onset strengths (robust to outliers)
     const sorted = beatStrengths.slice(0, count).sort()
-    const median = count % 2 === 0
-      ? (sorted[count / 2 - 1] + sorted[count / 2]) / 2
-      : sorted[Math.floor(count / 2)]
+    const median =
+      count % 2 === 0
+        ? (sorted[count / 2 - 1] + sorted[count / 2]) / 2
+        : sorted[Math.floor(count / 2)]
 
     // Also compute the inter-quartile mean (average of middle 50%)
     // for a balance between robustness and sensitivity
@@ -451,7 +490,7 @@ export function findBeatOffset(samples: Float32Array, sampleRate: number, bpm: n
     const q3 = Math.ceil(count * 0.75)
     let iqm = 0
     for (let i = q1; i < q3; i++) iqm += sorted[i]
-    iqm /= (q3 - q1) || 1
+    iqm /= q3 - q1 || 1
 
     const score = median * 0.4 + iqm * 0.6
 

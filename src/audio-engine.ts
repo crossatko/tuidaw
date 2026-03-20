@@ -8,88 +8,140 @@
 //   - True cross-platform support (Linux, macOS, Windows)
 //   - Lower latency and no temp file I/O during transport
 
-import { dlopen, FFIType, ptr, toArrayBuffer, toBuffer, type Pointer } from "bun:ffi"
-import { spawn, type Subprocess } from "bun"
-import { existsSync, mkdirSync, rmSync } from "fs"
-import type { Track, ProjectState, AudioDevice, ProjectDescriptor, TrackDescriptor } from "./types"
-import { resample } from "./utils/dsp"
-import { detectBPM, findBeatOffset } from "./utils/bpm"
-import { parseWav, encodeWav, encodeWavStereo } from "./utils/wav"
+import {
+  dlopen,
+  FFIType,
+  ptr,
+  toArrayBuffer,
+  toBuffer,
+  type Pointer
+} from 'bun:ffi'
+import { spawn, type Subprocess } from 'bun'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import type {
+  Track,
+  ProjectState,
+  AudioDevice,
+  ProjectDescriptor,
+  TrackDescriptor
+} from './types'
+import { resample } from './utils/dsp'
+import { detectBPM, findBeatOffset } from './utils/bpm'
+import { parseWav, encodeWav, encodeWavStereo } from './utils/wav'
 
 const SAMPLE_RATE = 48000
-const RECORDINGS_DIR = "./recordings"
+const RECORDINGS_DIR = './recordings'
 
 // ── Load Native Library ─────────────────────────────────────────────────────
 
 function findLibrary(): string {
-  const path = require("path")
+  const path = require('path')
   const candidates = [
-    path.join(__dirname, "..", "native", "libtuidaw_audio.so"),
-    path.join(__dirname, "..", "native", "libtuidaw_audio.dylib"),
-    path.join(__dirname, "..", "native", "tuidaw_audio.dll"),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.so'),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.dylib'),
+    path.join(__dirname, '..', 'native', 'tuidaw_audio.dll')
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
   }
-  throw new Error("Native audio library not found. Run native/build.sh first.")
+  throw new Error('Native audio library not found. Run native/build.sh first.')
 }
 
 const lib = dlopen(findLibrary(), {
-  tuidaw_init:                 { returns: FFIType.i32 },
-  tuidaw_deinit:               { returns: FFIType.void },
-  tuidaw_refresh_devices:      { returns: FFIType.i32 },
-  tuidaw_get_device_count:     { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_get_device_name:      { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32] },
-  tuidaw_is_device_default:    { returns: FFIType.i32, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_set_output_device:    { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_init: { returns: FFIType.i32 },
+  tuidaw_deinit: { returns: FFIType.void },
+  tuidaw_refresh_devices: { returns: FFIType.i32 },
+  tuidaw_get_device_count: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_get_device_name: {
+    returns: FFIType.i32,
+    args: [FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_is_device_default: {
+    returns: FFIType.i32,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_set_output_device: { returns: FFIType.void, args: [FFIType.i32] },
   tuidaw_get_active_device_index: { returns: FFIType.i32 },
-  tuidaw_start_playback_device:{ returns: FFIType.i32 },
+  tuidaw_start_playback_device: { returns: FFIType.i32 },
   tuidaw_stop_playback_device: { returns: FFIType.void },
-  tuidaw_add_track:            { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_remove_track:         { returns: FFIType.void, args: [FFIType.i32] },
-  tuidaw_set_track_samples:    { returns: FFIType.void, args: [FFIType.i32, FFIType.ptr, FFIType.i32] },
-  tuidaw_set_track_volume:     { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_track_pan:        { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_track_muted:      { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_set_track_solo:       { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_set_track_input_device:{ returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_play:                 { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_stop:                 { returns: FFIType.void },
-  tuidaw_get_playhead:         { returns: FFIType.i64 },
-  tuidaw_set_playhead:         { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_set_click:            { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_click_samples:    { returns: FFIType.void, args: [FFIType.ptr, FFIType.i32] },
-  tuidaw_generate_click:       { returns: FFIType.i32, args: [FFIType.f32, FFIType.i32] },
-  tuidaw_set_click_volume:     { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_set_click_pan:        { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_set_loop:             { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
-  tuidaw_start_recording:      { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_stop_recording:       { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_add_track: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_remove_track: { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_set_track_samples: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_set_track_volume: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
+  tuidaw_set_track_pan: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
+  tuidaw_set_track_muted: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_set_track_solo: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_set_track_input_device: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_play: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_stop: { returns: FFIType.void },
+  tuidaw_get_playhead: { returns: FFIType.i64 },
+  tuidaw_set_playhead: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_set_click: { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_click_samples: {
+    returns: FFIType.void,
+    args: [FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_generate_click: {
+    returns: FFIType.i32,
+    args: [FFIType.f32, FFIType.i32]
+  },
+  tuidaw_set_click_volume: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_set_click_pan: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_set_loop: { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
+  tuidaw_start_recording: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_stop_recording: { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_get_recording_buffer: { returns: FFIType.ptr, args: [FFIType.i32] },
   tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_set_speed:            { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_get_speed:            { returns: FFIType.f32 },
-  tuidaw_render:               { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
+  tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_get_speed: { returns: FFIType.f32 },
+  tuidaw_render: { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] }
 })
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
 // Opens native GTK file dialogs via zenity. Returns chosen path or null.
 
-async function zenitySave(title: string, defaultName: string, filters?: string[]): Promise<string | null> {
+async function zenitySave(
+  title: string,
+  defaultName: string,
+  filters?: string[]
+): Promise<string | null> {
   const cmd = [
-    "zenity", "--file-selection", "--save", "--confirm-overwrite",
-    "--title", title,
-    "--filename", defaultName,
+    'zenity',
+    '--file-selection',
+    '--save',
+    '--confirm-overwrite',
+    '--title',
+    title,
+    '--filename',
+    defaultName
   ]
   for (const f of filters ?? []) {
-    cmd.push("--file-filter", f)
+    cmd.push('--file-filter', f)
   }
   try {
-    const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" })
+    const proc = spawn({ cmd, stdout: 'pipe', stderr: 'pipe' })
     const exitCode = await proc.exited
     if (exitCode !== 0) return null
     const stdout = proc.stdout
-    if (typeof stdout === "number") return null
+    if (typeof stdout === 'number') return null
     const text = await new Response(stdout as ReadableStream).text()
     return text.trim() || null
   } catch {
@@ -97,20 +149,20 @@ async function zenitySave(title: string, defaultName: string, filters?: string[]
   }
 }
 
-async function zenityOpen(title: string, filters?: string[]): Promise<string | null> {
-  const cmd = [
-    "zenity", "--file-selection",
-    "--title", title,
-  ]
+async function zenityOpen(
+  title: string,
+  filters?: string[]
+): Promise<string | null> {
+  const cmd = ['zenity', '--file-selection', '--title', title]
   for (const f of filters ?? []) {
-    cmd.push("--file-filter", f)
+    cmd.push('--file-filter', f)
   }
   try {
-    const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" })
+    const proc = spawn({ cmd, stdout: 'pipe', stderr: 'pipe' })
     const exitCode = await proc.exited
     if (exitCode !== 0) return null
     const stdout = proc.stdout
-    if (typeof stdout === "number") return null
+    if (typeof stdout === 'number') return null
     const text = await new Response(stdout as ReadableStream).text()
     return text.trim() || null
   } catch {
@@ -124,8 +176,8 @@ export { zenitySave, zenityOpen }
 // The native library uses integer IDs. We map string track IDs to ints.
 
 let nextNativeId = 1
-const trackIdMap = new Map<string, number>()     // string -> native int
-const reverseIdMap = new Map<number, string>()    // native int -> string
+const trackIdMap = new Map<string, number>() // string -> native int
+const reverseIdMap = new Map<number, string>() // native int -> string
 
 function getNativeId(trackId: string): number {
   let nid = trackIdMap.get(trackId)
@@ -168,19 +220,22 @@ export class AudioEngine {
 
     const result = lib.symbols.tuidaw_init()
     if (result !== 0) {
-      throw new Error("Failed to initialize native audio engine")
+      throw new Error('Failed to initialize native audio engine')
     }
 
     // Start the playback device immediately (it sits idle until tuidaw_play)
     const playResult = lib.symbols.tuidaw_start_playback_device()
     if (playResult !== 0) {
-      throw new Error("Failed to start playback device")
+      throw new Error('Failed to start playback device')
     }
   }
 
   // ── Device Enumeration ─────────────────────────────────────────────────
 
-  async enumerateDevices(): Promise<{ inputs: AudioDevice[]; outputs: AudioDevice[] }> {
+  async enumerateDevices(): Promise<{
+    inputs: AudioDevice[]
+    outputs: AudioDevice[]
+  }> {
     lib.symbols.tuidaw_refresh_devices()
 
     const inputs: AudioDevice[] = []
@@ -201,7 +256,7 @@ export class AudioEngine {
     for (let i = 0; i < inputCount; i++) {
       const name = readName(1, i)
       const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
-      inputs.push({ id: i, name, description: name, type: "input", isDefault })
+      inputs.push({ id: i, name, description: name, type: 'input', isDefault })
     }
 
     // Enumerate playback (output) devices
@@ -209,7 +264,13 @@ export class AudioEngine {
     for (let i = 0; i < outputCount; i++) {
       const name = readName(0, i)
       const isDefault = lib.symbols.tuidaw_is_device_default(0, i) !== 0
-      outputs.push({ id: i, name, description: name, type: "output", isDefault })
+      outputs.push({
+        id: i,
+        name,
+        description: name,
+        type: 'output',
+        isDefault
+      })
     }
 
     return { inputs, outputs }
@@ -231,7 +292,7 @@ export class AudioEngine {
     lib.symbols.tuidaw_stop_playback_device()
     const result = lib.symbols.tuidaw_start_playback_device()
     if (result !== 0) {
-      throw new Error("Failed to restart playback device with new output")
+      throw new Error('Failed to restart playback device with new output')
     }
   }
 
@@ -245,7 +306,7 @@ export class AudioEngine {
     lib.symbols.tuidaw_stop_playback_device()
     const result = lib.symbols.tuidaw_start_playback_device()
     if (result !== 0) {
-      throw new Error("Failed to restart playback device with new output")
+      throw new Error('Failed to restart playback device with new output')
     }
   }
 
@@ -269,7 +330,11 @@ export class AudioEngine {
     // Sync sample buffer
     if (track.samples && track.samples.length > 0) {
       this.pinnedBuffers.set(track.id, track.samples)
-      lib.symbols.tuidaw_set_track_samples(nid, ptr(track.samples), track.samples.length)
+      lib.symbols.tuidaw_set_track_samples(
+        nid,
+        ptr(track.samples),
+        track.samples.length
+      )
     } else {
       this.pinnedBuffers.delete(track.id)
       lib.symbols.tuidaw_set_track_samples(nid, null as any, 0)
@@ -324,7 +389,11 @@ export class AudioEngine {
     if (nid === undefined) return
     if (track.samples && track.samples.length > 0) {
       this.pinnedBuffers.set(track.id, track.samples)
-      lib.symbols.tuidaw_set_track_samples(nid, ptr(track.samples), track.samples.length)
+      lib.symbols.tuidaw_set_track_samples(
+        nid,
+        ptr(track.samples),
+        track.samples.length
+      )
     } else {
       this.pinnedBuffers.delete(track.id)
       lib.symbols.tuidaw_set_track_samples(nid, null as any, 0)
@@ -337,7 +406,7 @@ export class AudioEngine {
   async startRecording(
     trackId: string,
     _onChunk: (samples: Float32Array) => void,
-    _targetDeviceId?: number | null,
+    _targetDeviceId?: number | null
   ): Promise<void> {
     const nid = getNativeId(trackId)
     const result = lib.symbols.tuidaw_start_recording(nid)
@@ -350,7 +419,10 @@ export class AudioEngine {
 
   // Poll for new recording data and invoke the callback with new samples.
   // Called from the playhead update interval in index.ts.
-  pollRecordingData(trackId: string, onChunk: (samples: Float32Array) => void): void {
+  pollRecordingData(
+    trackId: string,
+    onChunk: (samples: Float32Array) => void
+  ): void {
     const nid = trackIdMap.get(trackId)
     if (nid === undefined) return
 
@@ -365,7 +437,7 @@ export class AudioEngine {
 
     // Read only the new samples
     const newSampleCount = currentLen - lastLen
-    const byteOffset = lastLen * 4  // float32 = 4 bytes
+    const byteOffset = lastLen * 4 // float32 = 4 bytes
     const newBytes = toArrayBuffer(bufPtr, byteOffset, newSampleCount * 4)
     const newSamples = new Float32Array(newBytes)
 
@@ -389,7 +461,7 @@ export class AudioEngine {
     if (!bufPtr) return null
 
     const bytes = toArrayBuffer(bufPtr, 0, totalLen * 4)
-    return new Float32Array(bytes.slice(0))  // copy to own buffer
+    return new Float32Array(bytes.slice(0)) // copy to own buffer
   }
 
   // Stop ALL active recordings and return map of trackId -> samples
@@ -431,10 +503,17 @@ export class AudioEngine {
     // The native callback indexes the click buffer by output-space counter
     // (click_frame_counter). Duration is in output frames: projectDuration / speed.
     // On loop wrap, the counter is reset to align with the loop start position.
-    const projectDuration = state.tracks.reduce((max, t) => Math.max(max, t.samples?.length ?? 0), 0)
+    const projectDuration = state.tracks.reduce(
+      (max, t) => Math.max(max, t.samples?.length ?? 0),
+      0
+    )
     const speed = state.bpm / state.originalBpm
-    const outputDuration = speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
-    const clickDuration = Math.max(outputDuration + SAMPLE_RATE * 60, SAMPLE_RATE * 600)
+    const outputDuration =
+      speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
+    const clickDuration = Math.max(
+      outputDuration + SAMPLE_RATE * 60,
+      SAMPLE_RATE * 600
+    )
     this.updateClickBuffer(state.bpm, clickDuration)
 
     // Set loop state — always pass loop region to native engine if it exists.
@@ -442,9 +521,15 @@ export class AudioEngine {
     //   - Playhead before loop: plays linearly until reaching loopEnd, then wraps
     //   - Playhead inside loop: wraps at loopEnd back to loopStart
     //   - Playhead after loop (manual seek past region): disabled by syncLoopAfterSeek
-    if (state.loopStart !== null && state.loopEnd !== null &&
-        state.playheadPosition <= state.loopEnd) {
-      lib.symbols.tuidaw_set_loop(BigInt(state.loopStart), BigInt(state.loopEnd))
+    if (
+      state.loopStart !== null &&
+      state.loopEnd !== null &&
+      state.playheadPosition <= state.loopEnd
+    ) {
+      lib.symbols.tuidaw_set_loop(
+        BigInt(state.loopStart),
+        BigInt(state.loopEnd)
+      )
     } else {
       lib.symbols.tuidaw_set_loop(BigInt(-1), BigInt(-1))
     }
@@ -459,7 +544,7 @@ export class AudioEngine {
   // Get elapsed samples since play started — now uses the native engine's
   // sample-accurate counter instead of wall-clock time.
   getElapsedSamples(): number {
-    return 0  // Not used in new engine — getPlayhead() is authoritative
+    return 0 // Not used in new engine — getPlayhead() is authoritative
   }
 
   // Get current playhead position (sample-accurate from the audio thread)
@@ -501,16 +586,24 @@ export class AudioEngine {
   async playTrack(
     track: Track,
     _startSample: number = 0,
-    _targetDeviceId?: number | null,
+    _targetDeviceId?: number | null
   ): Promise<void> {
     this.syncTrack(track)
   }
 
   // These are no longer needed but kept for API compatibility
-  async prepareTrackWav(_track: Track, _startSample?: number): Promise<string | null> {
-    return null  // No temp files needed
+  async prepareTrackWav(
+    _track: Track,
+    _startSample?: number
+  ): Promise<string | null> {
+    return null // No temp files needed
   }
-  spawnTrackPlayer(_trackId: string, _wavPath: string, _targetDeviceId?: number | null, _volume?: number): void {
+  spawnTrackPlayer(
+    _trackId: string,
+    _wavPath: string,
+    _targetDeviceId?: number | null,
+    _volume?: number
+  ): void {
     // No-op — mixing is done in the native callback
   }
 
@@ -518,7 +611,7 @@ export class AudioEngine {
   async restartTrackForPan(
     track: Track,
     _currentSample: number,
-    _targetDeviceId?: number | null,
+    _targetDeviceId?: number | null
   ): Promise<void> {
     // Pan changes are now instant (atomic update in native engine)
     this.setTrackPan(track.id, track.pan)
@@ -538,22 +631,29 @@ export class AudioEngine {
   // Pre-prepare loop restart — no longer needed (loop is handled in native callback)
   async prepareLoopRestart(
     _state: ProjectState,
-    _loopStart: number,
-  ): Promise<{ tracks: { trackId: string; wavPath: string; volume: number }[]; clickWavPath: string | null }> {
+    _loopStart: number
+  ): Promise<{
+    tracks: { trackId: string; wavPath: string; volume: number }[]
+    clickWavPath: string | null
+  }> {
     return { tracks: [], clickWavPath: null }
   }
 
   // Execute loop restart — no longer needed
   executeLoopRestart(
     _preparations: any,
-    _targetDeviceId?: number | null,
+    _targetDeviceId?: number | null
   ): void {
     // No-op — loop is handled sample-accurately in the native callback
   }
 
   // ── Click / Metronome ──────────────────────────────────────────────────
 
-  async startClick(bpm: number, _startSample?: number, _targetDeviceId?: number | null): Promise<void> {
+  async startClick(
+    bpm: number,
+    _startSample?: number,
+    _targetDeviceId?: number | null
+  ): Promise<void> {
     // bpm here is the DISPLAYED BPM — used for output-space click timing
     lib.symbols.tuidaw_set_click(1, bpm)
   }
@@ -572,7 +672,7 @@ export class AudioEngine {
 
   // Click WAV helpers — no longer needed (click is generated in native callback)
   async prepareClickWav(_bpm: number, _startSample?: number): Promise<string> {
-    return ""
+    return ''
   }
   spawnClickPlayer(_wavPath: string, _targetDeviceId?: number | null): void {}
 
@@ -588,7 +688,10 @@ export class AudioEngine {
   // Regenerate the click buffer for a given BPM and project duration.
   // Default duration: 10 minutes at 48kHz = 28,800,000 frames.
   // Must be called whenever BPM changes (buffer beat positions depend on BPM).
-  updateClickBuffer(bpm: number, durationFrames: number = SAMPLE_RATE * 600): void {
+  updateClickBuffer(
+    bpm: number,
+    durationFrames: number = SAMPLE_RATE * 600
+  ): void {
     if (bpm <= 0) return
     this.generateClick(bpm, durationFrames)
   }
@@ -626,13 +729,17 @@ export class AudioEngine {
 
   async saveTrackToFile(track: Track): Promise<string | null> {
     if (!track.samples) return null
-    const filePath = `${RECORDINGS_DIR}/${track.name.replace(/\s+/g, "_")}_${Date.now()}.wav`
+    const filePath = `${RECORDINGS_DIR}/${track.name.replace(/\s+/g, '_')}_${Date.now()}.wav`
     await this.writeWav(filePath, track.samples, track.sampleRate)
     track.filePath = filePath
     return filePath
   }
 
-  async loadWavFile(filePath: string): Promise<{ samples: Float32Array; sampleRate: number; detectedBPM: number | null } | null> {
+  async loadWavFile(filePath: string): Promise<{
+    samples: Float32Array
+    sampleRate: number
+    detectedBPM: number | null
+  } | null> {
     try {
       const file = Bun.file(filePath)
       const buf = new Uint8Array(await file.arrayBuffer())
@@ -644,7 +751,11 @@ export class AudioEngine {
 
       // Resample to project sample rate if needed (linear interpolation)
       if (result.sampleRate !== SAMPLE_RATE) {
-        result.samples = resample(result.samples, result.sampleRate, SAMPLE_RATE)
+        result.samples = resample(
+          result.samples,
+          result.sampleRate,
+          SAMPLE_RATE
+        )
         result.sampleRate = SAMPLE_RATE
       }
 
@@ -652,7 +763,11 @@ export class AudioEngine {
       // This aligns the click track with the music's actual beat grid.
       let beatOffset = 0
       if (detectedBPM) {
-        beatOffset = findBeatOffset(result.samples, result.sampleRate, detectedBPM)
+        beatOffset = findBeatOffset(
+          result.samples,
+          result.sampleRate,
+          detectedBPM
+        )
         if (beatOffset > 0 && beatOffset < result.samples.length) {
           result.samples = result.samples.slice(beatOffset)
         }
@@ -665,13 +780,22 @@ export class AudioEngine {
   }
 
   // Write a WAV file from Float32 samples (mono, s16)
-  async writeWav(filePath: string, samples: Float32Array, sampleRate: number): Promise<void> {
+  async writeWav(
+    filePath: string,
+    samples: Float32Array,
+    sampleRate: number
+  ): Promise<void> {
     const wavData = encodeWav(samples, sampleRate)
     await Bun.write(filePath, wavData)
   }
 
   // Write a stereo WAV file from mono Float32 samples with pan applied.
-  async writeStereoWav(filePath: string, samples: Float32Array, sampleRate: number, pan: number = 0): Promise<void> {
+  async writeStereoWav(
+    filePath: string,
+    samples: Float32Array,
+    sampleRate: number,
+    pan: number = 0
+  ): Promise<void> {
     const wavData = encodeWavStereo(samples, sampleRate, pan)
     await Bun.write(filePath, wavData)
   }
@@ -767,7 +891,10 @@ export class AudioEngine {
   // ── Export Mixdown ─────────────────────────────────────────────────────
   // Still uses ffmpeg for the final mix (non-realtime, not performance-critical)
 
-  async exportMixdown(state: ProjectState, outputPath: string): Promise<boolean> {
+  async exportMixdown(
+    state: ProjectState,
+    outputPath: string
+  ): Promise<boolean> {
     const tracksToMix: { track: Track; tempPath: string }[] = []
     const hasSolo = state.tracks.some((t) => t.solo)
     const speed = state.bpm / state.originalBpm
@@ -779,9 +906,10 @@ export class AudioEngine {
 
       // Apply WSOLA time-stretch when speed != 1.0 so the exported audio
       // plays at the adjusted BPM while preserving pitch
-      const exportSamples = (Math.abs(speed - 1.0) > 0.001)
-        ? this.wsolaStretch(track.samples, speed)
-        : track.samples
+      const exportSamples =
+        Math.abs(speed - 1.0) > 0.001
+          ? this.wsolaStretch(track.samples, speed)
+          : track.samples
 
       const tempPath = `/tmp/tuidaw_mix_${track.id}.wav`
       await this.writeWav(tempPath, exportSamples, track.sampleRate)
@@ -796,9 +924,10 @@ export class AudioEngine {
       let totalSamples = 0
       for (const track of state.tracks) {
         if (track.samples && track.samples.length > 0) {
-          const stretched = (Math.abs(speed - 1.0) > 0.001)
-            ? Math.ceil(track.samples.length / speed)
-            : track.samples.length
+          const stretched =
+            Math.abs(speed - 1.0) > 0.001
+              ? Math.ceil(track.samples.length / speed)
+              : track.samples.length
           if (stretched > totalSamples) totalSamples = stretched
         }
       }
@@ -827,9 +956,9 @@ export class AudioEngine {
       // Treat click as a pseudo-track with its own volume and pan
       tracksToMix.push({
         track: {
-          id: "__click__",
-          name: "Click",
-          color: "#e0af68",
+          id: '__click__',
+          name: 'Click',
+          color: '#e0af68',
           muted: false,
           solo: false,
           armed: false,
@@ -838,17 +967,17 @@ export class AudioEngine {
           samples: clickSamples,
           sampleRate: state.sampleRate,
           filePath: null,
-          inputDeviceId: null,
+          inputDeviceId: null
         },
-        tempPath: clickTempPath,
+        tempPath: clickTempPath
       })
     }
 
     if (tracksToMix.length === 0) return false
 
-    const cmd: string[] = ["ffmpeg", "-y"]
+    const cmd: string[] = ['ffmpeg', '-y']
     for (const { tempPath } of tracksToMix) {
-      cmd.push("-i", tempPath)
+      cmd.push('-i', tempPath)
     }
 
     if (tracksToMix.length === 1) {
@@ -857,9 +986,10 @@ export class AudioEngine {
       const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
       const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
       cmd.push(
-        "-filter_complex",
+        '-filter_complex',
         `[0:a]volume=${vol},pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c0,aformat=sample_rates=${state.sampleRate}[out]`,
-        "-map", "[out]",
+        '-map',
+        '[out]'
       )
     } else {
       const filters: string[] = []
@@ -871,25 +1001,29 @@ export class AudioEngine {
         const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
         const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
         const label = `a${i}`
-        filters.push(`[${i}:a]volume=${vol},pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c0[${label}]`)
+        filters.push(
+          `[${i}:a]volume=${vol},pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c0[${label}]`
+        )
         mixInputs.push(`[${label}]`)
       }
 
       filters.push(
-        `${mixInputs.join("")}amix=inputs=${tracksToMix.length}:duration=longest:normalize=0,aformat=sample_rates=${state.sampleRate}[out]`,
+        `${mixInputs.join('')}amix=inputs=${tracksToMix.length}:duration=longest:normalize=0,aformat=sample_rates=${state.sampleRate}[out]`
       )
 
-      cmd.push("-filter_complex", filters.join(";"), "-map", "[out]")
+      cmd.push('-filter_complex', filters.join(';'), '-map', '[out]')
     }
 
-    cmd.push("-c:a", "pcm_s16le", outputPath)
+    cmd.push('-c:a', 'pcm_s16le', outputPath)
 
     try {
-      const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" })
+      const proc = spawn({ cmd, stdout: 'pipe', stderr: 'pipe' })
       await proc.exited
 
       for (const { tempPath } of tracksToMix) {
-        try { rmSync(tempPath) } catch {}
+        try {
+          rmSync(tempPath)
+        } catch {}
       }
 
       return proc.exitCode === 0
@@ -913,9 +1047,13 @@ export class AudioEngine {
         let wavFile: string | null = null
 
         if (track.samples && track.samples.length > 0) {
-          const safeName = track.id.replace(/[^a-zA-Z0-9_-]/g, "_")
+          const safeName = track.id.replace(/[^a-zA-Z0-9_-]/g, '_')
           wavFile = `tracks/${safeName}.wav`
-          await this.writeWav(`${tmpDir}/${wavFile}`, track.samples, track.sampleRate)
+          await this.writeWav(
+            `${tmpDir}/${wavFile}`,
+            track.samples,
+            track.sampleRate
+          )
         }
 
         trackDescs.push({
@@ -929,7 +1067,7 @@ export class AudioEngine {
           pan: track.pan,
           sampleRate: track.sampleRate,
           inputDeviceId: track.inputDeviceId,
-          wavFile,
+          wavFile
         })
       }
 
@@ -948,18 +1086,18 @@ export class AudioEngine {
         loopEnd: state.loopEnd,
         outputDeviceId: state.outputDeviceId,
         selectedTrackIndex: state.selectedTrackIndex,
-        tracks: trackDescs,
+        tracks: trackDescs
       }
 
       await Bun.write(
         `${tmpDir}/project.json`,
-        JSON.stringify(descriptor, null, 2),
+        JSON.stringify(descriptor, null, 2)
       )
 
       const proc = spawn({
-        cmd: ["tar", "czf", outputPath, "-C", tmpDir, "."],
-        stdout: "pipe",
-        stderr: "pipe",
+        cmd: ['tar', 'czf', outputPath, '-C', tmpDir, '.'],
+        stdout: 'pipe',
+        stderr: 'pipe'
       })
       await proc.exited
 
@@ -967,7 +1105,9 @@ export class AudioEngine {
 
       return proc.exitCode === 0
     } catch {
-      try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+      try {
+        rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
       return false
     }
   }
@@ -981,9 +1121,9 @@ export class AudioEngine {
       mkdirSync(tmpDir, { recursive: true })
 
       const proc = spawn({
-        cmd: ["tar", "xzf", filePath, "-C", tmpDir],
-        stdout: "pipe",
-        stderr: "pipe",
+        cmd: ['tar', 'xzf', filePath, '-C', tmpDir],
+        stdout: 'pipe',
+        stderr: 'pipe'
       })
       await proc.exited
       if (proc.exitCode !== 0) return null
@@ -1019,7 +1159,7 @@ export class AudioEngine {
           samples,
           sampleRate: td.sampleRate,
           filePath: null,
-          inputDeviceId: td.inputDeviceId,
+          inputDeviceId: td.inputDeviceId
         })
       }
 
@@ -1035,7 +1175,7 @@ export class AudioEngine {
         sampleRate: desc.sampleRate,
         tracks,
         selectedTrackIndex: desc.selectedTrackIndex,
-        transportState: "stopped",
+        transportState: 'stopped',
         playheadPosition: desc.playheadPosition,
         scrollOffset: desc.scrollOffset,
         freeScroll: false,
@@ -1044,10 +1184,12 @@ export class AudioEngine {
         projectName: desc.projectName,
         outputDeviceId: desc.outputDeviceId,
         availableInputDevices: [],
-        availableOutputDevices: [],
+        availableOutputDevices: []
       }
     } catch {
-      try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+      try {
+        rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
       return null
     }
   }

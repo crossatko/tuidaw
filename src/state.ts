@@ -2,8 +2,8 @@
 // tuidaw - Application State Manager
 // ============================================================================
 
-import type { ProjectState, Track, TransportState } from "./types"
-import { TRACK_COLORS } from "./types"
+import type { ProjectState, Track, TransportState } from './types'
+import { TRACK_COLORS } from './types'
 
 let trackCounter = 0
 
@@ -16,18 +16,18 @@ export function createDefaultState(): ProjectState {
     clickVolume: 0.5,
     clickPan: 0,
     sampleRate: 48000,
-    tracks: [createTrack("Track 1")],
+    tracks: [createTrack('Track 1')],
     selectedTrackIndex: 0,
-    transportState: "stopped",
+    transportState: 'stopped',
     playheadPosition: 0,
     scrollOffset: 0,
     freeScroll: false,
     loopStart: null,
     loopEnd: null,
-    projectName: "Untitled",
+    projectName: 'Untitled',
     outputDeviceId: null,
     availableInputDevices: [],
-    availableOutputDevices: [],
+    availableOutputDevices: []
   }
 }
 
@@ -46,12 +46,15 @@ export function createTrack(name?: string): Track {
     samples: null,
     sampleRate: 48000,
     filePath: null,
-    inputDeviceId: null,
+    inputDeviceId: null
   }
 }
 
 export function getSelectedTrack(state: ProjectState): Track | null {
-  if (state.selectedTrackIndex >= 0 && state.selectedTrackIndex < state.tracks.length) {
+  if (
+    state.selectedTrackIndex >= 0 &&
+    state.selectedTrackIndex < state.tracks.length
+  ) {
     return state.tracks[state.selectedTrackIndex]
   }
   return null
@@ -87,11 +90,15 @@ export function formatTime(samples: number, sampleRate: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = Math.floor(totalSeconds % 60)
   const ms = Math.floor((totalSeconds % 1) * 1000)
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(ms).padStart(3, "0")}`
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
 }
 
 // Format BPM with beat position
-export function formatBeatPosition(samples: number, sampleRate: number, bpm: number): string {
+export function formatBeatPosition(
+  samples: number,
+  sampleRate: number,
+  bpm: number
+): string {
   const totalBeats = (samples / sampleRate) * (bpm / 60)
   const bar = Math.floor(totalBeats / 4) + 1
   const beat = Math.floor(totalBeats % 4) + 1

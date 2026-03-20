@@ -10,10 +10,10 @@
 //
 // Uses null audio backend -- no sound output.
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { dlopen, FFIType, ptr } from "bun:ffi"
-import { existsSync } from "fs"
-import path from "path"
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { dlopen, FFIType, ptr } from 'bun:ffi'
+import { existsSync } from 'fs'
+import path from 'path'
 
 const SAMPLE_RATE = 48000
 
@@ -21,37 +21,46 @@ const SAMPLE_RATE = 48000
 
 function findLibrary(): string {
   const candidates = [
-    path.join(__dirname, "..", "native", "libtuidaw_audio.so"),
-    path.join(__dirname, "..", "native", "libtuidaw_audio.dylib"),
-    path.join(__dirname, "..", "native", "tuidaw_audio.dll"),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.so'),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.dylib'),
+    path.join(__dirname, '..', 'native', 'tuidaw_audio.dll')
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
   }
-  throw new Error("Native audio library not found. Run native/build.sh first.")
+  throw new Error('Native audio library not found. Run native/build.sh first.')
 }
 
 const lib = dlopen(findLibrary(), {
-  tuidaw_init_null:             { returns: FFIType.i32 },
-  tuidaw_deinit:                { returns: FFIType.void },
+  tuidaw_init_null: { returns: FFIType.i32 },
+  tuidaw_deinit: { returns: FFIType.void },
   tuidaw_start_playback_device: { returns: FFIType.i32 },
-  tuidaw_stop_playback_device:  { returns: FFIType.void },
-  tuidaw_add_track:             { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_remove_track:          { returns: FFIType.void, args: [FFIType.i32] },
-  tuidaw_set_track_samples:     { returns: FFIType.void, args: [FFIType.i32, FFIType.ptr, FFIType.i32] },
-  tuidaw_set_track_volume:      { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_track_muted:       { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_play:                  { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_stop:                  { returns: FFIType.void },
-  tuidaw_get_playhead:          { returns: FFIType.i64 },
-  tuidaw_set_playhead:          { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_set_loop:              { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
-  tuidaw_set_speed:             { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_set_click:             { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_stop_playback_device: { returns: FFIType.void },
+  tuidaw_add_track: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_remove_track: { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_set_track_samples: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_set_track_volume: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
+  tuidaw_set_track_muted: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_play: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_stop: { returns: FFIType.void },
+  tuidaw_get_playhead: { returns: FFIType.i64 },
+  tuidaw_set_playhead: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_set_loop: { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
+  tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_set_click: { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] }
 })
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 const pinnedBuffers: Float32Array[] = []
@@ -60,7 +69,7 @@ function generateSineWave(durationSeconds: number): Float32Array {
   const numSamples = Math.round(SAMPLE_RATE * durationSeconds)
   const samples = new Float32Array(numSamples)
   for (let i = 0; i < numSamples; i++) {
-    samples[i] = Math.sin(2 * Math.PI * 440 * i / SAMPLE_RATE) * 0.5
+    samples[i] = Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE) * 0.5
   }
   pinnedBuffers.push(samples)
   return samples
@@ -68,7 +77,7 @@ function generateSineWave(durationSeconds: number): Float32Array {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("Loop + playhead interaction", () => {
+describe('Loop + playhead interaction', () => {
   let trackIdCounter = 200 // offset from other test files
 
   beforeAll(() => {
@@ -85,7 +94,7 @@ describe("Loop + playhead interaction", () => {
     pinnedBuffers.length = 0
   })
 
-  test("play from before loop: enters loop region and wraps", async () => {
+  test('play from before loop: enters loop region and wraps', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -121,7 +130,7 @@ describe("Loop + playhead interaction", () => {
     lib.symbols.tuidaw_remove_track(trackId)
   }, 15000)
 
-  test("play from exact loopEnd: wraps into loop", async () => {
+  test('play from exact loopEnd: wraps into loop', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -150,7 +159,7 @@ describe("Loop + playhead interaction", () => {
     lib.symbols.tuidaw_remove_track(trackId)
   }, 10000)
 
-  test("play from after loop: continues linearly, no wrapping", async () => {
+  test('play from after loop: continues linearly, no wrapping', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -182,7 +191,7 @@ describe("Loop + playhead interaction", () => {
     lib.symbols.tuidaw_remove_track(trackId)
   }, 10000)
 
-  test("seek into loop during playback re-enables looping", async () => {
+  test('seek into loop during playback re-enables looping', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -217,7 +226,7 @@ describe("Loop + playhead interaction", () => {
     lib.symbols.tuidaw_remove_track(trackId)
   }, 10000)
 
-  test("seek past loop during playback disables looping", async () => {
+  test('seek past loop during playback disables looping', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -257,7 +266,7 @@ describe("Loop + playhead interaction", () => {
     lib.symbols.tuidaw_remove_track(trackId)
   }, 10000)
 
-  test("play from before loop at 0.5x: enters loop and wraps", async () => {
+  test('play from before loop at 0.5x: enters loop and wraps', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 

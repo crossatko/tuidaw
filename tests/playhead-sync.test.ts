@@ -9,10 +9,10 @@
 //
 // Uses null audio backend — no sound output.
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { dlopen, FFIType, ptr } from "bun:ffi"
-import { existsSync } from "fs"
-import path from "path"
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { dlopen, FFIType, ptr } from 'bun:ffi'
+import { existsSync } from 'fs'
+import path from 'path'
 
 const SAMPLE_RATE = 48000
 
@@ -20,38 +20,47 @@ const SAMPLE_RATE = 48000
 
 function findLibrary(): string {
   const candidates = [
-    path.join(__dirname, "..", "native", "libtuidaw_audio.so"),
-    path.join(__dirname, "..", "native", "libtuidaw_audio.dylib"),
-    path.join(__dirname, "..", "native", "tuidaw_audio.dll"),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.so'),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.dylib'),
+    path.join(__dirname, '..', 'native', 'tuidaw_audio.dll')
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
   }
-  throw new Error("Native audio library not found. Run native/build.sh first.")
+  throw new Error('Native audio library not found. Run native/build.sh first.')
 }
 
 const lib = dlopen(findLibrary(), {
-  tuidaw_init_null:             { returns: FFIType.i32 },
-  tuidaw_deinit:                { returns: FFIType.void },
+  tuidaw_init_null: { returns: FFIType.i32 },
+  tuidaw_deinit: { returns: FFIType.void },
   tuidaw_start_playback_device: { returns: FFIType.i32 },
-  tuidaw_stop_playback_device:  { returns: FFIType.void },
-  tuidaw_add_track:             { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_remove_track:          { returns: FFIType.void, args: [FFIType.i32] },
-  tuidaw_set_track_samples:     { returns: FFIType.void, args: [FFIType.i32, FFIType.ptr, FFIType.i32] },
-  tuidaw_set_track_volume:      { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_track_muted:       { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_play:                  { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_stop:                  { returns: FFIType.void },
-  tuidaw_get_playhead:          { returns: FFIType.i64 },
-  tuidaw_set_playhead:          { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_set_loop:              { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
-  tuidaw_set_speed:             { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_get_speed:             { returns: FFIType.f32 },
-  tuidaw_set_click:             { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_stop_playback_device: { returns: FFIType.void },
+  tuidaw_add_track: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_remove_track: { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_set_track_samples: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_set_track_volume: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
+  tuidaw_set_track_muted: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_play: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_stop: { returns: FFIType.void },
+  tuidaw_get_playhead: { returns: FFIType.i64 },
+  tuidaw_set_playhead: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_set_loop: { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
+  tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_get_speed: { returns: FFIType.f32 },
+  tuidaw_set_click: { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] }
 })
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 const pinnedBuffers: Float32Array[] = []
@@ -60,7 +69,7 @@ function generateSineWave(durationSeconds: number): Float32Array {
   const numSamples = Math.round(SAMPLE_RATE * durationSeconds)
   const samples = new Float32Array(numSamples)
   for (let i = 0; i < numSamples; i++) {
-    samples[i] = Math.sin(2 * Math.PI * 440 * i / SAMPLE_RATE) * 0.5
+    samples[i] = Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE) * 0.5
   }
   pinnedBuffers.push(samples)
   return samples
@@ -68,7 +77,7 @@ function generateSineWave(durationSeconds: number): Float32Array {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("Playhead content-space sync", () => {
+describe('Playhead content-space sync', () => {
   let trackIdCounter = 100 // offset from loop-wsola tests
 
   beforeAll(() => {
@@ -85,7 +94,7 @@ describe("Playhead content-space sync", () => {
     pinnedBuffers.length = 0
   })
 
-  test("at 0.5x speed, playhead advances at half rate through source", async () => {
+  test('at 0.5x speed, playhead advances at half rate through source', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10) // 10 seconds
 
@@ -113,7 +122,7 @@ describe("Playhead content-space sync", () => {
     expect(pos).toBeLessThan(expectedCenter + margin)
   }, 10000)
 
-  test("at 2.0x speed, playhead advances at double rate through source", async () => {
+  test('at 2.0x speed, playhead advances at double rate through source', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 
@@ -139,7 +148,7 @@ describe("Playhead content-space sync", () => {
     expect(pos).toBeLessThan(expectedCenter + margin)
   }, 10000)
 
-  test("speed change mid-playback: no playhead jump", async () => {
+  test('speed change mid-playback: no playhead jump', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(20) // 20 seconds to have room
 
@@ -154,7 +163,9 @@ describe("Playhead content-space sync", () => {
     // Play at 1.0x for 1 second
     await sleep(1000)
     const posBeforeChange = Number(lib.symbols.tuidaw_get_playhead())
-    console.log(`  posBeforeChange: ${posBeforeChange} (expected ~${SAMPLE_RATE})`)
+    console.log(
+      `  posBeforeChange: ${posBeforeChange} (expected ~${SAMPLE_RATE})`
+    )
 
     // Change to 0.5x
     lib.symbols.tuidaw_set_speed(0.5)
@@ -192,7 +203,7 @@ describe("Playhead content-space sync", () => {
     expect(advanceAfterChange).toBeLessThan(expectedAdvance + margin)
   }, 10000)
 
-  test("multiple speed changes: playhead stays consistent", async () => {
+  test('multiple speed changes: playhead stays consistent', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(30) // 30 seconds
 
@@ -208,27 +219,47 @@ describe("Playhead content-space sync", () => {
 
     // Play at 1.0x for 0.5s
     await sleep(500)
-    positions.push({ time: 500, pos: Number(lib.symbols.tuidaw_get_playhead()), speed: 1.0 })
+    positions.push({
+      time: 500,
+      pos: Number(lib.symbols.tuidaw_get_playhead()),
+      speed: 1.0
+    })
 
     // Change to 0.5x, play for 1s
     lib.symbols.tuidaw_set_speed(0.5)
     await sleep(1000)
-    positions.push({ time: 1500, pos: Number(lib.symbols.tuidaw_get_playhead()), speed: 0.5 })
+    positions.push({
+      time: 1500,
+      pos: Number(lib.symbols.tuidaw_get_playhead()),
+      speed: 0.5
+    })
 
     // Change to 2.0x, play for 0.5s
     lib.symbols.tuidaw_set_speed(2.0)
     await sleep(500)
-    positions.push({ time: 2000, pos: Number(lib.symbols.tuidaw_get_playhead()), speed: 2.0 })
+    positions.push({
+      time: 2000,
+      pos: Number(lib.symbols.tuidaw_get_playhead()),
+      speed: 2.0
+    })
 
     // Change back to 1.0x, play for 0.5s
     lib.symbols.tuidaw_set_speed(1.0)
     await sleep(500)
-    positions.push({ time: 2500, pos: Number(lib.symbols.tuidaw_get_playhead()), speed: 1.0 })
+    positions.push({
+      time: 2500,
+      pos: Number(lib.symbols.tuidaw_get_playhead()),
+      speed: 1.0
+    })
 
     // Change to 0.25x, play for 1s
     lib.symbols.tuidaw_set_speed(0.25)
     await sleep(1000)
-    positions.push({ time: 3500, pos: Number(lib.symbols.tuidaw_get_playhead()), speed: 0.25 })
+    positions.push({
+      time: 3500,
+      pos: Number(lib.symbols.tuidaw_get_playhead()),
+      speed: 0.25
+    })
 
     lib.symbols.tuidaw_stop()
     lib.symbols.tuidaw_remove_track(trackId)
@@ -247,7 +278,7 @@ describe("Playhead content-space sync", () => {
     expect(finalPos).toBeGreaterThan(SAMPLE_RATE * 1) // at least 1 second in
   }, 15000)
 
-  test("speed change does not cause large backward jump", async () => {
+  test('speed change does not cause large backward jump', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(20)
 
@@ -286,7 +317,7 @@ describe("Playhead content-space sync", () => {
     expect(positionLog[positionLog.length - 1]).toBeGreaterThan(positionLog[0])
   }, 10000)
 
-  test("playhead at 1.0x matches wall-clock", async () => {
+  test('playhead at 1.0x matches wall-clock', async () => {
     const trackId = ++trackIdCounter
     const samples = generateSineWave(10)
 

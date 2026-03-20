@@ -4,25 +4,25 @@
 // This module contains all TUI-specific logic. It is dynamically imported
 // from index.ts when running without --host.
 
-import { createCliRenderer, KeyEvent } from "@opentui/core"
-import { AudioEngine, zenitySave, zenityOpen } from "./src/audio-engine"
-import { UIRenderer } from "./src/ui"
+import { createCliRenderer, KeyEvent } from '@opentui/core'
+import { AudioEngine, zenitySave, zenityOpen } from './src/audio-engine'
+import { UIRenderer } from './src/ui'
 import {
   createDefaultState,
   createTrack,
   getSelectedTrack,
   getArmedTracks,
-  getProjectDurationSamples,
-} from "./src/state"
-import type { ProjectState, Track } from "./src/types"
-import { CLICK_TRACK_INDEX } from "./src/types"
+  getProjectDurationSamples
+} from './src/state'
+import type { ProjectState, Track } from './src/types'
+import { CLICK_TRACK_INDEX } from './src/types'
 
 export default async function main() {
   // ── Initialize ──────────────────────────────────────────────────────────
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
     targetFps: 30,
-    useMouse: true,
+    useMouse: true
   })
 
   const state: ProjectState = createDefaultState()
@@ -35,10 +35,15 @@ export default async function main() {
   ui.setupMouseHandlers({
     onScrollChange: (direction: number) => {
       // Scroll by 1 beat per wheel tick (content-space beats use originalBpm)
-      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
-      state.scrollOffset = Math.max(0, state.scrollOffset + direction * samplesPerBeat)
+      const samplesPerBeat = Math.round(
+        (60 / state.originalBpm) * state.sampleRate
+      )
+      state.scrollOffset = Math.max(
+        0,
+        state.scrollOffset + direction * samplesPerBeat
+      )
       // Enter free-scroll mode during playback so autoScroll doesn't snap back
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         state.freeScroll = true
       }
       render()
@@ -54,7 +59,10 @@ export default async function main() {
     onPanChange: (delta: number) => {
       const track = getSelectedTrack(state)
       if (!track) return
-      track.pan = Math.max(-1, Math.min(1, Math.round((track.pan + delta) * 100) / 100))
+      track.pan = Math.max(
+        -1,
+        Math.min(1, Math.round((track.pan + delta) * 100) / 100)
+      )
       // Instant pan change in native engine — no restart needed
       audioEngine.setTrackPan(track.id, track.pan)
       render()
@@ -70,11 +78,14 @@ export default async function main() {
     },
     onTimelineClick: (x: number, mainWidth: number) => {
       // Same formula as ui.ts renderMainArea — content-space, no speed scaling
-      const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+      const baseSamplesPerSubCol = Math.max(
+        1,
+        Math.floor((state.sampleRate / (mainWidth * 2)) * 10)
+      )
       const samplesPerCol = baseSamplesPerSubCol * 2
       const samplePos = state.scrollOffset + x * samplesPerCol
       state.playheadPosition = Math.max(0, samplePos)
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         audioEngine.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
         // During playback, clicking the timeline means the user wants to view
@@ -86,15 +97,21 @@ export default async function main() {
       render()
     },
     onClickVolumeChange: (delta: number) => {
-      state.clickVolume = Math.max(0, Math.min(2, Math.round((state.clickVolume + delta) * 100) / 100))
+      state.clickVolume = Math.max(
+        0,
+        Math.min(2, Math.round((state.clickVolume + delta) * 100) / 100)
+      )
       audioEngine.setClickVolume(state.clickVolume)
       render()
     },
     onClickPanChange: (delta: number) => {
-      state.clickPan = Math.max(-1, Math.min(1, Math.round((state.clickPan + delta) * 100) / 100))
+      state.clickPan = Math.max(
+        -1,
+        Math.min(1, Math.round((state.clickPan + delta) * 100) / 100)
+      )
       audioEngine.setClickPan(state.clickPan)
       render()
-    },
+    }
   })
 
   // Enumerate audio devices at startup
@@ -114,8 +131,12 @@ export default async function main() {
   function getClickDuration(): number {
     const projectDuration = getProjectDurationSamples(state)
     const speed = state.bpm / state.originalBpm
-    const outputDuration = speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
-    return Math.max(outputDuration + state.sampleRate * 60, state.sampleRate * 600)
+    const outputDuration =
+      speed > 0 ? Math.ceil(projectDuration / speed) : projectDuration
+    return Math.max(
+      outputDuration + state.sampleRate * 60,
+      state.sampleRate * 600
+    )
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -137,7 +158,10 @@ export default async function main() {
   // Must match ui.ts renderMainArea zoom calculation
   function getVisibleSamples() {
     const mainWidth = renderer.width - 22 // SIDEBAR_WIDTH
-    const baseSamplesPerSubCol = Math.max(1, Math.floor(state.sampleRate / (mainWidth * 2) * 10))
+    const baseSamplesPerSubCol = Math.max(
+      1,
+      Math.floor((state.sampleRate / (mainWidth * 2)) * 10)
+    )
     const samplesPerCol = baseSamplesPerSubCol * 2
     return mainWidth * samplesPerCol
   }
@@ -155,8 +179,9 @@ export default async function main() {
 
     if (state.freeScroll) {
       // Check if the playhead has naturally entered the visible area
-      const playheadVisible = state.playheadPosition >= state.scrollOffset &&
-                              state.playheadPosition <= state.scrollOffset + visibleSamples
+      const playheadVisible =
+        state.playheadPosition >= state.scrollOffset &&
+        state.playheadPosition <= state.scrollOffset + visibleSamples
       if (playheadVisible) {
         // Re-engage tracking
         state.freeScroll = false
@@ -169,16 +194,24 @@ export default async function main() {
     // If loop fits on screen AND playhead is inside the loop, center the loop
     // region and stay put. Skip if playhead is outside the loop (user seeked
     // past loop region — native loop is disabled, let normal auto-scroll handle it).
-    if (state.loopStart !== null && state.loopEnd !== null &&
-        state.playheadPosition >= state.loopStart &&
-        state.playheadPosition <= state.loopEnd) {
+    if (
+      state.loopStart !== null &&
+      state.loopEnd !== null &&
+      state.playheadPosition >= state.loopStart &&
+      state.playheadPosition <= state.loopEnd
+    ) {
       const loopLen = state.loopEnd - state.loopStart
       if (loopLen <= visibleSamples) {
         const loopCenter = state.loopStart + loopLen / 2
-        const idealOffset = Math.max(0, Math.floor(loopCenter - visibleSamples / 2))
+        const idealOffset = Math.max(
+          0,
+          Math.floor(loopCenter - visibleSamples / 2)
+        )
         // Only reposition if the loop isn't already fully visible
-        if (state.loopStart < state.scrollOffset ||
-            state.loopEnd > state.scrollOffset + visibleSamples) {
+        if (
+          state.loopStart < state.scrollOffset ||
+          state.loopEnd > state.scrollOffset + visibleSamples
+        ) {
           state.scrollOffset = idealOffset
         }
         return
@@ -188,9 +221,16 @@ export default async function main() {
     // No loop or loop is wider than the view — normal auto-scroll
     if (state.playheadPosition < state.scrollOffset) {
       // Playhead is left of view (loop wrap) — recenter
-      state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples * 0.2))
-    } else if (state.playheadPosition > state.scrollOffset + visibleSamples * 0.8) {
-      state.scrollOffset = state.playheadPosition - Math.floor(visibleSamples * 0.2)
+      state.scrollOffset = Math.max(
+        0,
+        state.playheadPosition - Math.floor(visibleSamples * 0.2)
+      )
+    } else if (
+      state.playheadPosition >
+      state.scrollOffset + visibleSamples * 0.8
+    ) {
+      state.scrollOffset =
+        state.playheadPosition - Math.floor(visibleSamples * 0.2)
     }
   }
 
@@ -199,10 +239,15 @@ export default async function main() {
   function ensurePlayheadVisible() {
     state.freeScroll = false
     const visibleSamples = getVisibleSamples()
-    if (state.playheadPosition < state.scrollOffset ||
-        state.playheadPosition > state.scrollOffset + visibleSamples) {
+    if (
+      state.playheadPosition < state.scrollOffset ||
+      state.playheadPosition > state.scrollOffset + visibleSamples
+    ) {
       // Center playhead in view
-      state.scrollOffset = Math.max(0, state.playheadPosition - Math.floor(visibleSamples / 2))
+      state.scrollOffset = Math.max(
+        0,
+        state.playheadPosition - Math.floor(visibleSamples / 2)
+      )
     }
   }
 
@@ -224,7 +269,7 @@ export default async function main() {
 
   // Play (no armed tracks) – just plays back existing audio via native engine
   async function play() {
-    state.transportState = "playing"
+    state.transportState = 'playing'
 
     // Sync all tracks and start native transport from current playhead
     await audioEngine.playAll(state)
@@ -250,7 +295,7 @@ export default async function main() {
     const armedTracks = getArmedTracks(state)
     if (armedTracks.length === 0) return
 
-    state.transportState = "recording"
+    state.transportState = 'recording'
     trackRecordStartPositions.clear()
 
     renderer.requestLive()
@@ -283,18 +328,23 @@ export default async function main() {
           // Get current total recorded length from native engine
           // (pollRecordingData gives us only the NEW chunk since last poll)
           const existingRecLen = track.samples
-            ? Math.max(0, (track.samples.length - recStart))
+            ? Math.max(0, track.samples.length - recStart)
             : 0
 
           // Merge: preserve [0..recStart], append new audio after existing recorded data
           const writeOffset = recStart + existingRecLen
           const totalLen = writeOffset + newSamples.length
           const existing = track.samples
-          const merged = new Float32Array(Math.max(totalLen, existing ? existing.length : 0))
+          const merged = new Float32Array(
+            Math.max(totalLen, existing ? existing.length : 0)
+          )
 
           // Copy all existing audio
           if (existing) {
-            merged.set(existing.subarray(0, Math.min(existing.length, merged.length)), 0)
+            merged.set(
+              existing.subarray(0, Math.min(existing.length, merged.length)),
+              0
+            )
           }
 
           // Write new recorded audio at the write offset
@@ -317,7 +367,10 @@ export default async function main() {
 
   // Punch-in: start recording on a single track at the given position.
   // Used for live R-key punch-in during playback.
-  async function punchInTrack(track: Track, startPosition: number): Promise<void> {
+  async function punchInTrack(
+    track: Track,
+    startPosition: number
+  ): Promise<void> {
     trackRecordStartPositions.set(track.id, startPosition)
     await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
   }
@@ -330,7 +383,9 @@ export default async function main() {
 
       const totalLen = recStart + samples.length
       const existing = track.samples
-      const merged = new Float32Array(Math.max(totalLen, existing ? existing.length : 0))
+      const merged = new Float32Array(
+        Math.max(totalLen, existing ? existing.length : 0)
+      )
 
       if (existing) {
         merged.set(existing.subarray(0, Math.min(existing.length, recStart)), 0)
@@ -358,7 +413,7 @@ export default async function main() {
     if (track.muted) return false
     if (!track.samples || track.samples.length === 0) return false
     // During recording, armed tracks have their own capture device, not playback
-    if (state.transportState === "recording" && track.armed) return false
+    if (state.transportState === 'recording' && track.armed) return false
     const hasSolo = state.tracks.some((t) => t.solo)
     if (hasSolo && !track.solo) return false
     return true
@@ -377,8 +432,8 @@ export default async function main() {
 
   // Stop everything (playback + recording)
   async function stop() {
-    const wasRecording = state.transportState === "recording"
-    state.transportState = "stopped"
+    const wasRecording = state.transportState === 'recording'
+    state.transportState = 'stopped'
 
     // Stop all active recordings and finalize track audio
     if (wasRecording) {
@@ -410,10 +465,10 @@ export default async function main() {
   }
 
   // ── Keyboard Handling ───────────────────────────────────────────────────
-  renderer.keyInput.on("keypress", async (key: KeyEvent) => {
+  renderer.keyInput.on('keypress', async (key: KeyEvent) => {
     // Quit
-    if (key.name === "q" || (key.ctrl && key.name === "c")) {
-      if (state.transportState !== "stopped") {
+    if (key.name === 'q' || (key.ctrl && key.name === 'c')) {
+      if (state.transportState !== 'stopped') {
         await stop()
       }
       audioEngine.destroy()
@@ -422,7 +477,7 @@ export default async function main() {
     }
 
     // Help
-    if (key.name === "f1") {
+    if (key.name === 'f1') {
       ui.toggleHelp()
       render()
       return
@@ -437,22 +492,22 @@ export default async function main() {
 
     // Device selector overlay - intercept navigation keys
     if (ui.isDeviceSelectorVisible()) {
-      if (key.name === "up" || key.name === "k") {
+      if (key.name === 'up' || key.name === 'k') {
         ui.deviceSelectorUp()
         render()
         return
       }
-      if (key.name === "down" || key.name === "j") {
+      if (key.name === 'down' || key.name === 'j') {
         ui.deviceSelectorDown()
         render()
         return
       }
-      if (key.name === "return") {
+      if (key.name === 'return') {
         ui.deviceSelectorConfirm()
         render()
         return
       }
-      if (key.name === "escape") {
+      if (key.name === 'escape') {
         ui.deviceSelectorCancel()
         render()
         return
@@ -462,8 +517,8 @@ export default async function main() {
     }
 
     // Space - Play/Stop toggle (records if any tracks are armed)
-    if (key.name === "space") {
-      if (state.transportState !== "stopped") {
+    if (key.name === 'space') {
+      if (state.transportState !== 'stopped') {
         await stop()
       } else {
         const armed = getArmedTracks(state)
@@ -479,12 +534,12 @@ export default async function main() {
     // R - Toggle arm on selected track
     // When transport is running: punch-in (arm) or punch-out (disarm) recording
     // on the fly without stopping playback.
-    if (key.name === "r" && !key.ctrl) {
+    if (key.name === 'r' && !key.ctrl) {
       const track = getSelectedTrack(state)
       if (track) {
         track.armed = !track.armed
 
-        if (state.transportState !== "stopped") {
+        if (state.transportState !== 'stopped') {
           const currentPos = audioEngine.getPlayhead()
 
           if (track.armed) {
@@ -493,8 +548,8 @@ export default async function main() {
             audioEngine.setTrackMuted(track.id, true)
 
             // If we were just "playing", transition to "recording"
-            if (state.transportState === "playing") {
-              state.transportState = "recording"
+            if (state.transportState === 'playing') {
+              state.transportState = 'recording'
             }
 
             await punchInTrack(track, currentPos)
@@ -511,10 +566,10 @@ export default async function main() {
 
             // If no tracks are still recording, transition back to "playing"
             const stillRecording = state.tracks.some(
-              (t) => t.armed && trackRecordStartPositions.has(t.id),
+              (t) => t.armed && trackRecordStartPositions.has(t.id)
             )
-            if (!stillRecording && state.transportState === "recording") {
-              state.transportState = "playing"
+            if (!stillRecording && state.transportState === 'recording') {
+              state.transportState = 'playing'
             }
           }
         }
@@ -525,9 +580,9 @@ export default async function main() {
     }
 
     // A - Add track (blocked during transport)
-    if (key.name === "a") {
-      if (state.transportState !== "stopped") {
-        ui.showStatusMessage("Stop transport first (SPACE)")
+    if (key.name === 'a') {
+      if (state.transportState !== 'stopped') {
+        ui.showStatusMessage('Stop transport first (SPACE)')
         render()
         return
       }
@@ -540,9 +595,9 @@ export default async function main() {
 
     // D or Delete - First press clears track content, second press deletes track
     // (blocked during transport)
-    if (key.name === "d" || key.name === "delete") {
-      if (state.transportState !== "stopped") {
-        ui.showStatusMessage("Stop transport first (SPACE)")
+    if (key.name === 'd' || key.name === 'delete') {
+      if (state.transportState !== 'stopped') {
+        ui.showStatusMessage('Stop transport first (SPACE)')
         render()
         return
       }
@@ -553,7 +608,9 @@ export default async function main() {
           track.samples = null
           track.filePath = null
           audioEngine.updateTrackSamples(track)
-          ui.showStatusMessage(`Cleared "${track.name}" — press D again to delete track`)
+          ui.showStatusMessage(
+            `Cleared "${track.name}" — press D again to delete track`
+          )
         } else if (state.tracks.length > 1) {
           // Track is empty → delete it
           audioEngine.removeTrack(track.id)
@@ -573,14 +630,14 @@ export default async function main() {
     }
 
     // Up/Down - Select track (up from 0 goes to click track at index -1)
-    if (key.name === "up" || key.name === "k") {
+    if (key.name === 'up' || key.name === 'k') {
       if (state.selectedTrackIndex > CLICK_TRACK_INDEX) {
         state.selectedTrackIndex--
         render()
       }
       return
     }
-    if (key.name === "down" || key.name === "j") {
+    if (key.name === 'down' || key.name === 'j') {
       if (state.selectedTrackIndex < state.tracks.length - 1) {
         state.selectedTrackIndex++
         render()
@@ -589,21 +646,25 @@ export default async function main() {
     }
 
     // Left/Right - Scrub by beats (shift: by bars) — content-space beats
-    if (key.name === "left" || key.name === "h") {
-      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
+    if (key.name === 'left' || key.name === 'h') {
+      const samplesPerBeat = Math.round(
+        (60 / state.originalBpm) * state.sampleRate
+      )
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset = Math.max(0, state.scrollOffset - scrollAmount)
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         state.freeScroll = true
       }
       render()
       return
     }
-    if (key.name === "right" || key.name === "l") {
-      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
+    if (key.name === 'right' || key.name === 'l') {
+      const samplesPerBeat = Math.round(
+        (60 / state.originalBpm) * state.sampleRate
+      )
       const scrollAmount = key.shift ? samplesPerBeat * 4 : samplesPerBeat
       state.scrollOffset += scrollAmount
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         state.freeScroll = true
       }
       render()
@@ -611,11 +672,11 @@ export default async function main() {
     }
 
     // Home or 0 - Jump to beginning
-    if (key.name === "home" || key.sequence === "0") {
+    if (key.name === 'home' || key.sequence === '0') {
       state.playheadPosition = 0
       state.scrollOffset = 0
       state.freeScroll = false
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         audioEngine.setPlayhead(0)
         syncLoopAfterSeek()
       }
@@ -624,13 +685,13 @@ export default async function main() {
     }
 
     // End - Jump to end
-    if (key.name === "end") {
+    if (key.name === 'end') {
       let maxLen = 0
       for (const t of state.tracks) {
         if (t.samples && t.samples.length > maxLen) maxLen = t.samples.length
       }
       state.playheadPosition = maxLen
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         audioEngine.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
       }
@@ -643,15 +704,15 @@ export default async function main() {
     //   1st press: set loop start at playhead
     //   2nd press: set loop end at playhead (swaps if before start)
     //   3rd press: clear loop region
-    if (key.name === "p") {
-      if (state.transportState !== "stopped") {
+    if (key.name === 'p') {
+      if (state.transportState !== 'stopped') {
         // During transport, P clears the loop
         if (state.loopStart !== null && state.loopEnd !== null) {
           state.loopStart = null
           state.loopEnd = null
           // Update native engine loop state
           audioEngine.setLoop(null, null)
-          ui.showStatusMessage("Loop cleared")
+          ui.showStatusMessage('Loop cleared')
         }
         render()
         return
@@ -659,7 +720,9 @@ export default async function main() {
       if (state.loopStart === null && state.loopEnd === null) {
         // Step 1: set loop start
         state.loopStart = state.playheadPosition
-        ui.showStatusMessage("Loop start set — move playhead, press P again for end")
+        ui.showStatusMessage(
+          'Loop start set — move playhead, press P again for end'
+        )
       } else if (state.loopStart !== null && state.loopEnd === null) {
         // Step 2: set loop end
         const a = state.loopStart
@@ -667,17 +730,17 @@ export default async function main() {
         if (a === b) {
           // Same position — cancel
           state.loopStart = null
-          ui.showStatusMessage("Loop cancelled (start = end)")
+          ui.showStatusMessage('Loop cancelled (start = end)')
         } else {
           state.loopStart = Math.min(a, b)
           state.loopEnd = Math.max(a, b)
-          ui.showStatusMessage("Loop region set — press P to clear")
+          ui.showStatusMessage('Loop region set — press P to clear')
         }
       } else {
         // Step 3: clear loop
         state.loopStart = null
         state.loopEnd = null
-        ui.showStatusMessage("Loop cleared")
+        ui.showStatusMessage('Loop cleared')
       }
       render()
       return
@@ -685,11 +748,11 @@ export default async function main() {
 
     // M - Mute (instant in native engine — no process restart)
     // When click track is selected: toggle clickEnabled (same as C)
-    if (key.name === "m") {
+    if (key.name === 'm') {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
         // Toggle click enable/disable (same as C key)
         state.clickEnabled = !state.clickEnabled
-        if (state.transportState !== "stopped") {
+        if (state.transportState !== 'stopped') {
           if (state.clickEnabled) {
             audioEngine.updateClickBuffer(state.bpm, getClickDuration())
             await audioEngine.startClick(state.bpm)
@@ -702,7 +765,7 @@ export default async function main() {
         const track = getSelectedTrack(state)
         if (track) {
           track.muted = !track.muted
-          if (state.transportState !== "stopped") {
+          if (state.transportState !== 'stopped') {
             refreshLivePlayback()
           }
           render()
@@ -712,11 +775,11 @@ export default async function main() {
     }
 
     // S - Solo (instant in native engine — re-evaluates all tracks)
-    if (key.name === "s") {
+    if (key.name === 's') {
       const track = getSelectedTrack(state)
       if (track) {
         track.solo = !track.solo
-        if (state.transportState !== "stopped") {
+        if (state.transportState !== 'stopped') {
           refreshLivePlayback()
         }
         render()
@@ -725,7 +788,7 @@ export default async function main() {
     }
 
     // + / = - Increase BPM (instant click update in native engine + WSOLA speed)
-    if (key.sequence === "+" || key.sequence === "=") {
+    if (key.sequence === '+' || key.sequence === '=') {
       state.bpm = Math.min(300, state.bpm + (key.shift ? 10 : 1))
       // In locked mode or empty project, change base tempo too (no speed change)
       if (state.bpmLocked || getProjectDurationSamples(state) === 0) {
@@ -735,7 +798,7 @@ export default async function main() {
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
       // Update displayed BPM in native click engine (buffer regen needed — BPM is baked into length)
-      if (state.transportState !== "stopped" && state.clickEnabled) {
+      if (state.transportState !== 'stopped' && state.clickEnabled) {
         audioEngine.updateClickBuffer(state.bpm, getClickDuration())
         await audioEngine.startClick(state.bpm)
       }
@@ -744,7 +807,7 @@ export default async function main() {
     }
 
     // - - Decrease BPM (instant click update in native engine + WSOLA speed)
-    if (key.sequence === "-") {
+    if (key.sequence === '-') {
       state.bpm = Math.max(20, state.bpm - (key.shift ? 10 : 1))
       // In locked mode or empty project, change base tempo too (no speed change)
       if (state.bpmLocked || getProjectDurationSamples(state) === 0) {
@@ -754,7 +817,7 @@ export default async function main() {
       const speed = state.bpm / state.originalBpm
       audioEngine.setSpeed(speed)
       // Update displayed BPM in native click engine (buffer regen needed — BPM is baked into length)
-      if (state.transportState !== "stopped" && state.clickEnabled) {
+      if (state.transportState !== 'stopped' && state.clickEnabled) {
         audioEngine.updateClickBuffer(state.bpm, getClickDuration())
         await audioEngine.startClick(state.bpm)
       }
@@ -763,17 +826,21 @@ export default async function main() {
     }
 
     // B - Toggle BPM lock (when locked, +/- changes base tempo without speed change)
-    if (key.name === "b") {
+    if (key.name === 'b') {
       state.bpmLocked = !state.bpmLocked
-      ui.showStatusMessage(state.bpmLocked ? "BPM locked — +/- changes tempo label only" : "BPM unlocked — +/- changes playback speed")
+      ui.showStatusMessage(
+        state.bpmLocked
+          ? 'BPM locked — +/- changes tempo label only'
+          : 'BPM unlocked — +/- changes playback speed'
+      )
       render()
       return
     }
 
     // C - Toggle click (instant in native engine)
-    if (key.name === "c") {
+    if (key.name === 'c') {
       state.clickEnabled = !state.clickEnabled
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         if (state.clickEnabled) {
           audioEngine.updateClickBuffer(state.bpm, getClickDuration())
           await audioEngine.startClick(state.bpm)
@@ -786,7 +853,7 @@ export default async function main() {
     }
 
     // F2 - Select input device for selected track
-    if (key.name === "f2") {
+    if (key.name === 'f2') {
       // Refresh device list
       const devs = await audioEngine.enumerateDevices()
       state.availableInputDevices = devs.inputs
@@ -794,45 +861,58 @@ export default async function main() {
 
       const track = getSelectedTrack(state)
       if (track) {
-        ui.openDeviceSelector("input", state.availableInputDevices, track.inputDeviceId, (device) => {
-          track.inputDeviceId = device ? device.id : null
-          // Sync input device to native engine immediately so it's ready for recording
-          audioEngine.syncTrack(track)
-          const devName = device ? device.description : "Default"
-          ui.showStatusMessage(`Input: ${devName}`)
-        })
+        ui.openDeviceSelector(
+          'input',
+          state.availableInputDevices,
+          track.inputDeviceId,
+          (device) => {
+            track.inputDeviceId = device ? device.id : null
+            // Sync input device to native engine immediately so it's ready for recording
+            audioEngine.syncTrack(track)
+            const devName = device ? device.description : 'Default'
+            ui.showStatusMessage(`Input: ${devName}`)
+          }
+        )
         render()
       }
       return
     }
 
     // F3 - Select output device (global)
-    if (key.name === "f3") {
+    if (key.name === 'f3') {
       // Refresh device list
       const devs = await audioEngine.enumerateDevices()
       state.availableInputDevices = devs.inputs
       state.availableOutputDevices = devs.outputs
 
-      ui.openDeviceSelector("output", state.availableOutputDevices, state.outputDeviceId, (device) => {
-        state.outputDeviceId = device ? device.id : null
-        // Force-restart playback device with the new output immediately
-        try {
-          audioEngine.forceRestartOutputDevice(state.outputDeviceId)
-          const devName = device ? device.description : "Default"
-          ui.showStatusMessage(`Output: ${devName}`)
-        } catch {
-          ui.showStatusMessage("Failed to switch output device!")
+      ui.openDeviceSelector(
+        'output',
+        state.availableOutputDevices,
+        state.outputDeviceId,
+        (device) => {
+          state.outputDeviceId = device ? device.id : null
+          // Force-restart playback device with the new output immediately
+          try {
+            audioEngine.forceRestartOutputDevice(state.outputDeviceId)
+            const devName = device ? device.description : 'Default'
+            ui.showStatusMessage(`Output: ${devName}`)
+          } catch {
+            ui.showStatusMessage('Failed to switch output device!')
+          }
         }
-      })
+      )
       render()
       return
     }
 
     // I - Import WAV (zenity open dialog)
-    if (key.name === "i") {
+    if (key.name === 'i') {
       const track = getSelectedTrack(state)
       if (track) {
-        const filePath = await zenityOpen("Import WAV", ["WAV files | *.wav *.WAV", "All files | *"])
+        const filePath = await zenityOpen('Import WAV', [
+          'WAV files | *.wav *.WAV',
+          'All files | *'
+        ])
         if (filePath) {
           const result = await audioEngine.loadWavFile(filePath)
           if (result) {
@@ -841,19 +921,23 @@ export default async function main() {
             audioEngine.updateTrackSamples(track)
 
             // Auto-detect BPM when importing to an empty project (no tracks have audio)
-            const projectIsEmpty = state.tracks.every((t) => t === track || !t.samples)
+            const projectIsEmpty = state.tracks.every(
+              (t) => t === track || !t.samples
+            )
             if (projectIsEmpty && result.detectedBPM) {
               state.bpm = result.detectedBPM
               state.originalBpm = result.detectedBPM
               audioEngine.setSpeed(1.0) // reset speed since bpm == originalBpm
               audioEngine.updateClickBuffer(state.bpm, getClickDuration()) // regen buffer for new BPM
               audioEngine.startClick(state.bpm) // sync click generator with displayed BPM
-              ui.showStatusMessage(`Imported: ${filePath} (detected ${result.detectedBPM} BPM)`)
+              ui.showStatusMessage(
+                `Imported: ${filePath} (detected ${result.detectedBPM} BPM)`
+              )
             } else {
               ui.showStatusMessage(`Imported: ${filePath}`)
             }
           } else {
-            ui.showStatusMessage("Failed to import WAV!")
+            ui.showStatusMessage('Failed to import WAV!')
           }
           render()
         }
@@ -862,22 +946,28 @@ export default async function main() {
     }
 
     // F5 - Save project (.tuidaw tarball via zenity save dialog)
-    if (key.name === "f5") {
-      const defaultName = `${state.projectName.replace(/\s+/g, "_")}.tuidaw`
-      const filePath = await zenitySave("Save Project", defaultName, ["tuidaw files | *.tuidaw", "All files | *"])
+    if (key.name === 'f5') {
+      const defaultName = `${state.projectName.replace(/\s+/g, '_')}.tuidaw`
+      const filePath = await zenitySave('Save Project', defaultName, [
+        'tuidaw files | *.tuidaw',
+        'All files | *'
+      ])
       if (filePath) {
-        ui.showStatusMessage("Saving...")
+        ui.showStatusMessage('Saving...')
         render()
         const ok = await audioEngine.saveProject(state, filePath)
-        ui.showStatusMessage(ok ? `Saved: ${filePath}` : "Save failed!")
+        ui.showStatusMessage(ok ? `Saved: ${filePath}` : 'Save failed!')
       }
       render()
       return
     }
 
     // F6 - Open project (.tuidaw tarball via zenity open dialog)
-    if (key.name === "f6") {
-      const filePath = await zenityOpen("Open Project", ["tuidaw files | *.tuidaw", "All files | *"])
+    if (key.name === 'f6') {
+      const filePath = await zenityOpen('Open Project', [
+        'tuidaw files | *.tuidaw',
+        'All files | *'
+      ])
       if (filePath) {
         const loaded = await audioEngine.openProject(filePath)
         if (loaded) {
@@ -893,7 +983,7 @@ export default async function main() {
           state.availableOutputDevices = devs.outputs
           ui.showStatusMessage(`Opened: ${filePath}`)
         } else {
-          ui.showStatusMessage("Failed to open project!")
+          ui.showStatusMessage('Failed to open project!')
         }
       }
       render()
@@ -901,14 +991,17 @@ export default async function main() {
     }
 
     // E - Export mixdown WAV (zenity save dialog)
-    if (key.name === "e") {
-      const defaultName = `${state.projectName.replace(/\s+/g, "_")}_mix.wav`
-      const filePath = await zenitySave("Export Mixdown", defaultName, ["WAV files | *.wav", "All files | *"])
+    if (key.name === 'e') {
+      const defaultName = `${state.projectName.replace(/\s+/g, '_')}_mix.wav`
+      const filePath = await zenitySave('Export Mixdown', defaultName, [
+        'WAV files | *.wav',
+        'All files | *'
+      ])
       if (filePath) {
-        ui.showStatusMessage("Exporting mixdown...")
+        ui.showStatusMessage('Exporting mixdown...')
         render()
         const ok = await audioEngine.exportMixdown(state, filePath)
-        ui.showStatusMessage(ok ? `Exported: ${filePath}` : "Export failed!")
+        ui.showStatusMessage(ok ? `Exported: ${filePath}` : 'Export failed!')
       }
       render()
       return
@@ -916,9 +1009,12 @@ export default async function main() {
 
     // V - Volume up (instant in native engine)
     // When click track is selected: increase click volume
-    if (key.name === "v" && !key.shift) {
+    if (key.name === 'v' && !key.shift) {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        state.clickVolume = Math.min(2, Math.round((state.clickVolume + 0.05) * 100) / 100)
+        state.clickVolume = Math.min(
+          2,
+          Math.round((state.clickVolume + 0.05) * 100) / 100
+        )
         audioEngine.setClickVolume(state.clickVolume)
         render()
       } else {
@@ -933,11 +1029,16 @@ export default async function main() {
     }
 
     // [ - Scrub playhead left by 1 bar (4 beats) — works during playback
-    if (key.sequence === "[") {
-      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
+    if (key.sequence === '[') {
+      const samplesPerBeat = Math.round(
+        (60 / state.originalBpm) * state.sampleRate
+      )
       const samplesPerBar = samplesPerBeat * 4
-      state.playheadPosition = Math.max(0, state.playheadPosition - samplesPerBar)
-      if (state.transportState !== "stopped") {
+      state.playheadPosition = Math.max(
+        0,
+        state.playheadPosition - samplesPerBar
+      )
+      if (state.transportState !== 'stopped') {
         audioEngine.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
       }
@@ -947,11 +1048,13 @@ export default async function main() {
     }
 
     // ] - Scrub playhead right by 1 bar (4 beats) — works during playback
-    if (key.sequence === "]") {
-      const samplesPerBeat = Math.round((60 / state.originalBpm) * state.sampleRate)
+    if (key.sequence === ']') {
+      const samplesPerBeat = Math.round(
+        (60 / state.originalBpm) * state.sampleRate
+      )
       const samplesPerBar = samplesPerBeat * 4
       state.playheadPosition += samplesPerBar
-      if (state.transportState !== "stopped") {
+      if (state.transportState !== 'stopped') {
         audioEngine.setPlayhead(state.playheadPosition)
         syncLoopAfterSeek()
       }
@@ -961,9 +1064,9 @@ export default async function main() {
     }
 
     // { (shift+[) - Nudge selected track earlier by 1/16 beat (trim from start)
-    if (key.sequence === "{") {
+    if (key.sequence === '{') {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        ui.showStatusMessage("Cannot nudge click track")
+        ui.showStatusMessage('Cannot nudge click track')
         render()
         return
       }
@@ -974,8 +1077,10 @@ export default async function main() {
         if (track.samples.length > nudgeAmount) {
           track.samples = track.samples.slice(nudgeAmount)
           audioEngine.updateTrackSamples(track)
-          const ms = (nudgeAmount / state.sampleRate * 1000).toFixed(1)
-          ui.showStatusMessage(`Nudged "${track.name}" earlier by 1/16 beat (${ms}ms)`)
+          const ms = ((nudgeAmount / state.sampleRate) * 1000).toFixed(1)
+          ui.showStatusMessage(
+            `Nudged "${track.name}" earlier by 1/16 beat (${ms}ms)`
+          )
           render()
         }
       }
@@ -983,9 +1088,9 @@ export default async function main() {
     }
 
     // } (shift+]) - Nudge selected track later by 1/16 beat (prepend silence)
-    if (key.sequence === "}") {
+    if (key.sequence === '}') {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        ui.showStatusMessage("Cannot nudge click track")
+        ui.showStatusMessage('Cannot nudge click track')
         render()
         return
       }
@@ -998,8 +1103,10 @@ export default async function main() {
         newSamples.set(track.samples, nudgeAmount)
         track.samples = newSamples
         audioEngine.updateTrackSamples(track)
-        const ms = (nudgeAmount / state.sampleRate * 1000).toFixed(1)
-        ui.showStatusMessage(`Nudged "${track.name}" later by 1/16 beat (${ms}ms)`)
+        const ms = ((nudgeAmount / state.sampleRate) * 1000).toFixed(1)
+        ui.showStatusMessage(
+          `Nudged "${track.name}" later by 1/16 beat (${ms}ms)`
+        )
         render()
       }
       return
@@ -1007,9 +1114,12 @@ export default async function main() {
 
     // < (shift+,) - Pan left (instant in native engine)
     // When click track is selected: pan click left
-    if (key.sequence === "<") {
+    if (key.sequence === '<') {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        state.clickPan = Math.max(-1, Math.round((state.clickPan - 0.1) * 100) / 100)
+        state.clickPan = Math.max(
+          -1,
+          Math.round((state.clickPan - 0.1) * 100) / 100
+        )
         audioEngine.setClickPan(state.clickPan)
         render()
       } else {
@@ -1025,9 +1135,12 @@ export default async function main() {
 
     // > (shift+.) - Pan right (instant in native engine)
     // When click track is selected: pan click right
-    if (key.sequence === ">") {
+    if (key.sequence === '>') {
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        state.clickPan = Math.min(1, Math.round((state.clickPan + 0.1) * 100) / 100)
+        state.clickPan = Math.min(
+          1,
+          Math.round((state.clickPan + 0.1) * 100) / 100
+        )
         audioEngine.setClickPan(state.clickPan)
         render()
       } else {
@@ -1043,7 +1156,7 @@ export default async function main() {
   })
 
   // ── Window Resize ───────────────────────────────────────────────────────
-  renderer.on("resize", () => {
+  renderer.on('resize', () => {
     ui.resize()
     render()
   })

@@ -3,10 +3,10 @@
 // ============================================================================
 
 export interface AudioDevice {
-  id: number         // Device index in miniaudio enumeration
-  name: string       // Human-readable name
+  id: number // Device index in miniaudio enumeration
+  name: string // Human-readable name
   description: string // Display name
-  type: "input" | "output" // Capture or playback device
+  type: 'input' | 'output' // Capture or playback device
   isDefault: boolean // Whether this is the system default device
 }
 
@@ -25,7 +25,7 @@ export interface Track {
   inputDeviceId: number | null // Input device index for recording (null = default)
 }
 
-export type TransportState = "stopped" | "playing" | "recording"
+export type TransportState = 'stopped' | 'playing' | 'recording'
 
 export interface ProjectState {
   bpm: number
@@ -97,20 +97,20 @@ export const BRAILLE_BASE = 0x2800
 // (0,3)=0x40  (1,3)=0x80
 export const BRAILLE_DOTS = [
   [0x01, 0x02, 0x04, 0x40], // left column
-  [0x08, 0x10, 0x20, 0x80], // right column
+  [0x08, 0x10, 0x20, 0x80] // right column
 ]
 
 export const TRACK_COLORS = [
-  "#FF6B6B", // red
-  "#4ECDC4", // teal
-  "#45B7D1", // blue
-  "#96CEB4", // green
-  "#FFEAA7", // yellow
-  "#DDA0DD", // plum
-  "#98D8C8", // mint
-  "#F7DC6F", // gold
-  "#BB8FCE", // purple
-  "#85C1E9", // sky
+  '#FF6B6B', // red
+  '#4ECDC4', // teal
+  '#45B7D1', // blue
+  '#96CEB4', // green
+  '#FFEAA7', // yellow
+  '#DDA0DD', // plum
+  '#98D8C8', // mint
+  '#F7DC6F', // gold
+  '#BB8FCE', // purple
+  '#85C1E9' // sky
 ]
 
 export const SIDEBAR_WIDTH = 22
