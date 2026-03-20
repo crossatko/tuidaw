@@ -178,7 +178,7 @@ const durationText = computed(() => {
       </button>
 
       <!-- Input device info / duration (right of MSR) -->
-      <div class="ml-2 flex flex-1 items-center gap-1 overflow-hidden">
+      <div class="ml-2 flex flex-1 items-center gap-4 overflow-hidden">
         <template v-if="track.armed || isSelected">
           <!-- Channel badge (tappable) -->
           <button

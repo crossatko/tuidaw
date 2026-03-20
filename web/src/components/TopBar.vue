@@ -131,7 +131,7 @@ function onInputClick() {
     style="touch-action: none"
   >
     <!-- Play -->
-    <Btn class="w-[76px]" :variant="playVariant" @click="onPlayClick">
+    <Btn class="w-[100px]" :variant="playVariant" @click="onPlayClick">
       <Icon v-if="isRecording" :d="icons.circle" :size="14" />
       <Icon v-else-if="isPlaying" :d="icons.square" :size="14" />
       <Icon v-else :d="icons.play" :size="14" />
