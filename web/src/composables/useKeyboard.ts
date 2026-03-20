@@ -199,7 +199,7 @@ export function useKeyboard(): void {
         )
         state.playheadPosition = Math.max(
           0,
-          state.playheadPosition - samplesPerBeat * 4
+          state.playheadPosition - samplesPerBeat
         )
         if (state.transportState !== 'stopped') {
           audio.setPlayhead(state.playheadPosition)
@@ -213,7 +213,7 @@ export function useKeyboard(): void {
         const samplesPerBeat = Math.round(
           (60 / state.originalBpm) * SAMPLE_RATE
         )
-        state.playheadPosition += samplesPerBeat * 4
+        state.playheadPosition += samplesPerBeat
         if (state.transportState !== 'stopped') {
           audio.setPlayhead(state.playheadPosition)
           syncLoopAfterSeek()
