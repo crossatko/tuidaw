@@ -60,7 +60,11 @@ declare function TuidawAudio(config?: object): Promise<TuidawWasmModule>
 function gcd(a: number, b: number): number {
   a = Math.abs(a)
   b = Math.abs(b)
-  while (b) { const t = b; b = a % b; a = t }
+  while (b) {
+    const t = b
+    b = a % b
+    a = t
+  }
   return a
 }
 
@@ -74,7 +78,7 @@ export interface WebAudioDevice {
 export interface InputDeviceInfo {
   deviceId: string
   label: string
-  channelCount: number  // discovered after opening the device; 0 = unknown
+  channelCount: number // discovered after opening the device; 0 = unknown
 }
 
 export class WebAudioBridge {
@@ -90,7 +94,7 @@ export class WebAudioBridge {
     // Load the Emscripten JS glue which defines the TuidawAudio factory
     // The glue is loaded as a script tag and defines TuidawAudio globally
     const mod = await (window as any).TuidawAudio({
-      locateFile: (path: string) => `/wasm/${path}`,
+      locateFile: (path: string) => `/wasm/${path}`
     })
     this.module = mod
 
@@ -110,7 +114,7 @@ export class WebAudioBridge {
   }
 
   private get m(): TuidawWasmModule {
-    if (!this.module) throw new Error("WebAudioBridge not initialized")
+    if (!this.module) throw new Error('WebAudioBridge not initialized')
     return this.module
   }
 
@@ -156,7 +160,7 @@ export class WebAudioBridge {
     // Allocate WASM memory and copy samples
     const byteLen = samples.length * 4
     const ptr = this.m._malloc(byteLen)
-    if (!ptr) throw new Error("WASM malloc failed")
+    if (!ptr) throw new Error('WASM malloc failed')
     this.m.HEAPF32.set(samples, ptr / 4)
     this.m._tuidaw_set_track_samples(nativeId, ptr, samples.length)
     this.allocatedBuffers.set(nativeId, ptr)
@@ -164,7 +168,8 @@ export class WebAudioBridge {
 
   setTrackVolume(trackId: string, volume: number): void {
     const nativeId = this.trackIdMap.get(trackId)
-    if (nativeId !== undefined) this.m._tuidaw_set_track_volume(nativeId, volume)
+    if (nativeId !== undefined)
+      this.m._tuidaw_set_track_volume(nativeId, volume)
   }
 
   setTrackPan(trackId: string, pan: number): void {
@@ -174,12 +179,14 @@ export class WebAudioBridge {
 
   setTrackMuted(trackId: string, muted: boolean): void {
     const nativeId = this.trackIdMap.get(trackId)
-    if (nativeId !== undefined) this.m._tuidaw_set_track_muted(nativeId, muted ? 1 : 0)
+    if (nativeId !== undefined)
+      this.m._tuidaw_set_track_muted(nativeId, muted ? 1 : 0)
   }
 
   setTrackSolo(trackId: string, solo: boolean): void {
     const nativeId = this.trackIdMap.get(trackId)
-    if (nativeId !== undefined) this.m._tuidaw_set_track_solo(nativeId, solo ? 1 : 0)
+    if (nativeId !== undefined)
+      this.m._tuidaw_set_track_solo(nativeId, solo ? 1 : 0)
   }
 
   // ── Transport ─────────────────────────────────────────────────────────
@@ -226,16 +233,17 @@ export class WebAudioBridge {
       const totalScaled = totalPerMinute * 100
       const d = gcd(bpmScaled, totalScaled)
       const N = bpmScaled / d
-      const samplesPerN = Math.round(N * totalPerMinute * 100 / bpmScaled)
+      const samplesPerN = Math.round((N * totalPerMinute * 100) / bpmScaled)
 
       for (let beat = 0; ; beat++) {
         const group = Math.floor(beat / N)
         const local = beat % N
-        const beatStart = group * samplesPerN + Math.floor(local * samplesPerN / N)
+        const beatStart =
+          group * samplesPerN + Math.floor((local * samplesPerN) / N)
 
         if (beatStart >= durationFrames) break
 
-        for (let i = 0; i < toneLen && (beatStart + i) < durationFrames; i++) {
+        for (let i = 0; i < toneLen && beatStart + i < durationFrames; i++) {
           const t = i / SAMPLE_RATE
           const envelope = 1.0 - i / toneLen
           buffer[beatStart + i] = Math.sin(2 * Math.PI * 1000 * t) * envelope
@@ -253,7 +261,7 @@ export class WebAudioBridge {
       const byteLen = durationFrames * 4
       const ptr = this.m._malloc(byteLen)
       if (!ptr) {
-        console.error("generateClick: WASM malloc failed for", byteLen, "bytes")
+        console.error('generateClick: WASM malloc failed for', byteLen, 'bytes')
         return false
       }
 
@@ -263,7 +271,11 @@ export class WebAudioBridge {
       this.clickBufferLen = durationFrames
       return true
     } catch (e) {
-      console.error("generateClick failed:", e, `(bpm=${bpm}, frames=${durationFrames})`)
+      console.error(
+        'generateClick failed:',
+        e,
+        `(bpm=${bpm}, frames=${durationFrames})`
+      )
       return false
     }
   }
@@ -301,21 +313,27 @@ export class WebAudioBridge {
   // a specific channel (or mono mix) via ChannelSplitterNode routing.
 
   /** Per-device shared capture state */
-  private deviceCaptures: Map<string, {
-    stream: MediaStream
-    ctx: AudioContext
-    source: MediaStreamAudioSourceNode
-    splitter: ChannelSplitterNode
-    channelCount: number
-    refCount: number  // number of tracks using this device capture
-  }> = new Map()
+  private deviceCaptures: Map<
+    string,
+    {
+      stream: MediaStream
+      ctx: AudioContext
+      source: MediaStreamAudioSourceNode
+      splitter: ChannelSplitterNode
+      channelCount: number
+      refCount: number // number of tracks using this device capture
+    }
+  > = new Map()
 
   /** Per-track recording state */
-  private recTracks: Map<string, {
-    deviceId: string
-    processor: ScriptProcessorNode
-    merger?: ChannelMergerNode  // used for mono-mix mode
-  }> = new Map()
+  private recTracks: Map<
+    string,
+    {
+      deviceId: string
+      processor: ScriptProcessorNode
+      merger?: ChannelMergerNode // used for mono-mix mode
+    }
+  > = new Map()
   private recBuffers: Map<string, Float32Array[]> = new Map()
   private recLengths: Map<string, number> = new Map()
 
@@ -328,11 +346,11 @@ export class WebAudioBridge {
   async enumerateInputDevices(): Promise<InputDeviceInfo[]> {
     const devices = await navigator.mediaDevices.enumerateDevices()
     this._inputDevices = devices
-      .filter(d => d.kind === "audioinput")
-      .map(d => ({
+      .filter((d) => d.kind === 'audioinput')
+      .map((d) => ({
         deviceId: d.deviceId,
         label: d.label || `Mic ${d.deviceId.slice(0, 8)}`,
-        channelCount: 0, // discovered when device is opened
+        channelCount: 0 // discovered when device is opened
       }))
     return this._inputDevices
   }
@@ -346,7 +364,7 @@ export class WebAudioBridge {
   onDeviceChange(cb: () => void): void {
     this._deviceChangeListeners.push(cb)
     if (this._deviceChangeListeners.length === 1) {
-      navigator.mediaDevices.addEventListener("devicechange", async () => {
+      navigator.mediaDevices.addEventListener('devicechange', async () => {
         await this.enumerateInputDevices()
         for (const listener of this._deviceChangeListeners) listener()
       })
@@ -358,7 +376,11 @@ export class WebAudioBridge {
   async requestMicAccess(): Promise<boolean> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
       })
       // Stop tracks immediately — we just wanted the permission
       for (const t of stream.getTracks()) t.stop()
@@ -381,7 +403,7 @@ export class WebAudioBridge {
     resolvedDeviceId: string
   }> {
     // Resolve null to "default" key
-    const key = deviceId || "default"
+    const key = deviceId || 'default'
 
     const existing = this.deviceCaptures.get(key)
     if (existing) {
@@ -398,7 +420,7 @@ export class WebAudioBridge {
         sampleRate: 48000,
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         // Request max channels — browser may cap at what the device supports
-        channelCount: { ideal: 32 },
+        channelCount: { ideal: 32 }
       }
     }
 
@@ -417,7 +439,7 @@ export class WebAudioBridge {
     this.deviceCaptures.set(key, capture)
 
     // Update the device info with discovered channel count
-    const devInfo = this._inputDevices.find(d => d.deviceId === deviceId)
+    const devInfo = this._inputDevices.find((d) => d.deviceId === deviceId)
     if (devInfo) devInfo.channelCount = channelCount
 
     return { ...capture, resolvedDeviceId: key }
@@ -439,7 +461,11 @@ export class WebAudioBridge {
 
   /** Start recording on a track. Uses the track's inputDeviceId and inputChannel.
    *  inputChannel: 0 = mono mix of all channels, 1..N = specific channel (1-indexed). */
-  async startRecording(trackId: string, inputDeviceId: string | null = null, inputChannel: number = 0): Promise<void> {
+  async startRecording(
+    trackId: string,
+    inputDeviceId: string | null = null,
+    inputChannel: number = 0
+  ): Promise<void> {
     const { ctx, splitter, channelCount, resolvedDeviceId } =
       await this.getOrCreateDeviceCapture(inputDeviceId)
 
@@ -456,7 +482,10 @@ export class WebAudioBridge {
       const copy = new Float32Array(input.length)
       copy.set(input)
       chunks.push(copy)
-      this.recLengths.set(trackId, (this.recLengths.get(trackId) ?? 0) + copy.length)
+      this.recLengths.set(
+        trackId,
+        (this.recLengths.get(trackId) ?? 0) + copy.length
+      )
     }
 
     let merger: ChannelMergerNode | undefined
@@ -470,7 +499,7 @@ export class WebAudioBridge {
       } else {
         // Mix all channels: use a GainNode to sum
         const mixGain = ctx.createGain()
-        mixGain.gain.value = 1 / channelCount  // normalize
+        mixGain.gain.value = 1 / channelCount // normalize
         for (let ch = 0; ch < channelCount; ch++) {
           splitter.connect(mixGain, ch, 0)
         }
@@ -482,9 +511,13 @@ export class WebAudioBridge {
       splitter.connect(processor, chIdx, 0)
     }
 
-    processor.connect(ctx.destination)  // ScriptProcessorNode requires output connection
+    processor.connect(ctx.destination) // ScriptProcessorNode requires output connection
 
-    this.recTracks.set(trackId, { deviceId: resolvedDeviceId, processor, merger })
+    this.recTracks.set(trackId, {
+      deviceId: resolvedDeviceId,
+      processor,
+      merger
+    })
   }
 
   /** Poll new recording samples since last poll. Returns new samples or null. */
@@ -593,6 +626,6 @@ export interface WebTrack {
   armed: boolean
   samples: Float32Array | null
   sampleRate: number
-  inputDeviceId: string | null   // selected input device ID (null = system default)
-  inputChannel: number           // 0 = mono mix, 1..N = specific channel
+  inputDeviceId: string | null // selected input device ID (null = system default)
+  inputChannel: number // 0 = mono mix, 1..N = specific channel
 }

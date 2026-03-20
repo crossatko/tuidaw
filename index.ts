@@ -6,10 +6,10 @@
 //   bun run index.ts --host   → Web UI mode (browser on port 3666)
 // ============================================================================
 
-if (Bun.argv.includes("--host")) {
-  const { startWebServer } = await import("./web/server")
+if (Bun.argv.includes('--host')) {
+  const { startWebServer } = await import('./web/server')
   await startWebServer()
 } else {
-  const { default: startTui } = await import("./tui")
+  const { default: startTui } = await import('./tui')
   await startTui()
 }

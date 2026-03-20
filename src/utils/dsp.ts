@@ -7,7 +7,11 @@
  * @param toRate Target sample rate
  * @returns Resampled audio at the target rate
  */
-export function resample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+export function resample(
+  samples: Float32Array,
+  fromRate: number,
+  toRate: number
+): Float32Array {
   if (fromRate === toRate) return samples
   const ratio = fromRate / toRate
   const outLen = Math.ceil(samples.length / ratio)

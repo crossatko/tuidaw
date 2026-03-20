@@ -12,10 +12,10 @@
 //
 // Uses null audio backend — no sound output.
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { dlopen, FFIType, ptr } from "bun:ffi"
-import { existsSync } from "fs"
-import path from "path"
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { dlopen, FFIType, ptr } from 'bun:ffi'
+import { existsSync } from 'fs'
+import path from 'path'
 
 const SAMPLE_RATE = 48000
 
@@ -23,37 +23,52 @@ const SAMPLE_RATE = 48000
 
 function findLibrary(): string {
   const candidates = [
-    path.join(__dirname, "..", "native", "libtuidaw_audio.so"),
-    path.join(__dirname, "..", "native", "libtuidaw_audio.dylib"),
-    path.join(__dirname, "..", "native", "tuidaw_audio.dll"),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.so'),
+    path.join(__dirname, '..', 'native', 'libtuidaw_audio.dylib'),
+    path.join(__dirname, '..', 'native', 'tuidaw_audio.dll')
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
   }
-  throw new Error("Native audio library not found. Run native/build.sh first.")
+  throw new Error('Native audio library not found. Run native/build.sh first.')
 }
 
 const lib = dlopen(findLibrary(), {
-  tuidaw_init_null:             { returns: FFIType.i32 },
-  tuidaw_deinit:                { returns: FFIType.void },
-  tuidaw_add_track:             { returns: FFIType.i32, args: [FFIType.i32] },
-  tuidaw_remove_track:          { returns: FFIType.void, args: [FFIType.i32] },
-  tuidaw_set_track_samples:     { returns: FFIType.void, args: [FFIType.i32, FFIType.ptr, FFIType.i32] },
-  tuidaw_set_track_volume:      { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_track_muted:       { returns: FFIType.void, args: [FFIType.i32, FFIType.i32] },
-  tuidaw_play:                  { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_stop:                  { returns: FFIType.void },
-  tuidaw_get_playhead:          { returns: FFIType.i64 },
-  tuidaw_set_playhead:          { returns: FFIType.void, args: [FFIType.i64] },
-  tuidaw_set_loop:              { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
-  tuidaw_set_speed:             { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_get_speed:             { returns: FFIType.f32 },
-  tuidaw_set_click:             { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
-  tuidaw_set_click_samples:     { returns: FFIType.void, args: [FFIType.ptr, FFIType.i32] },
-  tuidaw_generate_click:        { returns: FFIType.i32, args: [FFIType.f32, FFIType.i32] },
-  tuidaw_set_click_volume:      { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_set_click_pan:         { returns: FFIType.void, args: [FFIType.f32] },
-  tuidaw_render:                { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
+  tuidaw_init_null: { returns: FFIType.i32 },
+  tuidaw_deinit: { returns: FFIType.void },
+  tuidaw_add_track: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_remove_track: { returns: FFIType.void, args: [FFIType.i32] },
+  tuidaw_set_track_samples: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_set_track_volume: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
+  tuidaw_set_track_muted: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_play: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_stop: { returns: FFIType.void },
+  tuidaw_get_playhead: { returns: FFIType.i64 },
+  tuidaw_set_playhead: { returns: FFIType.void, args: [FFIType.i64] },
+  tuidaw_set_loop: { returns: FFIType.void, args: [FFIType.i64, FFIType.i64] },
+  tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_get_speed: { returns: FFIType.f32 },
+  tuidaw_set_click: { returns: FFIType.void, args: [FFIType.i32, FFIType.f32] },
+  tuidaw_set_click_samples: {
+    returns: FFIType.void,
+    args: [FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_generate_click: {
+    returns: FFIType.i32,
+    args: [FFIType.f32, FFIType.i32]
+  },
+  tuidaw_set_click_volume: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_set_click_pan: { returns: FFIType.void, args: [FFIType.f32] },
+  tuidaw_render: { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] }
 })
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -82,7 +97,10 @@ function renderChunked(totalFrames: number, chunkSize: number): Float32Array {
 
 // Find click onset positions in stereo audio.
 // Returns frame indices where click pulses start.
-function findClickOnsets(stereo: Float32Array, threshold: number = 0.1): number[] {
+function findClickOnsets(
+  stereo: Float32Array,
+  threshold: number = 0.1
+): number[] {
   const onsets: number[] = []
   const frameCount = stereo.length / 2
   const clickDuration = Math.round(SAMPLE_RATE * 0.025) // 25ms dead-time
@@ -140,7 +158,9 @@ function verifyPrecision(
     const error = Math.abs(absolutePos - idealPos)
 
     if (error > maxError) {
-      console.log(`${label} Beat ${i} (beat#${beatNum}): ideal ${idealPos.toFixed(2)}, got ${absolutePos}, error ${error.toFixed(2)} samples (${(error / SAMPLE_RATE * 1000).toFixed(3)}ms)`)
+      console.log(
+        `${label} Beat ${i} (beat#${beatNum}): ideal ${idealPos.toFixed(2)}, got ${absolutePos}, error ${error.toFixed(2)} samples (${((error / SAMPLE_RATE) * 1000).toFixed(3)}ms)`
+      )
     }
     expect(error).toBeLessThanOrEqual(maxError)
 
@@ -149,7 +169,9 @@ function verifyPrecision(
   }
 
   const avgError = onsets.length > 0 ? totalAbsError / onsets.length : 0
-  console.log(`${label}: ${onsets.length} onsets, max error ${maxFoundError.toFixed(2)} samples (${(maxFoundError / SAMPLE_RATE * 1000).toFixed(3)}ms), avg ${avgError.toFixed(2)}`)
+  console.log(
+    `${label}: ${onsets.length} onsets, max error ${maxFoundError.toFixed(2)} samples (${((maxFoundError / SAMPLE_RATE) * 1000).toFixed(3)}ms), avg ${avgError.toFixed(2)}`
+  )
 }
 
 // ── Keep pinned references alive (for track samples) ────────────────────────
@@ -157,7 +179,7 @@ const pinnedBuffers: Float32Array[] = []
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("Click precision (offline render)", () => {
+describe('Click precision (offline render)', () => {
   beforeAll(() => {
     const result = lib.symbols.tuidaw_init_null()
     expect(result).toBe(0)
@@ -168,7 +190,7 @@ describe("Click precision (offline render)", () => {
     lib.symbols.tuidaw_deinit()
   })
 
-  test("120 BPM, single large render (20 beats)", () => {
+  test('120 BPM, single large render (20 beats)', () => {
     const spbExact = setupClick(120)
     const numBeats = 20
     // Render exactly numBeats beats (no extra margin to avoid an extra onset)
@@ -180,11 +202,11 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
     expect(onsets.length).toBe(numBeats)
-    verifyPrecision(onsets, spbExact, "120BPM-single")
+    verifyPrecision(onsets, spbExact, '120BPM-single')
   })
 
-  test("155 BPM, single large render (30 beats, fractional spb)", () => {
-    const spbExact = setupClick(155)  // 18580.6451...
+  test('155 BPM, single large render (30 beats, fractional spb)', () => {
+    const spbExact = setupClick(155) // 18580.6451...
     const numBeats = 30
     const totalFrames = Math.ceil(spbExact * numBeats) + 1000
 
@@ -194,10 +216,10 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
     expect(onsets.length).toBeGreaterThanOrEqual(numBeats)
-    verifyPrecision(onsets, spbExact, "155BPM-single")
+    verifyPrecision(onsets, spbExact, '155BPM-single')
   })
 
-  test("120 BPM, chunked rendering (256 frames)", () => {
+  test('120 BPM, chunked rendering (256 frames)', () => {
     const spbExact = setupClick(120)
     const numBeats = 10
     const totalFrames = Math.ceil(spbExact * numBeats)
@@ -208,11 +230,11 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
     expect(onsets.length).toBe(numBeats)
-    verifyPrecision(onsets, spbExact, "120BPM-chunk256")
+    verifyPrecision(onsets, spbExact, '120BPM-chunk256')
   })
 
-  test("145 BPM, chunked rendering (97 frames, prime chunk)", () => {
-    const spbExact = setupClick(145)  // 19862.0689...
+  test('145 BPM, chunked rendering (97 frames, prime chunk)', () => {
+    const spbExact = setupClick(145) // 19862.0689...
     const numBeats = 15
     // Subtract margin to avoid catching beat numBeats+1 at the buffer boundary
     const totalFrames = Math.ceil(spbExact * numBeats) - 10
@@ -223,10 +245,10 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
     expect(onsets.length).toBe(numBeats)
-    verifyPrecision(onsets, spbExact, "145BPM-chunk97")
+    verifyPrecision(onsets, spbExact, '145BPM-chunk97')
   })
 
-  test("120 BPM with track playing simultaneously", () => {
+  test('120 BPM with track playing simultaneously', () => {
     const spbExact = setupClick(120)
     const numBeats = 10
     const totalFrames = Math.ceil(spbExact * numBeats)
@@ -238,7 +260,11 @@ describe("Click precision (offline render)", () => {
     pinnedBuffers.push(trackSamples)
 
     lib.symbols.tuidaw_add_track(99)
-    lib.symbols.tuidaw_set_track_samples(99, ptr(trackSamples), trackSamples.length)
+    lib.symbols.tuidaw_set_track_samples(
+      99,
+      ptr(trackSamples),
+      trackSamples.length
+    )
     lib.symbols.tuidaw_set_track_volume(99, 0.5)
     lib.symbols.tuidaw_set_track_muted(99, 0)
 
@@ -249,10 +275,10 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.15)
     expect(onsets.length).toBe(numBeats)
-    verifyPrecision(onsets, spbExact, "120BPM-withTrack")
+    verifyPrecision(onsets, spbExact, '120BPM-withTrack')
   })
 
-  test("120 BPM starting from non-zero position", () => {
+  test('120 BPM starting from non-zero position', () => {
     const spbExact = setupClick(120) // 24000
     const startPos = 5000
     const numBeats = 10
@@ -268,16 +294,16 @@ describe("Click precision (offline render)", () => {
     // (nextBeat - startPos) = (24000 - 5000) = 19000, then every 24000 frames.
     // Use startPos to verify against absolute beat positions.
     expect(onsets.length).toBeGreaterThanOrEqual(8)
-    verifyPrecision(onsets, spbExact, "120BPM-nonzero", startPos)
+    verifyPrecision(onsets, spbExact, '120BPM-nonzero', startPos)
   })
 
-  test("155 BPM, 5 minutes of playback — zero cumulative drift", () => {
+  test('155 BPM, 5 minutes of playback — zero cumulative drift', () => {
     // Key test: 155 BPM has fractional spb = 18580.6451... per beat.
     // The native generator uses GCD-exact integer math for beat positions.
     // Max error should be < 2 samples at any point (rounding + onset detection).
     const bpm = 155
     const durationSeconds = 300 // 5 minutes
-    const numBeats = Math.floor(durationSeconds * bpm / 60)
+    const numBeats = Math.floor((durationSeconds * bpm) / 60)
     const spbExact = setupClick(bpm, durationSeconds + 10) // extra margin
     const totalFrames = Math.ceil(spbExact * numBeats) + 1000
 
@@ -290,7 +316,7 @@ describe("Click precision (offline render)", () => {
 
     // Verify zero cumulative drift — every single onset must be within 2 samples
     // of its ideal position, even after hundreds of beats
-    verifyPrecision(onsets, spbExact, "155BPM-5min")
+    verifyPrecision(onsets, spbExact, '155BPM-5min')
 
     // Extra check: compare last onset to ideal position
     if (onsets.length > 0) {
@@ -298,15 +324,17 @@ describe("Click precision (offline render)", () => {
       const lastBeatNum = Math.round(lastOnset / spbExact)
       const idealLast = lastBeatNum * spbExact
       const driftAtEnd = Math.abs(lastOnset - idealLast)
-      console.log(`Last onset at frame ${lastOnset}, beat #${lastBeatNum}, drift ${driftAtEnd.toFixed(2)} samples (${(driftAtEnd / SAMPLE_RATE * 1000).toFixed(3)}ms)`)
+      console.log(
+        `Last onset at frame ${lastOnset}, beat #${lastBeatNum}, drift ${driftAtEnd.toFixed(2)} samples (${((driftAtEnd / SAMPLE_RATE) * 1000).toFixed(3)}ms)`
+      )
       expect(driftAtEnd).toBeLessThanOrEqual(2)
     }
   })
 
-  test("212 BPM, 3 minutes — high BPM stress test", () => {
+  test('212 BPM, 3 minutes — high BPM stress test', () => {
     const bpm = 212
     const durationSeconds = 180
-    const numBeats = Math.floor(durationSeconds * bpm / 60)
+    const numBeats = Math.floor((durationSeconds * bpm) / 60)
     const spbExact = setupClick(bpm, durationSeconds + 10) // extra margin
     const totalFrames = Math.ceil(spbExact * numBeats) + 1000
 
@@ -316,10 +344,10 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
     expect(onsets.length).toBeGreaterThanOrEqual(numBeats - 1)
-    verifyPrecision(onsets, spbExact, "212BPM-3min")
+    verifyPrecision(onsets, spbExact, '212BPM-3min')
   })
 
-  test("120 BPM, loop region — click plays on every loop iteration", () => {
+  test('120 BPM, loop region — click plays on every loop iteration', () => {
     // Bug reproduction: click plays on first entry into loop region but
     // goes silent on subsequent iterations.
     //
@@ -331,8 +359,8 @@ describe("Click precision (offline render)", () => {
     const spbExact = (60 / bpm) * SAMPLE_RATE // 24000 exactly
     const loopStartBeat = 2
     const loopEndBeat = 6
-    const loopStart = loopStartBeat * spbExact  // 48000
-    const loopEnd = loopEndBeat * spbExact       // 144000
+    const loopStart = loopStartBeat * spbExact // 48000
+    const loopEnd = loopEndBeat * spbExact // 144000
     const loopLenBeats = loopEndBeat - loopStartBeat // 4 beats per iteration
 
     // Total output: 2 beats lead-in + 3 full loop iterations (12 beats) = 14 beats
@@ -358,9 +386,13 @@ describe("Click precision (offline render)", () => {
 
     // Expected: 14 clicks total (2 lead-in + 4 per iteration × 3 iterations)
     // Each click should align with a beat position in the output.
-    console.log(`Loop click test: found ${onsets.length} onsets (expected ${totalOutputBeats})`)
+    console.log(
+      `Loop click test: found ${onsets.length} onsets (expected ${totalOutputBeats})`
+    )
     for (let i = 0; i < onsets.length; i++) {
-      console.log(`  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`)
+      console.log(
+        `  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`
+      )
     }
 
     expect(onsets.length).toBe(totalOutputBeats)
@@ -372,13 +404,15 @@ describe("Click precision (offline render)", () => {
       const gap = onsets[i]! - onsets[i - 1]!
       const error = Math.abs(gap - spbExact)
       if (error > 2) {
-        console.log(`  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbExact}), error ${error.toFixed(2)}`)
+        console.log(
+          `  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbExact}), error ${error.toFixed(2)}`
+        )
       }
       expect(error).toBeLessThanOrEqual(2)
     }
   })
 
-  test("155 BPM, loop region — click on every iteration (fractional spb)", () => {
+  test('155 BPM, loop region — click on every iteration (fractional spb)', () => {
     // Same test with fractional samples-per-beat to stress GCD math + loop reset.
     const bpm = 155
     const spbExact = (60 / bpm) * SAMPLE_RATE // 18580.6451...
@@ -408,9 +442,13 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
 
-    console.log(`Loop click 155 BPM: found ${onsets.length} onsets (expected ${totalOutputBeats})`)
+    console.log(
+      `Loop click 155 BPM: found ${onsets.length} onsets (expected ${totalOutputBeats})`
+    )
     for (let i = 0; i < onsets.length; i++) {
-      console.log(`  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`)
+      console.log(
+        `  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`
+      )
     }
 
     expect(onsets.length).toBe(totalOutputBeats)
@@ -420,13 +458,15 @@ describe("Click precision (offline render)", () => {
       const gap = onsets[i]! - onsets[i - 1]!
       const error = Math.abs(gap - spbExact)
       if (error > 2) {
-        console.log(`  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbExact}), error ${error.toFixed(2)}`)
+        console.log(
+          `  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbExact}), error ${error.toFixed(2)}`
+        )
       }
       expect(error).toBeLessThanOrEqual(2)
     }
   })
 
-  test("120 BPM at 0.75x speed, loop region — click on every iteration", () => {
+  test('120 BPM at 0.75x speed, loop region — click on every iteration', () => {
     // Test loop + non-1.0 speed. Display BPM = 120 * 0.75 = 90 BPM.
     // The click buffer is generated at display BPM (90). Content advances at 0.75x.
     // Loop region is in content-space.
@@ -438,8 +478,8 @@ describe("Click precision (offline render)", () => {
     const spbContent = (60 / originalBpm) * SAMPLE_RATE // 24000 content-space
     const loopStartBeat = 2
     const loopEndBeat = 6
-    const loopStart = loopStartBeat * spbContent  // 48000 (content-space)
-    const loopEnd = loopEndBeat * spbContent       // 144000 (content-space)
+    const loopStart = loopStartBeat * spbContent // 48000 (content-space)
+    const loopEnd = loopEndBeat * spbContent // 144000 (content-space)
     const loopLenBeats = loopEndBeat - loopStartBeat // 4 content beats per iteration
 
     // At 0.75x speed, each content beat takes spbDisplay output frames.
@@ -462,7 +502,11 @@ describe("Click precision (offline render)", () => {
     for (let i = 0; i < trackLen; i++) trackSamples[i] = 0.001 // quiet
     pinnedBuffers.push(trackSamples)
     lib.symbols.tuidaw_add_track(200)
-    lib.symbols.tuidaw_set_track_samples(200, ptr(trackSamples), trackSamples.length)
+    lib.symbols.tuidaw_set_track_samples(
+      200,
+      ptr(trackSamples),
+      trackSamples.length
+    )
     lib.symbols.tuidaw_set_track_volume(200, 0.01)
     lib.symbols.tuidaw_set_track_muted(200, 0)
 
@@ -476,9 +520,13 @@ describe("Click precision (offline render)", () => {
 
     const onsets = findClickOnsets(output, 0.05)
 
-    console.log(`Loop click 0.75x: found ${onsets.length} onsets (expected ${totalOutputBeats})`)
+    console.log(
+      `Loop click 0.75x: found ${onsets.length} onsets (expected ${totalOutputBeats})`
+    )
     for (let i = 0; i < onsets.length; i++) {
-      console.log(`  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbDisplay).toFixed(3)} output beats)`)
+      console.log(
+        `  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbDisplay).toFixed(3)} output beats)`
+      )
     }
 
     expect(onsets.length).toBe(totalOutputBeats)
@@ -488,13 +536,15 @@ describe("Click precision (offline render)", () => {
       const gap = onsets[i]! - onsets[i - 1]!
       const error = Math.abs(gap - spbDisplay)
       if (error > 2) {
-        console.log(`  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbDisplay}), error ${error.toFixed(2)}`)
+        console.log(
+          `  Gap ${i - 1}→${i}: ${gap} samples (expected ${spbDisplay}), error ${error.toFixed(2)}`
+        )
       }
       expect(error).toBeLessThanOrEqual(2)
     }
   })
 
-  test("120 BPM, off-beat loop — click stays on beat grid across iterations", () => {
+  test('120 BPM, off-beat loop — click stays on beat grid across iterations', () => {
     // Loop boundaries NOT on beat boundaries. The click must still fire
     // at beat-grid positions inside the loop, and the pattern must repeat
     // identically on each loop iteration.
@@ -526,8 +576,8 @@ describe("Click precision (offline render)", () => {
     // Let me just verify with the test output.
     const bpm = 120
     const spbExact = (60 / bpm) * SAMPLE_RATE // 24000
-    const loopStart = 10000  // off-beat
-    const loopEnd = 58000    // off-beat
+    const loopStart = 10000 // off-beat
+    const loopEnd = 58000 // off-beat
     const loopLen = loopEnd - loopStart // 48000 = exactly 2 beats (by coincidence)
 
     // Render: lead-in + 4 loop iterations
@@ -554,7 +604,9 @@ describe("Click precision (offline render)", () => {
 
     console.log(`Off-beat loop: found ${onsets.length} onsets`)
     for (let i = 0; i < onsets.length; i++) {
-      console.log(`  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`)
+      console.log(
+        `  onset ${i}: frame ${onsets[i]} (${(onsets[i]! / spbExact).toFixed(3)} beats)`
+      )
     }
 
     // Expected pattern: beat 0 at frame 0, then beats at 24000 and 48000 in each
@@ -577,7 +629,9 @@ describe("Click precision (offline render)", () => {
       const idealPos = beatNum * spbExact
       const error = Math.abs(frame - idealPos)
       if (error > 2) {
-        console.log(`  Off-beat: onset ${i} at ${frame}, nearest beat ${beatNum} at ${idealPos}, error ${error}`)
+        console.log(
+          `  Off-beat: onset ${i} at ${frame}, nearest beat ${beatNum} at ${idealPos}, error ${error}`
+        )
       }
       expect(error).toBeLessThanOrEqual(2)
     }

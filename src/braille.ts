@@ -5,7 +5,7 @@
 // We map audio sample amplitudes to vertical dot positions within each
 // character cell, giving us sub-character resolution for waveforms.
 
-import { BRAILLE_BASE, BRAILLE_DOTS } from "./types"
+import { BRAILLE_BASE, BRAILLE_DOTS } from './types'
 
 /**
  * Render a waveform segment as an array of braille characters.
@@ -24,7 +24,7 @@ export function renderBrailleWaveform(
   width: number,
   height: number,
   offset: number = 0,
-  samplesPerColumn: number = 1,
+  samplesPerColumn: number = 1
 ): string[][] {
   // Total vertical resolution in dots
   const totalDotsY = height * 4
@@ -55,7 +55,7 @@ export function renderBrailleWaveform(
 
       // Fill dots from bottom (totalDotsY-1) upward
       for (let d = 0; d < filledDots; d++) {
-        const dot = totalDotsY - 1 - d  // bottom-up
+        const dot = totalDotsY - 1 - d // bottom-up
         const row = Math.floor(dot / 4)
         const dotInRow = dot % 4
         if (row >= 0 && row < height) {
@@ -83,16 +83,16 @@ export function renderBrailleWaveform(
  */
 export function renderLevelMeter(level: number, width: number): string {
   const filled = Math.floor(level * width * 2) // sub-char resolution
-  let result = ""
+  let result = ''
 
   for (let i = 0; i < width; i++) {
     const subFilled = Math.min(2, Math.max(0, filled - i * 2))
     if (subFilled === 2) {
-      result += "█"
+      result += '█'
     } else if (subFilled === 1) {
-      result += "▌"
+      result += '▌'
     } else {
-      result += "░"
+      result += '░'
     }
   }
 
@@ -102,7 +102,11 @@ export function renderLevelMeter(level: number, width: number): string {
 /**
  * Get the peak level of a samples segment for VU meter display.
  */
-export function getPeakLevel(samples: Float32Array, start: number, length: number): number {
+export function getPeakLevel(
+  samples: Float32Array,
+  start: number,
+  length: number
+): number {
   let peak = 0
   const end = Math.min(start + length, samples.length)
   for (let i = start; i < end; i++) {

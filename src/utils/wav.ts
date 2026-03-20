@@ -7,13 +7,15 @@
 /** Parse a WAV file from raw bytes. Supports 16/24-bit PCM and 32-bit IEEE float.
  *  Multi-channel files are downmixed to mono. Handles JUNK/LIST/bext chunks.
  *  Returns decoded Float32 samples at the source sample rate (no resampling). */
-export function parseWav(data: Uint8Array): { samples: Float32Array; sampleRate: number } | null {
+export function parseWav(
+  data: Uint8Array
+): { samples: Float32Array; sampleRate: number } | null {
   if (data.length < 44) return null
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
 
   // Check RIFF header
-  if (readAscii(data, 0, 4) !== "RIFF") return null
-  if (readAscii(data, 8, 4) !== "WAVE") return null
+  if (readAscii(data, 0, 4) !== 'RIFF') return null
+  if (readAscii(data, 8, 4) !== 'WAVE') return null
 
   // Scan for fmt and data chunks (don't assume fixed offsets — files
   // may have JUNK, LIST, bext, or other chunks before fmt)
@@ -30,13 +32,13 @@ export function parseWav(data: Uint8Array): { samples: Float32Array; sampleRate:
     const chunkId = readAscii(data, pos, 4)
     const chunkSize = view.getUint32(pos + 4, true)
 
-    if (chunkId === "fmt ") {
+    if (chunkId === 'fmt ') {
       fmtOffset = pos + 8
       audioFormat = view.getUint16(fmtOffset, true)
       channels = view.getUint16(fmtOffset + 2, true)
       sampleRate = view.getUint32(fmtOffset + 4, true)
       bitsPerSample = view.getUint16(fmtOffset + 14, true)
-    } else if (chunkId === "data") {
+    } else if (chunkId === 'data') {
       dataOffset = pos + 8
       dataSize = Math.min(chunkSize, data.length - (pos + 8))
     }
@@ -69,13 +71,17 @@ export function parseWav(data: Uint8Array): { samples: Float32Array; sampleRate:
       let sum = 0
       for (let ch = 0; ch < channels; ch++) {
         const offset = dataOffset + (i * channels + ch) * 3
-        let val = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
-        if (val & 0x800000) val |= ~0xFFFFFF // sign extend
+        let val =
+          data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
+        if (val & 0x800000) val |= ~0xffffff // sign extend
         sum += val / 8388608
       }
       monoSamples[i] = sum / channels
     }
-  } else if ((audioFormat === 3 || (audioFormat === 1 && bitsPerSample === 32)) && bitsPerSample === 32) {
+  } else if (
+    (audioFormat === 3 || (audioFormat === 1 && bitsPerSample === 32)) &&
+    bitsPerSample === 32
+  ) {
     // IEEE 32-bit float (audioFormat=3) or 32-bit PCM treated as float
     const totalFrames = Math.floor(dataSize / (4 * channels))
     monoSamples = new Float32Array(totalFrames)
@@ -117,24 +123,29 @@ export function pcmS16ToFloat32(data: Uint8Array): Float32Array {
 }
 
 /** Build a 44-byte RIFF/WAVE header for PCM audio. */
-export function buildWavHeader(sampleRate: number, numChannels: number, bitsPerSample: number, dataSize: number): Uint8Array {
+export function buildWavHeader(
+  sampleRate: number,
+  numChannels: number,
+  bitsPerSample: number,
+  dataSize: number
+): Uint8Array {
   const header = new Uint8Array(44)
   const view = new DataView(header.buffer)
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
   const blockAlign = numChannels * (bitsPerSample / 8)
 
-  writeAscii(header, 0, "RIFF")
+  writeAscii(header, 0, 'RIFF')
   view.setUint32(4, 36 + dataSize, true)
-  writeAscii(header, 8, "WAVE")
-  writeAscii(header, 12, "fmt ")
+  writeAscii(header, 8, 'WAVE')
+  writeAscii(header, 12, 'fmt ')
   view.setUint32(16, 16, true) // fmt chunk size
-  view.setUint16(20, 1, true)  // audioFormat = PCM
+  view.setUint16(20, 1, true) // audioFormat = PCM
   view.setUint16(22, numChannels, true)
   view.setUint32(24, sampleRate, true)
   view.setUint32(28, byteRate, true)
   view.setUint16(32, blockAlign, true)
   view.setUint16(34, bitsPerSample, true)
-  writeAscii(header, 36, "data")
+  writeAscii(header, 36, 'data')
   view.setUint32(40, dataSize, true)
 
   return header
@@ -142,7 +153,10 @@ export function buildWavHeader(sampleRate: number, numChannels: number, bitsPerS
 
 /** Encode mono Float32 samples to a complete WAV file (16-bit PCM, mono).
  *  Returns a Uint8Array containing the full WAV file ready to write/download. */
-export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array {
+export function encodeWav(
+  samples: Float32Array,
+  sampleRate: number
+): Uint8Array {
   const pcmData = float32ToPcmS16(samples)
   const header = buildWavHeader(sampleRate, 1, 16, pcmData.length)
   const wav = new Uint8Array(header.length + pcmData.length)
@@ -153,7 +167,11 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array
 
 /** Encode mono Float32 samples to a stereo WAV file (16-bit PCM) with equal-power pan.
  *  Returns a Uint8Array containing the full WAV file. */
-export function encodeWavStereo(samples: Float32Array, sampleRate: number, pan: number = 0): Uint8Array {
+export function encodeWavStereo(
+  samples: Float32Array,
+  sampleRate: number,
+  pan: number = 0
+): Uint8Array {
   const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
   const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
   const numChannels = 2
@@ -178,7 +196,7 @@ export function encodeWavStereo(samples: Float32Array, sampleRate: number, pan: 
 // ── Internal helpers ────────────────────────────────────────────────────
 
 function readAscii(data: Uint8Array, offset: number, length: number): string {
-  let s = ""
+  let s = ''
   for (let i = 0; i < length; i++) {
     s += String.fromCharCode(data[offset + i])
   }

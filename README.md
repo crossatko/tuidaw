@@ -57,6 +57,7 @@ bun run start
 ```
 
 The setup script will:
+
 1. Check for required system dependencies
 2. Download the Zig 0.14.0 toolchain (used to compile the native audio library)
 3. Install JS dependencies (`bun install`)
@@ -87,40 +88,40 @@ cd native && ./build.sh
 
 Press **F1** in-app for the full reference. Key shortcuts:
 
-| Key | Action |
-|-----|--------|
-| `Space` | Play / Stop (record if tracks armed) |
-| `A` | Add track |
-| `D` | Delete track (two-step: clear, then delete) |
-| `R` | Arm/disarm track for recording |
-| `M` | Mute/unmute track |
-| `S` | Solo/unsolo track |
-| `C` | Toggle metronome click |
-| `+` / `-` | Adjust BPM (changes speed via WSOLA) |
-| `<` / `>` | Pan left / right |
-| `V` | Cycle volume (25/50/75/100%) |
-| `Up` / `Down` | Select track |
-| `Left` / `Right` | Scroll timeline (Shift: by bar) |
-| `[` / `]` | Scrub playhead by 1 bar |
-| `Home` / `0` | Jump to beginning |
-| `End` | Jump to end |
-| `F1` | Help overlay |
-| `F2` | Select input device |
-| `F3` | Select output device |
-| `F5` | Save project |
-| `F6` | Open project |
-| `I` | Import WAV |
-| `E` | Export mixdown |
-| `Q` | Quit |
+| Key              | Action                                      |
+| ---------------- | ------------------------------------------- |
+| `Space`          | Play / Stop (record if tracks armed)        |
+| `A`              | Add track                                   |
+| `D`              | Delete track (two-step: clear, then delete) |
+| `R`              | Arm/disarm track for recording              |
+| `M`              | Mute/unmute track                           |
+| `S`              | Solo/unsolo track                           |
+| `C`              | Toggle metronome click                      |
+| `+` / `-`        | Adjust BPM (changes speed via WSOLA)        |
+| `<` / `>`        | Pan left / right                            |
+| `V`              | Cycle volume (25/50/75/100%)                |
+| `Up` / `Down`    | Select track                                |
+| `Left` / `Right` | Scroll timeline (Shift: by bar)             |
+| `[` / `]`        | Scrub playhead by 1 bar                     |
+| `Home` / `0`     | Jump to beginning                           |
+| `End`            | Jump to end                                 |
+| `F1`             | Help overlay                                |
+| `F2`             | Select input device                         |
+| `F3`             | Select output device                        |
+| `F5`             | Save project                                |
+| `F6`             | Open project                                |
+| `I`              | Import WAV                                  |
+| `E`              | Export mixdown                              |
+| `Q`              | Quit                                        |
 
 ## Mouse Controls
 
-| Area | Action | Effect |
-|------|--------|--------|
-| Main waveform | Scroll wheel | Scroll timeline by beats |
-| Main timeline | Click | Set playhead position |
-| Sidebar track | Scroll wheel | Adjust volume |
-| Sidebar pan zone | Scroll wheel | Adjust pan |
+| Area              | Action       | Effect                    |
+| ----------------- | ------------ | ------------------------- |
+| Main waveform     | Scroll wheel | Scroll timeline by beats  |
+| Main timeline     | Click        | Set playhead position     |
+| Sidebar track     | Scroll wheel | Adjust volume             |
+| Sidebar pan zone  | Scroll wheel | Adjust pan                |
 | Sidebar click row | Scroll wheel | Adjust click volume / pan |
 
 ## Architecture

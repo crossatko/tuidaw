@@ -1,0 +1,11 @@
+.opencode
+node_modules
+native/miniaudio.h
+native/zig-toolchain
+native/emsdk
+native/*.so
+web/wasm
+web/dist
+bun.lock
+recordings
+*.tgz
