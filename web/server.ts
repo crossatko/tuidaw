@@ -18,7 +18,8 @@ import { existsSync } from 'fs'
 const PORT = 3666
 const CERT_DIR = join(tmpdir(), 'tuidaw-certs')
 const WEB_DIR = join(import.meta.dir, '../web')
-const WASM_DIR = join(WEB_DIR, 'wasm')
+const PUBLIC_DIR = join(WEB_DIR, 'public')
+const WASM_DIR = join(PUBLIC_DIR, 'wasm')
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -144,20 +145,25 @@ export async function startWebServer() {
         }
       }
 
-      // Serve static files from web/
-      const filePath = join(WEB_DIR, pathname.slice(1))
-      const file = Bun.file(filePath)
-      if (await file.exists()) {
-        const ext = extname(pathname)
-        const headers: Record<string, string> = {
-          'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-          ...COOP_COEP_HEADERS
+      // Serve static files from web/ and web/public/
+      const candidates = [
+        join(WEB_DIR, pathname.slice(1)),
+        join(PUBLIC_DIR, pathname.slice(1))
+      ]
+      for (const filePath of candidates) {
+        const file = Bun.file(filePath)
+        if (await file.exists()) {
+          const ext = extname(pathname)
+          const headers: Record<string, string> = {
+            'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+            ...COOP_COEP_HEADERS
+          }
+          // Service worker must not be cached — browsers check for updates
+          if (pathname === '/sw.js') {
+            headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+          }
+          return new Response(file, { headers })
         }
-        // Service worker must not be cached — browsers check for updates
-        if (pathname === '/sw.js') {
-          headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        }
-        return new Response(file, { headers })
       }
 
       return new Response('Not Found', {

@@ -1,0 +1,2121 @@
+var TuidawAudio = (() => {
+  var _scriptName = globalThis.document?.currentScript?.src
+  return async function (moduleArg = {}) {
+    var moduleRtn
+    var Module = moduleArg
+    var ENVIRONMENT_IS_WASM_WORKER = globalThis.name == 'em-ww'
+    var ENVIRONMENT_IS_AUDIO_WORKLET = !!globalThis.AudioWorkletGlobalScope
+    if (ENVIRONMENT_IS_AUDIO_WORKLET) ENVIRONMENT_IS_WASM_WORKER = true
+    var ENVIRONMENT_IS_WEB = !!globalThis.window
+    var ENVIRONMENT_IS_WORKER = !!globalThis.WorkerGlobalScope
+    var ENVIRONMENT_IS_NODE =
+      globalThis.process?.versions?.node &&
+      globalThis.process?.type != 'renderer'
+    var ENVIRONMENT_IS_PTHREAD =
+      ENVIRONMENT_IS_WORKER && globalThis.name == 'em-pthread'
+    var arguments_ = []
+    var thisProgram = './this.program'
+    var quit_ = (status, toThrow) => {
+      throw toThrow
+    }
+    if (ENVIRONMENT_IS_WORKER) {
+      _scriptName = self.location.href
+    }
+    var scriptDirectory = ''
+    function locateFile(path) {
+      if (Module['locateFile']) {
+        return Module['locateFile'](path, scriptDirectory)
+      }
+      return scriptDirectory + path
+    }
+    var readAsync, readBinary
+    if (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) {
+      try {
+        scriptDirectory = new URL('.', _scriptName).href
+      } catch {}
+      {
+        if (ENVIRONMENT_IS_WORKER) {
+          readBinary = (url) => {
+            var xhr = new XMLHttpRequest()
+            xhr.open('GET', url, false)
+            xhr.responseType = 'arraybuffer'
+            xhr.send(null)
+            return new Uint8Array(xhr.response)
+          }
+        }
+        readAsync = async (url) => {
+          var response = await fetch(url, { credentials: 'same-origin' })
+          if (response.ok) {
+            return response.arrayBuffer()
+          }
+          throw new Error(response.status + ' : ' + response.url)
+        }
+      }
+    } else {
+    }
+    var out = console.log.bind(console)
+    var err = console.error.bind(console)
+    var wasmBinary
+    var wasmModule
+    var ABORT = false
+    var EXITSTATUS
+    function growMemViews() {
+      if (wasmMemory.buffer != HEAP8.buffer) {
+        updateMemoryViews()
+      }
+    }
+    var readyPromiseResolve, readyPromiseReject
+    var startWorker
+    if (ENVIRONMENT_IS_PTHREAD) {
+      var initializedJS = false
+      self.onunhandledrejection = (e) => {
+        throw e.reason || e
+      }
+      function handleMessage(e) {
+        try {
+          var msgData = e['data']
+          var cmd = msgData.cmd
+          if (cmd === 'load') {
+            let messageQueue = []
+            self.onmessage = (e) => messageQueue.push(e)
+            startWorker = () => {
+              postMessage({ cmd: 'loaded' })
+              for (let msg of messageQueue) {
+                handleMessage(msg)
+              }
+              self.onmessage = handleMessage
+            }
+            for (const handler of msgData.handlers) {
+              if (!Module[handler] || Module[handler].proxy) {
+                Module[handler] = (...args) => {
+                  postMessage({ cmd: 'callHandler', handler, args })
+                }
+                if (handler == 'print') out = Module[handler]
+                if (handler == 'printErr') err = Module[handler]
+              }
+            }
+            wasmMemory = msgData.wasmMemory
+            updateMemoryViews()
+            wasmModule = msgData.wasmModule
+            createWasm()
+            run()
+          } else if (cmd === 'run') {
+            establishStackSpace(msgData.pthread_ptr)
+            __emscripten_thread_init(msgData.pthread_ptr, 0, 0, 1, 0, 0)
+            PThread.threadInitTLS()
+            __emscripten_thread_mailbox_await(msgData.pthread_ptr)
+            if (!initializedJS) {
+              initializedJS = true
+            }
+            try {
+              invokeEntryPoint(msgData.start_routine, msgData.arg)
+            } catch (ex) {
+              if (ex != 'unwind') {
+                throw ex
+              }
+            }
+          } else if (msgData.target === 'setimmediate') {
+          } else if (cmd === 'checkMailbox') {
+            if (initializedJS) {
+              checkMailbox()
+            }
+          } else if (cmd) {
+            err(`worker: received unknown command ${cmd}`)
+            err(msgData)
+          }
+        } catch (ex) {
+          __emscripten_thread_crashed()
+          throw ex
+        }
+      }
+      self.onmessage = handleMessage
+    }
+    var wwParams
+    function startWasmWorker(props) {
+      wwParams = props
+      wasmMemory = props.wasmMemory
+      updateMemoryViews()
+      wasmModule = props.wasm
+      createWasm()
+      run()
+      props.wasm = props.wasmMemory = 0
+    }
+    if (ENVIRONMENT_IS_WASM_WORKER && !ENVIRONMENT_IS_AUDIO_WORKLET) {
+      onmessage = (d) => {
+        onmessage = null
+        startWasmWorker(d.data)
+      }
+    }
+    if (ENVIRONMENT_IS_AUDIO_WORKLET) {
+      function createWasmAudioWorkletProcessor(audioParams) {
+        class WasmAudioWorkletProcessor extends AudioWorkletProcessor {
+          constructor(args) {
+            super()
+            let opts = args.processorOptions
+            this.callback = (a1, a2, a3, a4, a5, a6, a7) =>
+              dynCall_iiiiiiii(opts.callback, a1, a2, a3, a4, a5, a6, a7)
+            this.userData = opts.userData
+            this.samplesPerChannel = opts.samplesPerChannel
+            this.bytesPerChannel = this.samplesPerChannel * 4
+            this.outputViews = new Array(
+              Math.min(
+                ((wwParams.stackSize - 16) / this.bytesPerChannel) | 0,
+                64
+              )
+            )
+            this.createOutputViews()
+          }
+          createOutputViews() {
+            var oldStackPtr = stackSave()
+            var viewDataIdx =
+              stackAlloc(this.outputViews.length * this.bytesPerChannel) >> 2
+            for (var n = this.outputViews.length - 1; n >= 0; n--) {
+              this.outputViews[n] = (growMemViews(), HEAPF32).subarray(
+                viewDataIdx,
+                (viewDataIdx += this.samplesPerChannel)
+              )
+            }
+            stackRestore(oldStackPtr)
+          }
+          static get parameterDescriptors() {
+            return audioParams
+          }
+          process(inputList, outputList, parameters) {
+            if (
+              (growMemViews(), HEAPF32).buffer != this.outputViews[0].buffer
+            ) {
+              this.createOutputViews()
+            }
+            var numInputs = inputList.length
+            var numOutputs = outputList.length
+            var entry
+            var subentry
+            var stackMemoryStruct = (numInputs + numOutputs) * 12
+            var stackMemoryData = 0
+            for (entry of inputList) {
+              stackMemoryData += entry.length
+            }
+            stackMemoryData *= this.bytesPerChannel
+            var outputViewsNeeded = 0
+            for (entry of outputList) {
+              outputViewsNeeded += entry.length
+            }
+            stackMemoryData += outputViewsNeeded * this.bytesPerChannel
+            var numParams = 0
+            for (entry in parameters) {
+              ++numParams
+              stackMemoryStruct += 8
+              stackMemoryData += parameters[entry].byteLength
+            }
+            var oldStackPtr = stackSave()
+            var stackMemoryAligned =
+              (stackMemoryStruct + stackMemoryData + 15) & ~15
+            var structPtr = stackAlloc(stackMemoryAligned)
+            var dataPtr = structPtr + (stackMemoryAligned - stackMemoryData)
+            var inputsPtr = structPtr
+            for (entry of inputList) {
+              ;(growMemViews(), HEAPU32)[structPtr >> 2] = entry.length
+              ;(growMemViews(), HEAPU32)[(structPtr + 4) >> 2] =
+                this.samplesPerChannel
+              ;(growMemViews(), HEAPU32)[(structPtr + 8) >> 2] = dataPtr
+              structPtr += 12
+              for (subentry of entry) {
+                ;(growMemViews(), HEAPF32).set(subentry, dataPtr >> 2)
+                dataPtr += this.bytesPerChannel
+              }
+            }
+            var paramsPtr = structPtr
+            for (entry = 0; (subentry = parameters[entry++]); ) {
+              ;(growMemViews(), HEAPU32)[structPtr >> 2] = subentry.length
+              ;(growMemViews(), HEAPU32)[(structPtr + 4) >> 2] = dataPtr
+              structPtr += 8
+              ;(growMemViews(), HEAPF32).set(subentry, dataPtr >> 2)
+              dataPtr += subentry.length * 4
+            }
+            var outputsPtr = structPtr
+            for (entry of outputList) {
+              ;(growMemViews(), HEAPU32)[structPtr >> 2] = entry.length
+              ;(growMemViews(), HEAPU32)[(structPtr + 4) >> 2] =
+                this.samplesPerChannel
+              ;(growMemViews(), HEAPU32)[(structPtr + 8) >> 2] = dataPtr
+              structPtr += 12
+              dataPtr += this.bytesPerChannel * entry.length
+            }
+            var didProduceAudio = this.callback(
+              numInputs,
+              inputsPtr,
+              numOutputs,
+              outputsPtr,
+              numParams,
+              paramsPtr,
+              this.userData
+            )
+            if (didProduceAudio) {
+              for (entry of outputList) {
+                for (subentry of entry) {
+                  subentry.set(this.outputViews[--outputViewsNeeded])
+                }
+              }
+            }
+            stackRestore(oldStackPtr)
+            return !!didProduceAudio
+          }
+        }
+        return WasmAudioWorkletProcessor
+      }
+      var port = globalThis.port || {}
+      class BootstrapMessages extends AudioWorkletProcessor {
+        constructor(arg) {
+          super()
+          startWasmWorker(arg.processorOptions)
+          if (!(port instanceof MessagePort)) {
+            this.port.onmessage = port.onmessage
+            port = this.port
+          }
+        }
+        process() {}
+      }
+      registerProcessor('em-bootstrap', BootstrapMessages)
+      port.onmessage = async (msg) => {
+        let d = msg.data
+        if (d['_boot']) {
+          startWasmWorker(d)
+        } else if (d['_wpn']) {
+          registerProcessor(
+            d['_wpn'],
+            createWasmAudioWorkletProcessor(d.audioParams)
+          )
+          port.postMessage({
+            _wsc: d.callback,
+            args: [d.contextHandle, 1, d.userData]
+          })
+        } else if (d['_wsc']) {
+          getWasmTableEntry(d['_wsc'])(...d.args)
+        }
+      }
+    }
+    var HEAP8, HEAPU8, HEAP16, HEAPU16, HEAP32, HEAPU32, HEAPF32, HEAPF64
+    var HEAP64, HEAPU64
+    var runtimeInitialized = false
+    function updateMemoryViews() {
+      var b = wasmMemory.buffer
+      HEAP8 = new Int8Array(b)
+      HEAP16 = new Int16Array(b)
+      HEAPU8 = new Uint8Array(b)
+      HEAPU16 = new Uint16Array(b)
+      Module['HEAP32'] = HEAP32 = new Int32Array(b)
+      HEAPU32 = new Uint32Array(b)
+      Module['HEAPF32'] = HEAPF32 = new Float32Array(b)
+      HEAPF64 = new Float64Array(b)
+      HEAP64 = new BigInt64Array(b)
+      HEAPU64 = new BigUint64Array(b)
+    }
+    function initMemory() {
+      if (ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER) {
+        return
+      }
+      if (Module['wasmMemory']) {
+        wasmMemory = Module['wasmMemory']
+      } else {
+        var INITIAL_MEMORY = Module['INITIAL_MEMORY'] || 134217728
+        wasmMemory = new WebAssembly.Memory({
+          initial: INITIAL_MEMORY / 65536,
+          maximum: 32768,
+          shared: true
+        })
+      }
+      updateMemoryViews()
+    }
+    function preRun() {
+      if (Module['preRun']) {
+        if (typeof Module['preRun'] == 'function')
+          Module['preRun'] = [Module['preRun']]
+        while (Module['preRun'].length) {
+          addOnPreRun(Module['preRun'].shift())
+        }
+      }
+      callRuntimeCallbacks(onPreRuns)
+    }
+    function initRuntime() {
+      runtimeInitialized = true
+      if (ENVIRONMENT_IS_WASM_WORKER) return _wasmWorkerInitializeRuntime()
+      if (ENVIRONMENT_IS_PTHREAD) return startWorker()
+      wasmExports['__wasm_call_ctors']()
+    }
+    function postRun() {
+      if (ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER) {
+        return
+      }
+      if (Module['postRun']) {
+        if (typeof Module['postRun'] == 'function')
+          Module['postRun'] = [Module['postRun']]
+        while (Module['postRun'].length) {
+          addOnPostRun(Module['postRun'].shift())
+        }
+      }
+      callRuntimeCallbacks(onPostRuns)
+    }
+    function abort(what) {
+      Module['onAbort']?.(what)
+      what = 'Aborted(' + what + ')'
+      err(what)
+      ABORT = true
+      what += '. Build with -sASSERTIONS for more info.'
+      var e = new WebAssembly.RuntimeError(what)
+      readyPromiseReject?.(e)
+      throw e
+    }
+    var wasmBinaryFile
+    function findWasmBinary() {
+      return locateFile('tuidaw_audio.wasm')
+    }
+    function getBinarySync(file) {
+      if (file == wasmBinaryFile && wasmBinary) {
+        return new Uint8Array(wasmBinary)
+      }
+      if (readBinary) {
+        return readBinary(file)
+      }
+      throw 'both async and sync fetching of the wasm failed'
+    }
+    async function getWasmBinary(binaryFile) {
+      if (!wasmBinary) {
+        try {
+          var response = await readAsync(binaryFile)
+          return new Uint8Array(response)
+        } catch {}
+      }
+      return getBinarySync(binaryFile)
+    }
+    async function instantiateArrayBuffer(binaryFile, imports) {
+      try {
+        var binary = await getWasmBinary(binaryFile)
+        var instance = await WebAssembly.instantiate(binary, imports)
+        return instance
+      } catch (reason) {
+        err(`failed to asynchronously prepare wasm: ${reason}`)
+        abort(reason)
+      }
+    }
+    async function instantiateAsync(binary, binaryFile, imports) {
+      if (!binary) {
+        try {
+          var response = fetch(binaryFile, { credentials: 'same-origin' })
+          var instantiationResult = await WebAssembly.instantiateStreaming(
+            response,
+            imports
+          )
+          return instantiationResult
+        } catch (reason) {
+          err(`wasm streaming compile failed: ${reason}`)
+          err('falling back to ArrayBuffer instantiation')
+        }
+      }
+      return instantiateArrayBuffer(binaryFile, imports)
+    }
+    function getWasmImports() {
+      assignWasmImports()
+      var imports = { env: wasmImports, wasi_snapshot_preview1: wasmImports }
+      return imports
+    }
+    async function createWasm() {
+      function receiveInstance(instance, module) {
+        wasmExports = instance.exports
+        wasmExports = Asyncify.instrumentWasmExports(wasmExports)
+        registerTLSInit(wasmExports['_emscripten_tls_init'])
+        assignWasmExports(wasmExports)
+        wasmModule = module
+        return wasmExports
+      }
+      function receiveInstantiationResult(result) {
+        return receiveInstance(result['instance'], result['module'])
+      }
+      var info = getWasmImports()
+      if (Module['instantiateWasm']) {
+        return new Promise((resolve, reject) => {
+          Module['instantiateWasm'](info, (inst, mod) => {
+            resolve(receiveInstance(inst, mod))
+          })
+        })
+      }
+      if (ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER) {
+        var instance = new WebAssembly.Instance(wasmModule, getWasmImports())
+        return receiveInstance(instance, wasmModule)
+      }
+      wasmBinaryFile ??= findWasmBinary()
+      var result = await instantiateAsync(wasmBinary, wasmBinaryFile, info)
+      var exports = receiveInstantiationResult(result)
+      return exports
+    }
+    class ExitStatus {
+      name = 'ExitStatus'
+      constructor(status) {
+        this.message = `Program terminated with exit(${status})`
+        this.status = status
+      }
+    }
+    var terminateWorker = (worker) => {
+      worker.terminate()
+      worker.onmessage = (e) => {}
+    }
+    var cleanupThread = (pthread_ptr) => {
+      var worker = PThread.pthreads[pthread_ptr]
+      PThread.returnWorkerToPool(worker)
+    }
+    var callRuntimeCallbacks = (callbacks) => {
+      while (callbacks.length > 0) {
+        callbacks.shift()(Module)
+      }
+    }
+    var onPreRuns = []
+    var addOnPreRun = (cb) => onPreRuns.push(cb)
+    var runDependencies = 0
+    var dependenciesFulfilled = null
+    var removeRunDependency = (id) => {
+      runDependencies--
+      Module['monitorRunDependencies']?.(runDependencies)
+      if (runDependencies == 0) {
+        if (dependenciesFulfilled) {
+          var callback = dependenciesFulfilled
+          dependenciesFulfilled = null
+          callback()
+        }
+      }
+    }
+    var addRunDependency = (id) => {
+      runDependencies++
+      Module['monitorRunDependencies']?.(runDependencies)
+    }
+    var spawnThread = (threadParams) => {
+      var worker = PThread.getNewWorker()
+      if (!worker) {
+        return 6
+      }
+      PThread.runningWorkers.push(worker)
+      PThread.pthreads[threadParams.pthread_ptr] = worker
+      worker.pthread_ptr = threadParams.pthread_ptr
+      var msg = {
+        cmd: 'run',
+        start_routine: threadParams.startRoutine,
+        arg: threadParams.arg,
+        pthread_ptr: threadParams.pthread_ptr
+      }
+      worker.postMessage(msg, threadParams.transferList)
+      return 0
+    }
+    var runtimeKeepaliveCounter = 0
+    var keepRuntimeAlive = () => noExitRuntime || runtimeKeepaliveCounter > 0
+    var stackSave = () => _emscripten_stack_get_current()
+    var stackRestore = (val) => __emscripten_stack_restore(val)
+    var stackAlloc = (sz) => __emscripten_stack_alloc(sz)
+    var proxyToMainThread = (funcIndex, emAsmAddr, proxyMode, ...callArgs) => {
+      var bufSize = 8 * callArgs.length * 2
+      var sp = stackSave()
+      var args = stackAlloc(bufSize)
+      var b = args >> 3
+      for (var arg of callArgs) {
+        if (typeof arg == 'bigint') {
+          ;(growMemViews(), HEAP64)[b++] = 1n
+          ;(growMemViews(), HEAP64)[b++] = arg
+        } else {
+          ;(growMemViews(), HEAP64)[b++] = 0n
+          ;(growMemViews(), HEAPF64)[b++] = arg
+        }
+      }
+      var rtn = __emscripten_run_js_on_main_thread(
+        funcIndex,
+        emAsmAddr,
+        bufSize,
+        args,
+        proxyMode
+      )
+      stackRestore(sp)
+      return rtn
+    }
+    function _proc_exit(code) {
+      if (ENVIRONMENT_IS_PTHREAD) return proxyToMainThread(0, 0, 1, code)
+      EXITSTATUS = code
+      if (!keepRuntimeAlive()) {
+        PThread.terminateAllThreads()
+        Module['onExit']?.(code)
+        ABORT = true
+      }
+      quit_(code, new ExitStatus(code))
+    }
+    function exitOnMainThread(returnCode) {
+      if (ENVIRONMENT_IS_PTHREAD) return proxyToMainThread(1, 0, 0, returnCode)
+      _exit(returnCode)
+    }
+    var exitJS = (status, implicit) => {
+      EXITSTATUS = status
+      if (ENVIRONMENT_IS_PTHREAD) {
+        exitOnMainThread(status)
+        throw 'unwind'
+      }
+      _proc_exit(status)
+    }
+    var _exit = exitJS
+    var PThread = {
+      unusedWorkers: [],
+      runningWorkers: [],
+      tlsInitFunctions: [],
+      pthreads: {},
+      init() {
+        if (!(ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER)) {
+          PThread.initMainThread()
+        }
+      },
+      initMainThread() {
+        var pthreadPoolSize = 4
+        while (pthreadPoolSize--) {
+          PThread.allocateUnusedWorker()
+        }
+        addOnPreRun(async () => {
+          var pthreadPoolReady = PThread.loadWasmModuleToAllWorkers()
+          addRunDependency('loading-workers')
+          await pthreadPoolReady
+          removeRunDependency('loading-workers')
+        })
+      },
+      terminateAllThreads: () => {
+        for (var worker of PThread.runningWorkers) {
+          terminateWorker(worker)
+        }
+        for (var worker of PThread.unusedWorkers) {
+          terminateWorker(worker)
+        }
+        PThread.unusedWorkers = []
+        PThread.runningWorkers = []
+        PThread.pthreads = {}
+      },
+      returnWorkerToPool: (worker) => {
+        var pthread_ptr = worker.pthread_ptr
+        delete PThread.pthreads[pthread_ptr]
+        PThread.unusedWorkers.push(worker)
+        PThread.runningWorkers.splice(PThread.runningWorkers.indexOf(worker), 1)
+        worker.pthread_ptr = 0
+        __emscripten_thread_free_data(pthread_ptr)
+      },
+      threadInitTLS() {
+        PThread.tlsInitFunctions.forEach((f) => f())
+      },
+      loadWasmModuleToWorker: (worker) =>
+        new Promise((onFinishedLoading) => {
+          worker.onmessage = (e) => {
+            var d = e['data']
+            var cmd = d.cmd
+            if (d.targetThread && d.targetThread != _pthread_self()) {
+              var targetWorker = PThread.pthreads[d.targetThread]
+              if (targetWorker) {
+                targetWorker.postMessage(d, d.transferList)
+              } else {
+                err(
+                  `Internal error! Worker sent a message "${cmd}" to target pthread ${d.targetThread}, but that thread no longer exists!`
+                )
+              }
+              return
+            }
+            if (cmd === 'checkMailbox') {
+              checkMailbox()
+            } else if (cmd === 'spawnThread') {
+              spawnThread(d)
+            } else if (cmd === 'cleanupThread') {
+              callUserCallback(() => cleanupThread(d.thread))
+            } else if (cmd === 'loaded') {
+              worker.loaded = true
+              onFinishedLoading(worker)
+            } else if (d.target === 'setimmediate') {
+              worker.postMessage(d)
+            } else if (cmd === 'callHandler') {
+              Module[d.handler](...d.args)
+            } else if (cmd) {
+              err(`worker sent an unknown command ${cmd}`)
+            }
+          }
+          worker.onerror = (e) => {
+            var message = 'worker sent an error!'
+            err(`${message} ${e.filename}:${e.lineno}: ${e.message}`)
+            throw e
+          }
+          var handlers = []
+          var knownHandlers = ['onExit', 'onAbort', 'print', 'printErr']
+          for (var handler of knownHandlers) {
+            if (Module.propertyIsEnumerable(handler)) {
+              handlers.push(handler)
+            }
+          }
+          worker.postMessage({ cmd: 'load', handlers, wasmMemory, wasmModule })
+        }),
+      async loadWasmModuleToAllWorkers() {
+        if (ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER) {
+          return
+        }
+        let pthreadPoolReady = Promise.all(
+          PThread.unusedWorkers.map(PThread.loadWasmModuleToWorker)
+        )
+        return pthreadPoolReady
+      },
+      allocateUnusedWorker() {
+        var worker
+        var pthreadMainJs = _scriptName
+        if (Module['mainScriptUrlOrBlob']) {
+          pthreadMainJs = Module['mainScriptUrlOrBlob']
+          if (typeof pthreadMainJs != 'string') {
+            pthreadMainJs = URL.createObjectURL(pthreadMainJs)
+          }
+        }
+        worker = new Worker(pthreadMainJs, { name: 'em-pthread' })
+        PThread.unusedWorkers.push(worker)
+      },
+      getNewWorker() {
+        if (PThread.unusedWorkers.length == 0) {
+          PThread.allocateUnusedWorker()
+          PThread.loadWasmModuleToWorker(PThread.unusedWorkers[0])
+        }
+        return PThread.unusedWorkers.pop()
+      }
+    }
+    var _wasmWorkerDelayedMessageQueue = []
+    var handleException = (e) => {
+      if (e instanceof ExitStatus || e == 'unwind') {
+        return EXITSTATUS
+      }
+      quit_(1, e)
+    }
+    var maybeExit = () => {
+      if (!keepRuntimeAlive()) {
+        try {
+          if (ENVIRONMENT_IS_PTHREAD) {
+            if (_pthread_self()) __emscripten_thread_exit(EXITSTATUS)
+            return
+          }
+          _exit(EXITSTATUS)
+        } catch (e) {
+          handleException(e)
+        }
+      }
+    }
+    var callUserCallback = (func) => {
+      if (ABORT) {
+        return
+      }
+      try {
+        return func()
+      } catch (e) {
+        handleException(e)
+      } finally {
+        maybeExit()
+      }
+    }
+    var wasmTableMirror = []
+    var getWasmTableEntry = (funcPtr) => {
+      var func = wasmTableMirror[funcPtr]
+      if (!func) {
+        wasmTableMirror[funcPtr] = func = wasmTable.get(funcPtr)
+      }
+      return func
+    }
+    var _wasmWorkerRunPostMessage = (e) => {
+      let data = e.data
+      let wasmCall = data['_wsc']
+      wasmCall &&
+        callUserCallback(() => getWasmTableEntry(wasmCall)(...data['x']))
+    }
+    var _wasmWorkerAppendToQueue = (e) => {
+      _wasmWorkerDelayedMessageQueue.push(e)
+    }
+    var _wasmWorkerInitializeRuntime = () => {
+      noExitRuntime = 1
+      __emscripten_wasm_worker_initialize(
+        wwParams.stackLowestAddress,
+        wwParams.stackSize
+      )
+      ___set_thread_state(0, 0, 0, !ENVIRONMENT_IS_AUDIO_WORKLET)
+      if (!ENVIRONMENT_IS_AUDIO_WORKLET) {
+        removeEventListener('message', _wasmWorkerAppendToQueue)
+        _wasmWorkerDelayedMessageQueue = _wasmWorkerDelayedMessageQueue.forEach(
+          _wasmWorkerRunPostMessage
+        )
+        addEventListener('message', _wasmWorkerRunPostMessage)
+      }
+    }
+    var onPostRuns = []
+    var addOnPostRun = (cb) => onPostRuns.push(cb)
+    var dynCalls = {}
+    var dynCallLegacy = (sig, ptr, args) => {
+      sig = sig.replace(/p/g, 'i')
+      var f = dynCalls[sig]
+      return f(ptr, ...args)
+    }
+    function establishStackSpace(pthread_ptr) {
+      var stackHigh = (growMemViews(), HEAPU32)[(pthread_ptr + 52) >> 2]
+      var stackSize = (growMemViews(), HEAPU32)[(pthread_ptr + 56) >> 2]
+      var stackLow = stackHigh - stackSize
+      _emscripten_stack_set_limits(stackHigh, stackLow)
+      stackRestore(stackHigh)
+    }
+    function getValue(ptr, type = 'i8') {
+      if (type.endsWith('*')) type = '*'
+      switch (type) {
+        case 'i1':
+          return (growMemViews(), HEAP8)[ptr]
+        case 'i8':
+          return (growMemViews(), HEAP8)[ptr]
+        case 'i16':
+          return (growMemViews(), HEAP16)[ptr >> 1]
+        case 'i32':
+          return (growMemViews(), HEAP32)[ptr >> 2]
+        case 'i64':
+          return (growMemViews(), HEAP64)[ptr >> 3]
+        case 'float':
+          return (growMemViews(), HEAPF32)[ptr >> 2]
+        case 'double':
+          return (growMemViews(), HEAPF64)[ptr >> 3]
+        case '*':
+          return (growMemViews(), HEAPU32)[ptr >> 2]
+        default:
+          abort(`invalid type for getValue: ${type}`)
+      }
+    }
+    var invokeEntryPoint = (ptr, arg) => {
+      runtimeKeepaliveCounter = 0
+      noExitRuntime = 0
+      var result = ((a1) => dynCall_ii(ptr, a1))(arg)
+      function finish(result) {
+        if (keepRuntimeAlive()) {
+          EXITSTATUS = result
+          return
+        }
+        __emscripten_thread_exit(result)
+      }
+      finish(result)
+    }
+    var noExitRuntime = true
+    var registerTLSInit = (tlsInitFunc) =>
+      PThread.tlsInitFunctions.push(tlsInitFunc)
+    function setValue(ptr, value, type = 'i8') {
+      if (type.endsWith('*')) type = '*'
+      switch (type) {
+        case 'i1':
+          ;(growMemViews(), HEAP8)[ptr] = value
+          break
+        case 'i8':
+          ;(growMemViews(), HEAP8)[ptr] = value
+          break
+        case 'i16':
+          ;(growMemViews(), HEAP16)[ptr >> 1] = value
+          break
+        case 'i32':
+          ;(growMemViews(), HEAP32)[ptr >> 2] = value
+          break
+        case 'i64':
+          ;(growMemViews(), HEAP64)[ptr >> 3] = BigInt(value)
+          break
+        case 'float':
+          ;(growMemViews(), HEAPF32)[ptr >> 2] = value
+          break
+        case 'double':
+          ;(growMemViews(), HEAPF64)[ptr >> 3] = value
+          break
+        case '*':
+          ;(growMemViews(), HEAPU32)[ptr >> 2] = value
+          break
+        default:
+          abort(`invalid type for setValue: ${type}`)
+      }
+    }
+    var wasmMemory
+    function pthreadCreateProxied(pthread_ptr, attr, startRoutine, arg) {
+      if (ENVIRONMENT_IS_PTHREAD)
+        return proxyToMainThread(2, 0, 1, pthread_ptr, attr, startRoutine, arg)
+      return ___pthread_create_js(pthread_ptr, attr, startRoutine, arg)
+    }
+    var _emscripten_has_threading_support = () => !!globalThis.SharedArrayBuffer
+    var ___pthread_create_js = (pthread_ptr, attr, startRoutine, arg) => {
+      if (!_emscripten_has_threading_support()) {
+        return 6
+      }
+      var transferList = []
+      var error = 0
+      if (ENVIRONMENT_IS_PTHREAD && (transferList.length === 0 || error)) {
+        return pthreadCreateProxied(pthread_ptr, attr, startRoutine, arg)
+      }
+      if (error) return error
+      var threadParams = { startRoutine, pthread_ptr, arg, transferList }
+      if (ENVIRONMENT_IS_PTHREAD) {
+        threadParams.cmd = 'spawnThread'
+        postMessage(threadParams, transferList)
+        return 0
+      }
+      return spawnThread(threadParams)
+    }
+    var __emscripten_init_main_thread_js = (tb) => {
+      __emscripten_thread_init(
+        tb,
+        !ENVIRONMENT_IS_WORKER,
+        1,
+        !ENVIRONMENT_IS_WEB,
+        1048576,
+        false
+      )
+      PThread.threadInitTLS()
+    }
+    var waitAsyncPolyfilled =
+      !Atomics.waitAsync ||
+      (globalThis.navigator?.userAgent &&
+        Number(
+          (navigator.userAgent.match(/Chrom(e|ium)\/([0-9]+)\./) || [])[2]
+        ) < 91)
+    var __emscripten_thread_mailbox_await = (pthread_ptr) => {
+      if (!waitAsyncPolyfilled) {
+        var wait = Atomics.waitAsync(
+          (growMemViews(), HEAP32),
+          pthread_ptr >> 2,
+          pthread_ptr
+        )
+        wait.value.then(checkMailbox)
+        var waitingAsync = pthread_ptr + 128
+        Atomics.store((growMemViews(), HEAP32), waitingAsync >> 2, 1)
+      }
+    }
+    var checkMailbox = () =>
+      callUserCallback(() => {
+        var pthread_ptr = _pthread_self()
+        if (pthread_ptr) {
+          __emscripten_thread_mailbox_await(pthread_ptr)
+          __emscripten_check_mailbox()
+        }
+      })
+    var __emscripten_notify_mailbox_postmessage = (
+      targetThread,
+      currThreadId
+    ) => {
+      if (targetThread == currThreadId) {
+        setTimeout(checkMailbox)
+      } else if (ENVIRONMENT_IS_PTHREAD) {
+        postMessage({ targetThread, cmd: 'checkMailbox' })
+      } else {
+        var worker = PThread.pthreads[targetThread]
+        if (!worker) {
+          return
+        }
+        worker.postMessage({ cmd: 'checkMailbox' })
+      }
+    }
+    var proxiedJSCallArgs = []
+    var __emscripten_receive_on_main_thread_js = (
+      funcIndex,
+      emAsmAddr,
+      callingThread,
+      bufSize,
+      args,
+      ctx,
+      ctxArgs
+    ) => {
+      proxiedJSCallArgs.length = 0
+      var b = args >> 3
+      var end = (args + bufSize) >> 3
+      while (b < end) {
+        var arg
+        if ((growMemViews(), HEAP64)[b++]) {
+          arg = (growMemViews(), HEAP64)[b++]
+        } else {
+          arg = (growMemViews(), HEAPF64)[b++]
+        }
+        proxiedJSCallArgs.push(arg)
+      }
+      var func = emAsmAddr
+        ? ASM_CONSTS[emAsmAddr]
+        : proxiedFunctionTable[funcIndex]
+      PThread.currentProxiedOperationCallerThread = callingThread
+      var rtn = func(...proxiedJSCallArgs)
+      PThread.currentProxiedOperationCallerThread = 0
+      if (ctx) {
+        rtn.then((rtn) =>
+          __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, rtn)
+        )
+        return
+      }
+      return rtn
+    }
+    var __emscripten_thread_cleanup = (thread) => {
+      if (!ENVIRONMENT_IS_PTHREAD) cleanupThread(thread)
+      else postMessage({ cmd: 'cleanupThread', thread })
+    }
+    var __emscripten_thread_set_strongref = (thread) => {}
+    var _emscripten_get_now
+    if (globalThis.performance && performance.now) {
+      _emscripten_get_now = () => performance.timeOrigin + performance.now()
+    } else {
+      _emscripten_get_now = Date.now
+    }
+    var _emscripten_date_now = () => Date.now()
+    var nowIsMonotonic = !!globalThis.performance?.now
+    var checkWasiClock = (clock_id) => clock_id >= 0 && clock_id <= 3
+    var INT53_MAX = 9007199254740992
+    var INT53_MIN = -9007199254740992
+    var bigintToI53Checked = (num) =>
+      num < INT53_MIN || num > INT53_MAX ? NaN : Number(num)
+    function _clock_time_get(clk_id, ignored_precision, ptime) {
+      ignored_precision = bigintToI53Checked(ignored_precision)
+      if (!checkWasiClock(clk_id)) {
+        return 28
+      }
+      var now
+      if (clk_id === 0) {
+        now = _emscripten_date_now()
+      } else if (nowIsMonotonic) {
+        now = _emscripten_get_now()
+      } else {
+        return 52
+      }
+      var nsec = Math.round(now * 1e3 * 1e3)
+      ;(growMemViews(), HEAP64)[ptime >> 3] = BigInt(nsec)
+      return 0
+    }
+    var readEmAsmArgsArray = []
+    var readEmAsmArgs = (sigPtr, buf) => {
+      readEmAsmArgsArray.length = 0
+      var ch
+      while ((ch = (growMemViews(), HEAPU8)[sigPtr++])) {
+        var wide = ch != 105
+        wide &= ch != 112
+        buf += wide && buf % 8 ? 4 : 0
+        readEmAsmArgsArray.push(
+          ch == 112
+            ? (growMemViews(), HEAPU32)[buf >> 2]
+            : ch == 106
+              ? (growMemViews(), HEAP64)[buf >> 3]
+              : ch == 105
+                ? (growMemViews(), HEAP32)[buf >> 2]
+                : (growMemViews(), HEAPF64)[buf >> 3]
+        )
+        buf += wide ? 8 : 4
+      }
+      return readEmAsmArgsArray
+    }
+    var runEmAsmFunction = (code, sigPtr, argbuf) => {
+      var args = readEmAsmArgs(sigPtr, argbuf)
+      return ASM_CONSTS[code](...args)
+    }
+    var _emscripten_asm_const_int = (code, sigPtr, argbuf) =>
+      runEmAsmFunction(code, sigPtr, argbuf)
+    var emscriptenGetContextQuantumSize = (contextHandle) =>
+      emAudio[contextHandle]['renderQuantumSize'] || 128
+    var _emscripten_audio_context_quantum_size = (contextHandle) =>
+      emscriptenGetContextQuantumSize(contextHandle)
+    var _emscripten_check_blocking_allowed = () => {}
+    var emAudio = {}
+    var emAudioCounter = 0
+    var emscriptenRegisterAudioObject = (object) => {
+      emAudio[++emAudioCounter] = object
+      return emAudioCounter
+    }
+    var emscriptenGetAudioObject = (objectHandle) => emAudio[objectHandle]
+    var UTF8Decoder = globalThis.TextDecoder && new TextDecoder()
+    var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
+      var maxIdx = idx + maxBytesToRead
+      if (ignoreNul) return maxIdx
+      while (heapOrArray[idx] && !(idx >= maxIdx)) ++idx
+      return idx
+    }
+    var UTF8ArrayToString = (
+      heapOrArray,
+      idx = 0,
+      maxBytesToRead,
+      ignoreNul
+    ) => {
+      var endPtr = findStringEnd(heapOrArray, idx, maxBytesToRead, ignoreNul)
+      if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
+        return UTF8Decoder.decode(
+          heapOrArray.buffer instanceof ArrayBuffer
+            ? heapOrArray.subarray(idx, endPtr)
+            : heapOrArray.slice(idx, endPtr)
+        )
+      }
+      var str = ''
+      while (idx < endPtr) {
+        var u0 = heapOrArray[idx++]
+        if (!(u0 & 128)) {
+          str += String.fromCharCode(u0)
+          continue
+        }
+        var u1 = heapOrArray[idx++] & 63
+        if ((u0 & 224) == 192) {
+          str += String.fromCharCode(((u0 & 31) << 6) | u1)
+          continue
+        }
+        var u2 = heapOrArray[idx++] & 63
+        if ((u0 & 240) == 224) {
+          u0 = ((u0 & 15) << 12) | (u1 << 6) | u2
+        } else {
+          u0 =
+            ((u0 & 7) << 18) |
+            (u1 << 12) |
+            (u2 << 6) |
+            (heapOrArray[idx++] & 63)
+        }
+        if (u0 < 65536) {
+          str += String.fromCharCode(u0)
+        } else {
+          var ch = u0 - 65536
+          str += String.fromCharCode(55296 | (ch >> 10), 56320 | (ch & 1023))
+        }
+      }
+      return str
+    }
+    var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) =>
+      ptr
+        ? UTF8ArrayToString(
+            (growMemViews(), HEAPU8),
+            ptr,
+            maxBytesToRead,
+            ignoreNul
+          )
+        : ''
+    var _emscripten_create_audio_context = (options) => {
+      function readRenderSizeHint(val) {
+        return val < 0 ? 'hardware' : val || 'default'
+      }
+      var opts = options
+        ? {
+            latencyHint:
+              UTF8ToString((growMemViews(), HEAPU32)[options >> 2]) ||
+              undefined,
+            sampleRate:
+              (growMemViews(), HEAPU32)[(options + 4) >> 2] || undefined,
+            renderSizeHint: readRenderSizeHint(
+              (growMemViews(), HEAP32)[(options + 8) >> 2]
+            )
+          }
+        : undefined
+      return emscriptenRegisterAudioObject(new AudioContext(opts))
+    }
+    var _emscripten_create_wasm_audio_worklet_node = (
+      contextHandle,
+      name,
+      options,
+      callback,
+      userData
+    ) => {
+      function readChannelCountArray(heapIndex, numOutputs) {
+        if (!heapIndex) return undefined
+        heapIndex = heapIndex >> 2
+        var channelCounts = []
+        while (numOutputs--)
+          channelCounts.push((growMemViews(), HEAPU32)[heapIndex++])
+        return channelCounts
+      }
+      var optionsOutputs = options
+        ? (growMemViews(), HEAP32)[(options + 4) >> 2]
+        : 0
+      var opts = options
+        ? {
+            numberOfInputs: (growMemViews(), HEAP32)[options >> 2],
+            numberOfOutputs: optionsOutputs,
+            outputChannelCount: readChannelCountArray(
+              (growMemViews(), HEAPU32)[(options + 8) >> 2],
+              optionsOutputs
+            ),
+            channelCount:
+              (growMemViews(), HEAPU32)[(options + 12) >> 2] || undefined,
+            channelCountMode: [, 'clamped-max', 'explicit'][
+              (growMemViews(), HEAP32)[(options + 16) >> 2]
+            ],
+            channelInterpretation: [, 'discrete'][
+              (growMemViews(), HEAP32)[(options + 20) >> 2]
+            ],
+            processorOptions: {
+              callback,
+              userData,
+              samplesPerChannel: emscriptenGetContextQuantumSize(contextHandle)
+            }
+          }
+        : undefined
+      return emscriptenRegisterAudioObject(
+        new AudioWorkletNode(emAudio[contextHandle], UTF8ToString(name), opts)
+      )
+    }
+    var _emscripten_create_wasm_audio_worklet_processor_async = (
+      contextHandle,
+      options,
+      callback,
+      userData
+    ) => {
+      var processorName = UTF8ToString((growMemViews(), HEAPU32)[options >> 2])
+      var numAudioParams = (growMemViews(), HEAP32)[(options + 4) >> 2]
+      var audioParamDescriptors = (growMemViews(), HEAPU32)[(options + 8) >> 2]
+      var audioParams = []
+      var paramIndex = 0
+      while (numAudioParams--) {
+        audioParams.push({
+          name: paramIndex++,
+          defaultValue: (growMemViews(), HEAPF32)[audioParamDescriptors >> 2],
+          minValue: (growMemViews(), HEAPF32)[(audioParamDescriptors + 4) >> 2],
+          maxValue: (growMemViews(), HEAPF32)[(audioParamDescriptors + 8) >> 2],
+          automationRate:
+            ((growMemViews(), HEAP32)[(audioParamDescriptors + 12) >> 2]
+              ? 'k'
+              : 'a') + '-rate'
+        })
+        audioParamDescriptors += 16
+      }
+      emAudio[contextHandle].audioWorklet['port'].postMessage({
+        _wpn: processorName,
+        audioParams,
+        contextHandle,
+        callback,
+        userData
+      })
+    }
+    var _emscripten_destroy_audio_context = (contextHandle) => {
+      emAudio[contextHandle].suspend()
+      delete emAudio[contextHandle]
+    }
+    var _emscripten_destroy_web_audio_node = (objectHandle) => {
+      emAudio[objectHandle].disconnect()
+      delete emAudio[objectHandle]
+    }
+    var runtimeKeepalivePush = () => {
+      runtimeKeepaliveCounter += 1
+    }
+    var _emscripten_exit_with_live_runtime = () => {
+      runtimeKeepalivePush()
+      throw 'unwind'
+    }
+    var getHeapMax = () => 2147483648
+    var alignMemory = (size, alignment) =>
+      Math.ceil(size / alignment) * alignment
+    var growMemory = (size) => {
+      var oldHeapSize = wasmMemory.buffer.byteLength
+      var pages = ((size - oldHeapSize + 65535) / 65536) | 0
+      try {
+        wasmMemory.grow(pages)
+        updateMemoryViews()
+        return 1
+      } catch (e) {}
+    }
+    var _emscripten_resize_heap = (requestedSize) => {
+      var oldSize = (growMemViews(), HEAPU8).length
+      requestedSize >>>= 0
+      if (requestedSize <= oldSize) {
+        return false
+      }
+      var maxHeapSize = getHeapMax()
+      if (requestedSize > maxHeapSize) {
+        return false
+      }
+      for (var cutDown = 1; cutDown <= 4; cutDown *= 2) {
+        var overGrownHeapSize = oldSize * (1 + 0.2 / cutDown)
+        overGrownHeapSize = Math.min(
+          overGrownHeapSize,
+          requestedSize + 100663296
+        )
+        var newSize = Math.min(
+          maxHeapSize,
+          alignMemory(Math.max(requestedSize, overGrownHeapSize), 65536)
+        )
+        var replacement = growMemory(newSize)
+        if (replacement) {
+          return true
+        }
+      }
+      return false
+    }
+    var _emscripten_sleep = function (ms) {
+      let innerFunc = () => new Promise((resolve) => setTimeout(resolve, ms))
+      return Asyncify.handleAsync(innerFunc)
+    }
+    _emscripten_sleep.isAsync = true
+    var _wasmWorkersID = 1
+    var _emAudioDispatchProcessorCallback = (e) => {
+      var data = e.data
+      var wasmCall = data['_wsc']
+      wasmCall && getWasmTableEntry(wasmCall)(...data.args)
+    }
+    var _emscripten_start_wasm_audio_worklet_thread_async = (
+      contextHandle,
+      stackLowestAddress,
+      stackSize,
+      callback,
+      userData
+    ) => {
+      var audioContext = emAudio[contextHandle]
+      var audioWorklet = audioContext.audioWorklet
+      var audioWorkletCreationFailed = () => {
+        ;((a1, a2, a3) => dynCall_viii(callback, a1, a2, a3))(
+          contextHandle,
+          0,
+          userData
+        )
+      }
+      if (!audioWorklet) {
+        return audioWorkletCreationFailed()
+      }
+      audioWorklet
+        .addModule(locateFile('tuidaw_audio.js'))
+        .then(() => {
+          if (!audioWorklet['port']) {
+            audioWorklet['port'] = {
+              postMessage: (msg) => {
+                if (msg['_boot']) {
+                  audioWorklet.bootstrapMessage = new AudioWorkletNode(
+                    audioContext,
+                    'em-bootstrap',
+                    { processorOptions: msg }
+                  )
+                  audioWorklet.bootstrapMessage['port'].onmessage = (msg) => {
+                    audioWorklet['port'].onmessage(msg)
+                  }
+                } else {
+                  audioWorklet.bootstrapMessage['port'].postMessage(msg)
+                }
+              }
+            }
+          }
+          audioWorklet['port'].postMessage({
+            _boot: 1,
+            wwID: _wasmWorkersID++,
+            wasm: wasmModule,
+            wasmMemory,
+            stackLowestAddress,
+            stackSize
+          })
+          audioWorklet['port'].onmessage = _emAudioDispatchProcessorCallback
+          ;((a1, a2, a3) => dynCall_viii(callback, a1, a2, a3))(
+            contextHandle,
+            1,
+            userData
+          )
+        })
+        .catch(audioWorkletCreationFailed)
+    }
+    var printCharBuffers = [null, [], []]
+    var printChar = (stream, curr) => {
+      var buffer = printCharBuffers[stream]
+      if (curr === 0 || curr === 10) {
+        ;(stream === 1 ? out : err)(UTF8ArrayToString(buffer))
+        buffer.length = 0
+      } else {
+        buffer.push(curr)
+      }
+    }
+    function _fd_write(fd, iov, iovcnt, pnum) {
+      if (ENVIRONMENT_IS_PTHREAD)
+        return proxyToMainThread(3, 0, 1, fd, iov, iovcnt, pnum)
+      var num = 0
+      for (var i = 0; i < iovcnt; i++) {
+        var ptr = (growMemViews(), HEAPU32)[iov >> 2]
+        var len = (growMemViews(), HEAPU32)[(iov + 4) >> 2]
+        iov += 8
+        for (var j = 0; j < len; j++) {
+          printChar(fd, (growMemViews(), HEAPU8)[ptr + j])
+        }
+        num += len
+      }
+      ;(growMemViews(), HEAPU32)[pnum >> 2] = num
+      return 0
+    }
+    var runAndAbortIfError = (func) => {
+      try {
+        return func()
+      } catch (e) {
+        abort(e)
+      }
+    }
+    var runtimeKeepalivePop = () => {
+      runtimeKeepaliveCounter -= 1
+    }
+    var Asyncify = {
+      instrumentWasmImports(imports) {
+        var importPattern = /^(invoke_.*|__asyncjs__.*)$/
+        for (let [x, original] of Object.entries(imports)) {
+          if (typeof original == 'function') {
+            let isAsyncifyImport = original.isAsync || importPattern.test(x)
+          }
+        }
+      },
+      instrumentFunction(original) {
+        var wrapper = (...args) => {
+          Asyncify.exportCallStack.push(original)
+          try {
+            return original(...args)
+          } finally {
+            if (!ABORT) {
+              var top = Asyncify.exportCallStack.pop()
+              Asyncify.maybeStopUnwind()
+            }
+          }
+        }
+        Asyncify.funcWrappers.set(original, wrapper)
+        return wrapper
+      },
+      instrumentWasmExports(exports) {
+        var ret = {}
+        for (let [x, original] of Object.entries(exports)) {
+          if (typeof original == 'function') {
+            var wrapper = Asyncify.instrumentFunction(original)
+            ret[x] = wrapper
+          } else {
+            ret[x] = original
+          }
+        }
+        return ret
+      },
+      State: { Normal: 0, Unwinding: 1, Rewinding: 2, Disabled: 3 },
+      state: 0,
+      StackSize: 4096,
+      currData: null,
+      handleSleepReturnValue: 0,
+      exportCallStack: [],
+      callstackFuncToId: new Map(),
+      callStackIdToFunc: new Map(),
+      funcWrappers: new Map(),
+      callStackId: 0,
+      asyncPromiseHandlers: null,
+      sleepCallbacks: [],
+      getCallStackId(func) {
+        if (!Asyncify.callstackFuncToId.has(func)) {
+          var id = Asyncify.callStackId++
+          Asyncify.callstackFuncToId.set(func, id)
+          Asyncify.callStackIdToFunc.set(id, func)
+        }
+        return Asyncify.callstackFuncToId.get(func)
+      },
+      maybeStopUnwind() {
+        if (
+          Asyncify.currData &&
+          Asyncify.state === Asyncify.State.Unwinding &&
+          Asyncify.exportCallStack.length === 0
+        ) {
+          Asyncify.state = Asyncify.State.Normal
+          runtimeKeepalivePush()
+          runAndAbortIfError(_asyncify_stop_unwind)
+          if (typeof Fibers != 'undefined') {
+            Fibers.trampoline()
+          }
+        }
+      },
+      whenDone() {
+        return new Promise((resolve, reject) => {
+          Asyncify.asyncPromiseHandlers = { resolve, reject }
+        })
+      },
+      allocateData() {
+        var ptr = _malloc(12 + Asyncify.StackSize)
+        Asyncify.setDataHeader(ptr, ptr + 12, Asyncify.StackSize)
+        Asyncify.setDataRewindFunc(ptr)
+        return ptr
+      },
+      setDataHeader(ptr, stack, stackSize) {
+        ;(growMemViews(), HEAPU32)[ptr >> 2] = stack
+        ;(growMemViews(), HEAPU32)[(ptr + 4) >> 2] = stack + stackSize
+      },
+      setDataRewindFunc(ptr) {
+        var bottomOfCallStack = Asyncify.exportCallStack[0]
+        var rewindId = Asyncify.getCallStackId(bottomOfCallStack)
+        ;(growMemViews(), HEAP32)[(ptr + 8) >> 2] = rewindId
+      },
+      getDataRewindFunc(ptr) {
+        var id = (growMemViews(), HEAP32)[(ptr + 8) >> 2]
+        var func = Asyncify.callStackIdToFunc.get(id)
+        return func
+      },
+      doRewind(ptr) {
+        var original = Asyncify.getDataRewindFunc(ptr)
+        var func = Asyncify.funcWrappers.get(original)
+        runtimeKeepalivePop()
+        return callUserCallback(func)
+      },
+      handleSleep(startAsync) {
+        if (ABORT) return
+        if (Asyncify.state === Asyncify.State.Normal) {
+          var reachedCallback = false
+          var reachedAfterCallback = false
+          startAsync((handleSleepReturnValue = 0) => {
+            if (ABORT) return
+            Asyncify.handleSleepReturnValue = handleSleepReturnValue
+            reachedCallback = true
+            if (!reachedAfterCallback) {
+              return
+            }
+            Asyncify.state = Asyncify.State.Rewinding
+            runAndAbortIfError(() => _asyncify_start_rewind(Asyncify.currData))
+            if (typeof MainLoop != 'undefined' && MainLoop.func) {
+              MainLoop.resume()
+            }
+            var asyncWasmReturnValue,
+              isError = false
+            try {
+              asyncWasmReturnValue = Asyncify.doRewind(Asyncify.currData)
+            } catch (err) {
+              asyncWasmReturnValue = err
+              isError = true
+            }
+            var handled = false
+            if (!Asyncify.currData) {
+              var asyncPromiseHandlers = Asyncify.asyncPromiseHandlers
+              if (asyncPromiseHandlers) {
+                Asyncify.asyncPromiseHandlers = null
+                ;(isError
+                  ? asyncPromiseHandlers.reject
+                  : asyncPromiseHandlers.resolve)(asyncWasmReturnValue)
+                handled = true
+              }
+            }
+            if (isError && !handled) {
+              throw asyncWasmReturnValue
+            }
+          })
+          reachedAfterCallback = true
+          if (!reachedCallback) {
+            Asyncify.state = Asyncify.State.Unwinding
+            Asyncify.currData = Asyncify.allocateData()
+            if (typeof MainLoop != 'undefined' && MainLoop.func) {
+              MainLoop.pause()
+            }
+            runAndAbortIfError(() => _asyncify_start_unwind(Asyncify.currData))
+          }
+        } else if (Asyncify.state === Asyncify.State.Rewinding) {
+          Asyncify.state = Asyncify.State.Normal
+          runAndAbortIfError(_asyncify_stop_rewind)
+          _free(Asyncify.currData)
+          Asyncify.currData = null
+          Asyncify.sleepCallbacks.forEach(callUserCallback)
+        } else {
+          abort(`invalid state: ${Asyncify.state}`)
+        }
+        return Asyncify.handleSleepReturnValue
+      },
+      handleAsync: (startAsync) =>
+        Asyncify.handleSleep(async (wakeUp) => {
+          wakeUp(await startAsync())
+        })
+    }
+    var getCFunc = (ident) => {
+      var func = Module['_' + ident]
+      return func
+    }
+    var writeArrayToMemory = (array, buffer) => {
+      ;(growMemViews(), HEAP8).set(array, buffer)
+    }
+    var lengthBytesUTF8 = (str) => {
+      var len = 0
+      for (var i = 0; i < str.length; ++i) {
+        var c = str.charCodeAt(i)
+        if (c <= 127) {
+          len++
+        } else if (c <= 2047) {
+          len += 2
+        } else if (c >= 55296 && c <= 57343) {
+          len += 4
+          ++i
+        } else {
+          len += 3
+        }
+      }
+      return len
+    }
+    var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
+      if (!(maxBytesToWrite > 0)) return 0
+      var startIdx = outIdx
+      var endIdx = outIdx + maxBytesToWrite - 1
+      for (var i = 0; i < str.length; ++i) {
+        var u = str.codePointAt(i)
+        if (u <= 127) {
+          if (outIdx >= endIdx) break
+          heap[outIdx++] = u
+        } else if (u <= 2047) {
+          if (outIdx + 1 >= endIdx) break
+          heap[outIdx++] = 192 | (u >> 6)
+          heap[outIdx++] = 128 | (u & 63)
+        } else if (u <= 65535) {
+          if (outIdx + 2 >= endIdx) break
+          heap[outIdx++] = 224 | (u >> 12)
+          heap[outIdx++] = 128 | ((u >> 6) & 63)
+          heap[outIdx++] = 128 | (u & 63)
+        } else {
+          if (outIdx + 3 >= endIdx) break
+          heap[outIdx++] = 240 | (u >> 18)
+          heap[outIdx++] = 128 | ((u >> 12) & 63)
+          heap[outIdx++] = 128 | ((u >> 6) & 63)
+          heap[outIdx++] = 128 | (u & 63)
+          i++
+        }
+      }
+      heap[outIdx] = 0
+      return outIdx - startIdx
+    }
+    var stringToUTF8 = (str, outPtr, maxBytesToWrite) =>
+      stringToUTF8Array(str, (growMemViews(), HEAPU8), outPtr, maxBytesToWrite)
+    var stringToUTF8OnStack = (str) => {
+      var size = lengthBytesUTF8(str) + 1
+      var ret = stackAlloc(size)
+      stringToUTF8(str, ret, size)
+      return ret
+    }
+    var ccall = (ident, returnType, argTypes, args, opts) => {
+      var toC = {
+        string: (str) => {
+          var ret = 0
+          if (str !== null && str !== undefined && str !== 0) {
+            ret = stringToUTF8OnStack(str)
+          }
+          return ret
+        },
+        array: (arr) => {
+          var ret = stackAlloc(arr.length)
+          writeArrayToMemory(arr, ret)
+          return ret
+        }
+      }
+      function convertReturnValue(ret) {
+        if (returnType === 'string') {
+          return UTF8ToString(ret)
+        }
+        if (returnType === 'boolean') return Boolean(ret)
+        return ret
+      }
+      var func = getCFunc(ident)
+      var cArgs = []
+      var stack = 0
+      if (args) {
+        for (var i = 0; i < args.length; i++) {
+          var converter = toC[argTypes[i]]
+          if (converter) {
+            if (stack === 0) stack = stackSave()
+            cArgs[i] = converter(args[i])
+          } else {
+            cArgs[i] = args[i]
+          }
+        }
+      }
+      var previousAsync = Asyncify.currData
+      var ret = func(...cArgs)
+      function onDone(ret) {
+        runtimeKeepalivePop()
+        if (stack !== 0) stackRestore(stack)
+        return convertReturnValue(ret)
+      }
+      var asyncMode = opts?.async
+      runtimeKeepalivePush()
+      if (Asyncify.currData != previousAsync) {
+        return Asyncify.whenDone().then(onDone)
+      }
+      ret = onDone(ret)
+      if (asyncMode) return Promise.resolve(ret)
+      return ret
+    }
+    var cwrap = (ident, returnType, argTypes, opts) => {
+      var numericArgs =
+        !argTypes ||
+        argTypes.every((type) => type === 'number' || type === 'boolean')
+      var numericRet = returnType !== 'string'
+      if (numericRet && numericArgs && !opts) {
+        return getCFunc(ident)
+      }
+      return (...args) => ccall(ident, returnType, argTypes, args, opts)
+    }
+    PThread.init()
+    {
+      initMemory()
+      if (Module['noExitRuntime']) noExitRuntime = Module['noExitRuntime']
+      if (Module['print']) out = Module['print']
+      if (Module['printErr']) err = Module['printErr']
+      if (Module['wasmBinary']) wasmBinary = Module['wasmBinary']
+      if (Module['arguments']) arguments_ = Module['arguments']
+      if (Module['thisProgram']) thisProgram = Module['thisProgram']
+      if (Module['preInit']) {
+        if (typeof Module['preInit'] == 'function')
+          Module['preInit'] = [Module['preInit']]
+        while (Module['preInit'].length > 0) {
+          Module['preInit'].shift()()
+        }
+      }
+    }
+    Module['stackSave'] = stackSave
+    Module['stackRestore'] = stackRestore
+    Module['stackAlloc'] = stackAlloc
+    Module['ccall'] = ccall
+    Module['cwrap'] = cwrap
+    Module['setValue'] = setValue
+    Module['getValue'] = getValue
+    Module['UTF8ToString'] = UTF8ToString
+    Module['stringToUTF8'] = stringToUTF8
+    var proxiedFunctionTable = [
+      _proc_exit,
+      exitOnMainThread,
+      pthreadCreateProxied,
+      _fd_write
+    ]
+    var ASM_CONSTS = {
+      11320: ($0, $1, $2, $3, $4) => {
+        if (
+          typeof window === 'undefined' ||
+          (window.AudioContext || window.webkitAudioContext) === undefined
+        ) {
+          return 0
+        }
+        if (typeof window.miniaudio === 'undefined') {
+          window.miniaudio = { referenceCount: 0 }
+          window.miniaudio.device_type = {}
+          window.miniaudio.device_type.playback = $0
+          window.miniaudio.device_type.capture = $1
+          window.miniaudio.device_type.duplex = $2
+          window.miniaudio.device_state = {}
+          window.miniaudio.device_state.stopped = $3
+          window.miniaudio.device_state.started = $4
+          let miniaudio = window.miniaudio
+          miniaudio.devices = []
+          miniaudio.track_device = function (device) {
+            for (
+              var iDevice = 0;
+              iDevice < miniaudio.devices.length;
+              ++iDevice
+            ) {
+              if (miniaudio.devices[iDevice] == null) {
+                miniaudio.devices[iDevice] = device
+                return iDevice
+              }
+            }
+            miniaudio.devices.push(device)
+            return miniaudio.devices.length - 1
+          }
+          miniaudio.untrack_device_by_index = function (deviceIndex) {
+            miniaudio.devices[deviceIndex] = null
+            while (miniaudio.devices.length > 0) {
+              if (miniaudio.devices[miniaudio.devices.length - 1] == null) {
+                miniaudio.devices.pop()
+              } else {
+                break
+              }
+            }
+          }
+          miniaudio.untrack_device = function (device) {
+            for (
+              var iDevice = 0;
+              iDevice < miniaudio.devices.length;
+              ++iDevice
+            ) {
+              if (miniaudio.devices[iDevice] == device) {
+                return miniaudio.untrack_device_by_index(iDevice)
+              }
+            }
+          }
+          miniaudio.get_device_by_index = function (deviceIndex) {
+            return miniaudio.devices[deviceIndex]
+          }
+          miniaudio.unlock_event_types = (function () {
+            return ['touchend', 'click']
+          })()
+          miniaudio.unlock = function () {
+            for (var i = 0; i < miniaudio.devices.length; ++i) {
+              var device = miniaudio.devices[i]
+              if (
+                device != null &&
+                device.webaudio != null &&
+                device.state === miniaudio.device_state.started
+              ) {
+                device.webaudio.resume().then(
+                  () => {
+                    _ma_device__on_notification_unlocked(device.pDevice)
+                  },
+                  (error) => {
+                    console.error('Failed to resume audiocontext', error)
+                  }
+                )
+              }
+            }
+            miniaudio.unlock_event_types.map(function (event_type) {
+              document.removeEventListener(event_type, miniaudio.unlock, true)
+            })
+          }
+          miniaudio.unlock_event_types.map(function (event_type) {
+            document.addEventListener(event_type, miniaudio.unlock, true)
+          })
+        }
+        window.miniaudio.referenceCount += 1
+        return 1
+      },
+      13498: () => {
+        if (typeof window.miniaudio !== 'undefined') {
+          window.miniaudio.unlock_event_types.map(function (event_type) {
+            document.removeEventListener(
+              event_type,
+              window.miniaudio.unlock,
+              true
+            )
+          })
+          window.miniaudio.referenceCount -= 1
+          if (window.miniaudio.referenceCount === 0) {
+            delete window.miniaudio
+          }
+        }
+      },
+      13802: () =>
+        navigator.mediaDevices !== undefined &&
+        navigator.mediaDevices.getUserMedia !== undefined,
+      13906: () => {
+        try {
+          var temp = new (window.AudioContext || window.webkitAudioContext)()
+          var sampleRate = temp.sampleRate
+          temp.close()
+          return sampleRate
+        } catch (e) {
+          return 0
+        }
+      },
+      14077: ($0, $1) =>
+        window.miniaudio.track_device({
+          webaudio: emscriptenGetAudioObject($0),
+          state: 1,
+          pDevice: $1
+        }),
+      14186: ($0, $1) => {
+        var getUserMediaResult = 0
+        var audioWorklet = emscriptenGetAudioObject($0)
+        var audioContext = emscriptenGetAudioObject($1)
+        navigator.mediaDevices
+          .getUserMedia({ audio: true, video: false })
+          .then(function (stream) {
+            audioContext.streamNode =
+              audioContext.createMediaStreamSource(stream)
+            audioContext.streamNode.connect(audioWorklet)
+            audioWorklet.connect(audioContext.destination)
+            getUserMediaResult = 0
+          })
+          .catch(function (error) {
+            console.log('navigator.mediaDevices.getUserMedia Failed: ' + error)
+            getUserMediaResult = -1
+          })
+        return getUserMediaResult
+      },
+      14748: ($0, $1) => {
+        var audioWorklet = emscriptenGetAudioObject($0)
+        var audioContext = emscriptenGetAudioObject($1)
+        audioWorklet.connect(audioContext.destination)
+        return 0
+      },
+      14908: ($0) => emscriptenGetAudioObject($0).sampleRate,
+      14960: ($0) => {
+        var device = window.miniaudio.get_device_by_index($0)
+        if (device.streamNode !== undefined) {
+          device.streamNode.disconnect()
+          device.streamNode = undefined
+        }
+        device.pDevice = undefined
+      },
+      15151: ($0) => {
+        window.miniaudio.untrack_device_by_index($0)
+      },
+      15201: ($0) => {
+        var device = window.miniaudio.get_device_by_index($0)
+        device.webaudio.resume()
+        device.state = window.miniaudio.device_state.started
+      },
+      15340: ($0) => {
+        var device = window.miniaudio.get_device_by_index($0)
+        device.webaudio.suspend()
+        device.state = window.miniaudio.device_state.stopped
+      }
+    }
+    var _malloc,
+      _free,
+      _ma_device__on_notification_unlocked,
+      _ma_malloc_emscripten,
+      _ma_free_emscripten,
+      _ma_device_process_pcm_frames_capture__webaudio,
+      _ma_device_process_pcm_frames_playback__webaudio,
+      _tuidaw_init,
+      _tuidaw_init_null,
+      _tuidaw_deinit,
+      _tuidaw_refresh_devices,
+      _tuidaw_get_device_count,
+      _tuidaw_get_device_name,
+      _tuidaw_is_device_default,
+      _tuidaw_set_output_device,
+      _tuidaw_get_active_device_index,
+      _tuidaw_start_playback_device,
+      _tuidaw_stop_playback_device,
+      _tuidaw_add_track,
+      _tuidaw_remove_track,
+      _tuidaw_set_track_samples,
+      _tuidaw_set_track_volume,
+      _tuidaw_set_track_pan,
+      _tuidaw_set_track_muted,
+      _tuidaw_set_track_solo,
+      _tuidaw_set_track_input_device,
+      _tuidaw_play,
+      _tuidaw_stop,
+      _tuidaw_get_playhead,
+      _tuidaw_set_playhead,
+      _tuidaw_set_click,
+      _tuidaw_generate_click,
+      _tuidaw_set_click_samples,
+      _tuidaw_set_click_volume,
+      _tuidaw_set_click_pan,
+      _tuidaw_set_loop,
+      _tuidaw_start_recording,
+      _tuidaw_stop_recording,
+      _tuidaw_get_recording_buffer,
+      _tuidaw_get_recording_length,
+      _tuidaw_set_speed,
+      _tuidaw_get_speed,
+      _tuidaw_render,
+      __emscripten_tls_init,
+      _pthread_self,
+      __emscripten_thread_init,
+      ___set_thread_state,
+      __emscripten_thread_crashed,
+      __emscripten_run_js_on_main_thread_done,
+      __emscripten_run_js_on_main_thread,
+      __emscripten_thread_free_data,
+      __emscripten_thread_exit,
+      __emscripten_check_mailbox,
+      _emscripten_stack_set_limits,
+      __emscripten_stack_restore,
+      __emscripten_stack_alloc,
+      _emscripten_stack_get_current,
+      __emscripten_wasm_worker_initialize,
+      dynCall_vii,
+      dynCall_iiii,
+      dynCall_iii,
+      dynCall_ii,
+      dynCall_iiiii,
+      dynCall_viii,
+      dynCall_viiii,
+      dynCall_iiiiiiii,
+      dynCall_iiiji,
+      dynCall_iiiiiii,
+      dynCall_jii,
+      dynCall_vi,
+      dynCall_v,
+      dynCall_iidiiii,
+      dynCall_jiji,
+      _asyncify_start_unwind,
+      _asyncify_stop_unwind,
+      _asyncify_start_rewind,
+      _asyncify_stop_rewind,
+      __indirect_function_table,
+      wasmTable
+    function assignWasmExports(wasmExports) {
+      _malloc = Module['_malloc'] = wasmExports['malloc']
+      _free = Module['_free'] = wasmExports['free']
+      _ma_device__on_notification_unlocked = Module[
+        '_ma_device__on_notification_unlocked'
+      ] = wasmExports['ma_device__on_notification_unlocked']
+      _ma_malloc_emscripten = Module['_ma_malloc_emscripten'] =
+        wasmExports['ma_malloc_emscripten']
+      _ma_free_emscripten = Module['_ma_free_emscripten'] =
+        wasmExports['ma_free_emscripten']
+      _ma_device_process_pcm_frames_capture__webaudio = Module[
+        '_ma_device_process_pcm_frames_capture__webaudio'
+      ] = wasmExports['ma_device_process_pcm_frames_capture__webaudio']
+      _ma_device_process_pcm_frames_playback__webaudio = Module[
+        '_ma_device_process_pcm_frames_playback__webaudio'
+      ] = wasmExports['ma_device_process_pcm_frames_playback__webaudio']
+      _tuidaw_init = Module['_tuidaw_init'] = wasmExports['tuidaw_init']
+      _tuidaw_init_null = Module['_tuidaw_init_null'] =
+        wasmExports['tuidaw_init_null']
+      _tuidaw_deinit = Module['_tuidaw_deinit'] = wasmExports['tuidaw_deinit']
+      _tuidaw_refresh_devices = Module['_tuidaw_refresh_devices'] =
+        wasmExports['tuidaw_refresh_devices']
+      _tuidaw_get_device_count = Module['_tuidaw_get_device_count'] =
+        wasmExports['tuidaw_get_device_count']
+      _tuidaw_get_device_name = Module['_tuidaw_get_device_name'] =
+        wasmExports['tuidaw_get_device_name']
+      _tuidaw_is_device_default = Module['_tuidaw_is_device_default'] =
+        wasmExports['tuidaw_is_device_default']
+      _tuidaw_set_output_device = Module['_tuidaw_set_output_device'] =
+        wasmExports['tuidaw_set_output_device']
+      _tuidaw_get_active_device_index = Module[
+        '_tuidaw_get_active_device_index'
+      ] = wasmExports['tuidaw_get_active_device_index']
+      _tuidaw_start_playback_device = Module['_tuidaw_start_playback_device'] =
+        wasmExports['tuidaw_start_playback_device']
+      _tuidaw_stop_playback_device = Module['_tuidaw_stop_playback_device'] =
+        wasmExports['tuidaw_stop_playback_device']
+      _tuidaw_add_track = Module['_tuidaw_add_track'] =
+        wasmExports['tuidaw_add_track']
+      _tuidaw_remove_track = Module['_tuidaw_remove_track'] =
+        wasmExports['tuidaw_remove_track']
+      _tuidaw_set_track_samples = Module['_tuidaw_set_track_samples'] =
+        wasmExports['tuidaw_set_track_samples']
+      _tuidaw_set_track_volume = Module['_tuidaw_set_track_volume'] =
+        wasmExports['tuidaw_set_track_volume']
+      _tuidaw_set_track_pan = Module['_tuidaw_set_track_pan'] =
+        wasmExports['tuidaw_set_track_pan']
+      _tuidaw_set_track_muted = Module['_tuidaw_set_track_muted'] =
+        wasmExports['tuidaw_set_track_muted']
+      _tuidaw_set_track_solo = Module['_tuidaw_set_track_solo'] =
+        wasmExports['tuidaw_set_track_solo']
+      _tuidaw_set_track_input_device = Module[
+        '_tuidaw_set_track_input_device'
+      ] = wasmExports['tuidaw_set_track_input_device']
+      _tuidaw_play = Module['_tuidaw_play'] = wasmExports['tuidaw_play']
+      _tuidaw_stop = Module['_tuidaw_stop'] = wasmExports['tuidaw_stop']
+      _tuidaw_get_playhead = Module['_tuidaw_get_playhead'] =
+        wasmExports['tuidaw_get_playhead']
+      _tuidaw_set_playhead = Module['_tuidaw_set_playhead'] =
+        wasmExports['tuidaw_set_playhead']
+      _tuidaw_set_click = Module['_tuidaw_set_click'] =
+        wasmExports['tuidaw_set_click']
+      _tuidaw_generate_click = Module['_tuidaw_generate_click'] =
+        wasmExports['tuidaw_generate_click']
+      _tuidaw_set_click_samples = Module['_tuidaw_set_click_samples'] =
+        wasmExports['tuidaw_set_click_samples']
+      _tuidaw_set_click_volume = Module['_tuidaw_set_click_volume'] =
+        wasmExports['tuidaw_set_click_volume']
+      _tuidaw_set_click_pan = Module['_tuidaw_set_click_pan'] =
+        wasmExports['tuidaw_set_click_pan']
+      _tuidaw_set_loop = Module['_tuidaw_set_loop'] =
+        wasmExports['tuidaw_set_loop']
+      _tuidaw_start_recording = Module['_tuidaw_start_recording'] =
+        wasmExports['tuidaw_start_recording']
+      _tuidaw_stop_recording = Module['_tuidaw_stop_recording'] =
+        wasmExports['tuidaw_stop_recording']
+      _tuidaw_get_recording_buffer = Module['_tuidaw_get_recording_buffer'] =
+        wasmExports['tuidaw_get_recording_buffer']
+      _tuidaw_get_recording_length = Module['_tuidaw_get_recording_length'] =
+        wasmExports['tuidaw_get_recording_length']
+      _tuidaw_set_speed = Module['_tuidaw_set_speed'] =
+        wasmExports['tuidaw_set_speed']
+      _tuidaw_get_speed = Module['_tuidaw_get_speed'] =
+        wasmExports['tuidaw_get_speed']
+      _tuidaw_render = Module['_tuidaw_render'] = wasmExports['tuidaw_render']
+      __emscripten_tls_init = wasmExports['_emscripten_tls_init']
+      _pthread_self = wasmExports['pthread_self']
+      __emscripten_thread_init = wasmExports['_emscripten_thread_init']
+      ___set_thread_state = wasmExports['__set_thread_state']
+      __emscripten_thread_crashed = wasmExports['_emscripten_thread_crashed']
+      __emscripten_run_js_on_main_thread_done =
+        wasmExports['_emscripten_run_js_on_main_thread_done']
+      __emscripten_run_js_on_main_thread =
+        wasmExports['_emscripten_run_js_on_main_thread']
+      __emscripten_thread_free_data =
+        wasmExports['_emscripten_thread_free_data']
+      __emscripten_thread_exit = wasmExports['_emscripten_thread_exit']
+      __emscripten_check_mailbox = wasmExports['_emscripten_check_mailbox']
+      _emscripten_stack_set_limits = wasmExports['emscripten_stack_set_limits']
+      __emscripten_stack_restore = wasmExports['_emscripten_stack_restore']
+      __emscripten_stack_alloc = wasmExports['_emscripten_stack_alloc']
+      _emscripten_stack_get_current =
+        wasmExports['emscripten_stack_get_current']
+      __emscripten_wasm_worker_initialize =
+        wasmExports['_emscripten_wasm_worker_initialize']
+      dynCall_vii = dynCalls['vii'] = wasmExports['dynCall_vii']
+      dynCall_iiii = dynCalls['iiii'] = wasmExports['dynCall_iiii']
+      dynCall_iii = dynCalls['iii'] = wasmExports['dynCall_iii']
+      dynCall_ii = dynCalls['ii'] = wasmExports['dynCall_ii']
+      dynCall_iiiii = dynCalls['iiiii'] = wasmExports['dynCall_iiiii']
+      dynCall_viii = dynCalls['viii'] = wasmExports['dynCall_viii']
+      dynCall_viiii = dynCalls['viiii'] = wasmExports['dynCall_viiii']
+      dynCall_iiiiiiii = dynCalls['iiiiiiii'] = wasmExports['dynCall_iiiiiiii']
+      dynCall_iiiji = dynCalls['iiiji'] = wasmExports['dynCall_iiiji']
+      dynCall_iiiiiii = dynCalls['iiiiiii'] = wasmExports['dynCall_iiiiiii']
+      dynCall_jii = dynCalls['jii'] = wasmExports['dynCall_jii']
+      dynCall_vi = dynCalls['vi'] = wasmExports['dynCall_vi']
+      dynCall_v = dynCalls['v'] = wasmExports['dynCall_v']
+      dynCall_iidiiii = dynCalls['iidiiii'] = wasmExports['dynCall_iidiiii']
+      dynCall_jiji = dynCalls['jiji'] = wasmExports['dynCall_jiji']
+      _asyncify_start_unwind = wasmExports['asyncify_start_unwind']
+      _asyncify_stop_unwind = wasmExports['asyncify_stop_unwind']
+      _asyncify_start_rewind = wasmExports['asyncify_start_rewind']
+      _asyncify_stop_rewind = wasmExports['asyncify_stop_rewind']
+      __indirect_function_table = wasmTable =
+        wasmExports['__indirect_function_table']
+    }
+    var wasmImports
+    function assignWasmImports() {
+      wasmImports = {
+        __pthread_create_js: ___pthread_create_js,
+        _emscripten_init_main_thread_js: __emscripten_init_main_thread_js,
+        _emscripten_notify_mailbox_postmessage:
+          __emscripten_notify_mailbox_postmessage,
+        _emscripten_receive_on_main_thread_js:
+          __emscripten_receive_on_main_thread_js,
+        _emscripten_thread_cleanup: __emscripten_thread_cleanup,
+        _emscripten_thread_mailbox_await: __emscripten_thread_mailbox_await,
+        _emscripten_thread_set_strongref: __emscripten_thread_set_strongref,
+        clock_time_get: _clock_time_get,
+        emscripten_asm_const_int: _emscripten_asm_const_int,
+        emscripten_audio_context_quantum_size:
+          _emscripten_audio_context_quantum_size,
+        emscripten_check_blocking_allowed: _emscripten_check_blocking_allowed,
+        emscripten_create_audio_context: _emscripten_create_audio_context,
+        emscripten_create_wasm_audio_worklet_node:
+          _emscripten_create_wasm_audio_worklet_node,
+        emscripten_create_wasm_audio_worklet_processor_async:
+          _emscripten_create_wasm_audio_worklet_processor_async,
+        emscripten_destroy_audio_context: _emscripten_destroy_audio_context,
+        emscripten_destroy_web_audio_node: _emscripten_destroy_web_audio_node,
+        emscripten_exit_with_live_runtime: _emscripten_exit_with_live_runtime,
+        emscripten_get_now: _emscripten_get_now,
+        emscripten_resize_heap: _emscripten_resize_heap,
+        emscripten_sleep: _emscripten_sleep,
+        emscripten_start_wasm_audio_worklet_thread_async:
+          _emscripten_start_wasm_audio_worklet_thread_async,
+        exit: _exit,
+        fd_write: _fd_write,
+        memory: wasmMemory
+      }
+    }
+    function run() {
+      if (runDependencies > 0) {
+        dependenciesFulfilled = run
+        return
+      }
+      if (ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER) {
+        readyPromiseResolve?.(Module)
+        initRuntime()
+        return
+      }
+      preRun()
+      if (runDependencies > 0) {
+        dependenciesFulfilled = run
+        return
+      }
+      function doRun() {
+        Module['calledRun'] = true
+        if (ABORT) return
+        initRuntime()
+        readyPromiseResolve?.(Module)
+        Module['onRuntimeInitialized']?.()
+        postRun()
+      }
+      if (Module['setStatus']) {
+        Module['setStatus']('Running...')
+        setTimeout(() => {
+          setTimeout(() => Module['setStatus'](''), 1)
+          doRun()
+        }, 1)
+      } else {
+        doRun()
+      }
+    }
+    var wasmExports
+    if (!(ENVIRONMENT_IS_PTHREAD || ENVIRONMENT_IS_WASM_WORKER)) {
+      wasmExports = await createWasm()
+      run()
+    }
+    if (runtimeInitialized) {
+      moduleRtn = Module
+    } else {
+      moduleRtn = new Promise((resolve, reject) => {
+        readyPromiseResolve = resolve
+        readyPromiseReject = reject
+      })
+    }
+    return moduleRtn
+  }
+})()
+if (typeof exports === 'object' && typeof module === 'object') {
+  module.exports = TuidawAudio
+  module.exports.default = TuidawAudio
+} else if (typeof define === 'function' && define['amd'])
+  define([], () => TuidawAudio)
+var isPthread = globalThis.name == 'em-pthread'
+isPthread && TuidawAudio()
+var isWW = globalThis.name == 'em-ww'
+isWW ||= !!globalThis.AudioWorkletGlobalScope
+isWW && TuidawAudio()
