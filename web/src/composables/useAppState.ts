@@ -194,3 +194,33 @@ export function showStatus(msg: string): void {
     s.statusTimeout = null
   }, 3000)
 }
+
+// ── Track Scroll ────────────────────────────────────────────────────────
+/** Compute the maximum trackScrollY value (0 if all tracks fit on screen) */
+export function getMaxTrackScroll(): number {
+  const s = useAppState()
+  const availableH = window.innerHeight - TOPBAR_H - STATUSBAR_H - CLICK_ROW_H
+  const totalTrackH = s.tracks.length * TRACK_H
+  return Math.max(0, totalTrackH - availableH)
+}
+
+/** Clamp trackScrollY to valid range */
+export function clampTrackScroll(): void {
+  const s = useAppState()
+  s.trackScrollY = Math.max(0, Math.min(getMaxTrackScroll(), s.trackScrollY))
+}
+
+/** Ensure the selected track (by index) is visible in the scrolled sidebar */
+export function ensureTrackVisible(trackIdx: number): void {
+  if (trackIdx < 0) return // click track is always visible
+  const s = useAppState()
+  const trackTop = trackIdx * TRACK_H
+  const trackBottom = trackTop + TRACK_H
+  const availableH = window.innerHeight - TOPBAR_H - STATUSBAR_H - CLICK_ROW_H
+  if (trackTop < s.trackScrollY) {
+    s.trackScrollY = trackTop
+  } else if (trackBottom > s.trackScrollY + availableH) {
+    s.trackScrollY = trackBottom - availableH
+  }
+  clampTrackScroll()
+}
