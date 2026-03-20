@@ -221,6 +221,9 @@ export class AudioEngine {
   // Last known recording length per track (for polling)
   private lastRecLengths: Map<string, number> = new Map()
 
+  // Count of active monitoring tracks (for PipeWire quantum control)
+  private monitoringCount = 0
+
   constructor() {
     if (!existsSync(RECORDINGS_DIR)) {
       mkdirSync(RECORDINGS_DIR, { recursive: true })
@@ -493,17 +496,47 @@ export class AudioEngine {
   // Low-latency input passthrough using a full-duplex device. When JACK is
   // available (via PipeWire), uses a dedicated JACK context for ~2-5ms
   // round-trip latency. Falls back to PulseAudio otherwise.
+  // PipeWire quantum is forced low while any track is monitoring.
+
+  private setPipeWireQuantum(quantum: number): void {
+    try {
+      // pw-metadata sets the PipeWire graph quantum. 0 = restore default.
+      Bun.spawnSync([
+        'pw-metadata',
+        '-n',
+        'settings',
+        '0',
+        'clock.force-quantum',
+        String(quantum)
+      ])
+    } catch {
+      // pw-metadata not available — PipeWire quantum stays at default
+    }
+  }
 
   startMonitoring(trackId: string): boolean {
     const nid = getNativeId(trackId)
     const result = lib.symbols.tuidaw_start_monitoring(nid)
-    return result === 0
+    if (result === 0) {
+      this.monitoringCount++
+      if (this.monitoringCount === 1) {
+        // First monitor — force low quantum for the entire PipeWire graph
+        this.setPipeWireQuantum(256)
+      }
+      return true
+    }
+    return false
   }
 
   stopMonitoring(trackId: string): void {
     const nid = trackIdMap.get(trackId)
     if (nid === undefined) return
     lib.symbols.tuidaw_stop_monitoring(nid)
+    this.monitoringCount = Math.max(0, this.monitoringCount - 1)
+    if (this.monitoringCount === 0) {
+      // Last monitor stopped — restore default quantum
+      this.setPipeWireQuantum(0)
+    }
   }
 
   isMonitoring(trackId: string): boolean {
@@ -1243,6 +1276,10 @@ export class AudioEngine {
   // ── Cleanup ────────────────────────────────────────────────────────────
 
   destroy(): void {
+    if (this.monitoringCount > 0) {
+      this.monitoringCount = 0
+      this.setPipeWireQuantum(0)
+    }
     lib.symbols.tuidaw_deinit()
   }
 }

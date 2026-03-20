@@ -140,8 +140,9 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Vue Vapor**: root component must be VDOM. VDOM components crash inside Vapor (no `lucide-vue-next`).
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
-- **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop. Monitoring auto-pauses during recording to avoid dual capture device conflicts on same input.
+- **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop.
 - **JACK backend for low-latency monitoring**: Separate `ma_context` with `ma_backend_jack` for monitoring duplex devices gives ~2-5ms round-trip vs ~40-50ms via PulseAudio. PipeWire exposes a JACK interface that respects low quantum values. JACK only supports default devices (no `pDeviceID`). Falls back to main PulseAudio context if JACK unavailable. `noFixedSizedCallback = MA_TRUE` avoids miniaudio's internal fixed-size buffering.
+- **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `pw-metadata -n settings 0 clock.force-quantum 256` forces 256-frame (~5.3ms) quantum for the entire graph. Set when first monitor starts, restored to 0 when last monitor stops.
 - **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
 - **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
@@ -165,7 +166,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 │   └── zig-toolchain/    # Zig 0.14.0 (gitignored)
 ├── src/
 │   ├── types.ts          # Track, ProjectState, constants (TRACK_ROW_HEIGHT=4, etc.)
-│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1248 lines)
+│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1285 lines)
 │   ├── braille.ts        # Braille waveform + level meter (~113 lines)
 │   ├── state.ts          # State helpers (createTrack, formatTime, etc.)
 │   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1399 lines)
