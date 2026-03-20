@@ -1,5 +1,11 @@
 {
   "name": "tuidaw",
+  "description": "Full-featured Digital Audio Workstation with TUI and Web UI",
+  "version": "0.2.0",
+  "author": "crossatko",
+  "license": "MIT",
+  "repository": "https://github.com/crossatko/tuidaw",
+  "homepage": "https://webdaw.crossatko.dev",
   "module": "index.ts",
   "type": "module",
   "private": true,

@@ -24,7 +24,6 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 - **Audio**: Native C library wrapping miniaudio — **no PipeWire/pw-play/pw-record/wpctl**
 - **Export**: ffmpeg for TUI mixdown; WASM `tuidaw_render()` for web export (no ffmpeg needed)
 - `tsconfig.json` has `noUncheckedIndexedAccess: false`
-- Bun is at `/usr/sbin/bun` (in PATH)
 
 ### OpenTUI specifics
 
@@ -139,8 +138,6 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Vue Vapor**: root component must be VDOM. VDOM components crash inside Vapor (no `lucide-vue-next`).
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
-- User hardware: USB audio interface (2 inputs), USB headset
-- User terminal: supports Kitty keyboard protocol, tiling Wayland compositor
 
 ## File Structure
 
@@ -170,12 +167,11 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 │       ├── dsp.ts        # resample() (~25 lines)
 │       └── wav.ts        # WAV parse/encode (Uint8Array/DataView, ~192 lines)
 ├── web/
-│   ├── server.ts         # Bun HTTP server (~115 lines, COOP/COEP headers)
+│   ├── server.ts         # Bun HTTPS server — serves Vite-built dist/ with COOP/COEP
 │   ├── index.html        # HTML shell + debug overlay + SW registration
 │   ├── vite.config.ts    # Vite config (Vue, Tailwind, COOP/COEP, vapor runtime alias)
 │   ├── tsconfig.json     # Vue-specific (DOM libs, paths)
 │   ├── env.d.ts          # Vite + Vue SFC type shims
-│   ├── app.ts            # Legacy canvas app (~2960 lines, reference only)
 │   ├── audio-bridge.ts   # WASM wrapper (~540 lines): track ID mapping, recording
 │   ├── src/
 │   │   ├── main.ts, main.css, App.vue

@@ -30,6 +30,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # IntelliJ based IDEs
 .idea
 
+# VS Code
+.vscode
+
 # Finder (MacOS) folder config
 .DS_Store
 
@@ -39,6 +42,9 @@ recordings/
 # native build toolchains (downloaded on demand)
 native/zig-toolchain/
 native/emsdk/
+
+# WASM build output (canonical copy is web/public/wasm/)
+web/wasm/
 
 # local test/debug scripts (contain user-specific paths)
 test-bpm.ts

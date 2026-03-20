@@ -26,7 +26,7 @@ if ! command -v emcc &>/dev/null; then
 fi
 
 MODE="${1:-release}"
-OUTDIR="$SCRIPT_DIR/../web/wasm"
+OUTDIR="$SCRIPT_DIR/../web/public/wasm"
 mkdir -p "$OUTDIR"
 
 echo "Building tuidaw_audio WASM ($MODE) -> $OUTDIR/"
