@@ -3,10 +3,15 @@ import TopBar from './components/TopBar.vue'
 import SideBar from './components/SideBar.vue'
 import StatusBar from './components/StatusBar.vue'
 import InputOverlay from './components/InputOverlay.vue'
+import WaveformCanvas from './components/WaveformCanvas.vue'
 import { useAppState } from './composables/useAppState'
+import { useKeyboard } from './composables/useKeyboard'
 import { ensureAudioReady, getAudio } from './composables/useAudio'
 
 const state = useAppState()
+
+// Install global keyboard shortcuts
+useKeyboard()
 
 function toggleInputOverlay() {
   state.showInputOverlay = !state.showInputOverlay
@@ -37,10 +42,8 @@ function closeInputOverlay() {
       <!-- Sidebar -->
       <SideBar />
 
-      <!-- Waveform / timeline area (canvas placeholder) -->
-      <main class="bg-surface flex min-w-0 flex-1 items-center justify-center">
-        <span class="text-dim">Waveform canvas will go here</span>
-      </main>
+      <!-- Waveform / timeline area -->
+      <WaveformCanvas />
     </div>
 
     <!-- Status Bar -->
