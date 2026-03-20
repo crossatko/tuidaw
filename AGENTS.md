@@ -13,7 +13,8 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 - **Auto-commit + push** after each task. Concise title + detailed description body.
 - **Update AGENTS.md** on significant changes.
-- **Never commit real filesystem paths** (e.g. `/home/kreejzak/...`) — `.gitignore` such files.
+- **Never commit real filesystem paths** (e.g. `/home/user/...`) — `.gitignore` such files.
+- **Never reveal internal infrastructure** in commits, AGENTS.md, or any committed file. This includes: deployment strategies, server setup, hosting providers, domain routing, tunnels, local network config, machine names, IP addresses, or any operational details. Only public-facing URLs (e.g. in README) are acceptable.
 - **Run `bun run check`** after changes (runs prettier + tsc + vue-tsc).
 
 ## Tech Stack & Rules
@@ -134,12 +135,12 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Safari user activation**: file dialog `.click()` must be in synchronous trusted gesture stack. Fix: topbar is real DOM buttons.
 - **Safari canvas sizing**: `100vh` ≠ `innerHeight` on iOS. Fix: programmatic `style.width/height` + `visualViewport` resize listener.
 - **Flex min-width: auto**: canvas needs `min-width: 0; min-height: 0`
-- **WASM requires COOP/COEP headers** — configured in Vite dev server + `web/public/_headers` for Cloudflare Pages
+- **WASM requires COOP/COEP headers** — configured in Vite dev server + `web/public/_headers` for static hosting
 - **Vue Vapor**: root component must be VDOM. VDOM components crash inside Vapor (no `lucide-vue-next`).
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
-- User hardware: Focusrite Scarlett Solo (3rd Gen., 2 inputs), Logitech G535 headset
-- User terminal: Ghostty (Kitty keyboard protocol), Hyprland
+- User hardware: USB audio interface (2 inputs), USB headset
+- User terminal: supports Kitty keyboard protocol, tiling Wayland compositor
 
 ## File Structure
 

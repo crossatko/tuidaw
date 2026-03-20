@@ -183,7 +183,7 @@ export class UIRenderer {
     onClickVolumeChange: (delta: number) => void
     onClickPanChange: (delta: number) => void
   }): void {
-    // Debounce scroll events — Ghostty fires ~3 events per physical wheel tick.
+    // Debounce scroll events — some terminals fire multiple events per physical wheel tick.
     // Accept only the first event in a 10ms window.
     let lastScrollTime = 0
     const scrollDebounce = (): boolean => {
