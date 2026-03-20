@@ -1,13 +1,13 @@
 // tuidaw Service Worker — offline PWA support
 // Cache version: bump this to force update on all clients
-const CACHE_VERSION = 'v2'
+const CACHE_VERSION = 'v3'
 const CACHE_NAME = `tuidaw-${CACHE_VERSION}`
 
-// Assets to pre-cache on install
+// Assets to pre-cache on install (no hashed JS/CSS — those are cached on
+// first navigation via the stale-while-revalidate fetch handler)
 const PRECACHE_URLS = [
   '/',
   '/index.html',
-  '/app.js',
   '/wasm/tuidaw_audio.js',
   '/wasm/tuidaw_audio.wasm',
   '/manifest.json',
