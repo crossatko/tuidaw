@@ -11,7 +11,7 @@ defineProps<{
 
 <template>
   <button
-    class="border-border bg-surface-highlight text-dim shrink-0 cursor-pointer touch-manipulation rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
+    class="border-border shrink-0 cursor-pointer touch-manipulation rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
     :class="[
       square ? 'text-fg w-9 px-0 text-base' : 'px-3',
       variant === 'green' && 'border-accent-green bg-accent-green text-surface',
@@ -25,7 +25,8 @@ defineProps<{
         'border-accent-yellow bg-accent-yellow text-surface',
       outline === 'purple' &&
         !variant &&
-        'border-accent-purple text-accent-purple'
+        'border-accent-purple text-accent-purple',
+      !variant && !outline && 'bg-surface-highlight text-dim'
     ]"
     style="height: 36px"
   >
