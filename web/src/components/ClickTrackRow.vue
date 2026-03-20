@@ -1,6 +1,7 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { Metronome } from 'lucide-vue-next'
+import Icon from './Icon.vue'
+import { icons } from '../composables/useIcons'
 import MiniSlider from './MiniSlider.vue'
 import {
   DEFAULT_CLICK_VOLUME,
@@ -83,7 +84,7 @@ function resetClickPan() {
         }"
         @click.stop="toggleClick"
       >
-        <Metronome :size="16" />
+        <Icon :d="icons.metronome" :size="16" />
       </span>
       <span
         class="cursor-pointer text-xs font-bold"
