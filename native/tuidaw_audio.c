@@ -465,16 +465,16 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
         }
 
         // Handle loop wrapping (input_pos is already wrapped by wsola_generate,
-        // but clamp to be safe)
+        // but clamp to be safe if it overshoots)
         if (loop_start >= 0 && loop_end > loop_start) {
             if (new_playhead >= loop_end) {
                 long loop_len = loop_end - loop_start;
                 long overshoot = new_playhead - loop_end;
                 new_playhead = loop_start + (overshoot % loop_len);
             }
-            if (new_playhead < loop_start) {
-                new_playhead = loop_start;
-            }
+            // NOTE: Do NOT clamp new_playhead to loop_start when it's before
+            // the loop region. If the user seeks before the loop, playback
+            // should advance linearly until reaching loopEnd, then wrap.
         }
     } else {
         // No WSOLA (speed == 1.0): playhead advances in real-time
