@@ -1,4 +1,4 @@
-<script setup vapor lang="ts">
+<script setup lang="ts">
 import TopBar from './components/TopBar.vue'
 import SideBar from './components/SideBar.vue'
 import StatusBar from './components/StatusBar.vue'
