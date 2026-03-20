@@ -49,23 +49,23 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1299 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored).
+C shared library (`native/tuidaw_audio.c`, ~1362 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Two `ma_context` instances: main (PulseAudio) for playback/recording, optional JACK context for low-latency monitoring.
 
 ### API surface (all `EXPORT`ed):
 
-| Category  | Functions                                                                                                                                                                |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                            |
-| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                     |
-| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                              |
-| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                         |
-| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                          |
-| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)` |
-| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                       |
-| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                          |
-| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                       |
-| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)` — full-duplex passthrough                                                        |
-| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                   |
+| Category  | Functions                                                                                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                             |
+| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                      |
+| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                               |
+| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                          |
+| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                           |
+| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)`  |
+| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                        |
+| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                           |
+| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                        |
+| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)`, `tuidaw_has_jack_monitoring()` — full-duplex passthrough via JACK when available |
+| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                    |
 
 ### Key behaviors
 
@@ -141,6 +141,8 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
 - **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
 - **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop. Monitoring auto-pauses during recording to avoid dual capture device conflicts on same input.
+- **JACK backend for low-latency monitoring**: Separate `ma_context` with `ma_backend_jack` for monitoring duplex devices gives ~2-5ms round-trip vs ~40-50ms via PulseAudio. PipeWire exposes a JACK interface that respects low quantum values. JACK only supports default devices (no `pDeviceID`). Falls back to main PulseAudio context if JACK unavailable. `noFixedSizedCallback = MA_TRUE` avoids miniaudio's internal fixed-size buffering.
+- **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
 - **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
 
@@ -150,11 +152,11 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ./
 ├── AGENTS.md, LICENSE, README.md, setup.sh
 ├── index.ts              # Entry dispatcher: --host → web/server.ts, else → tui.ts
-├── tui.ts                # TUI mode (~1048 lines)
+├── tui.ts                # TUI mode (~1232 lines)
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1299 lines, 32+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~1362 lines, 36+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)
@@ -163,10 +165,10 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 │   └── zig-toolchain/    # Zig 0.14.0 (gitignored)
 ├── src/
 │   ├── types.ts          # Track, ProjectState, constants (TRACK_ROW_HEIGHT=4, etc.)
-│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1060 lines)
+│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1248 lines)
 │   ├── braille.ts        # Braille waveform + level meter (~113 lines)
 │   ├── state.ts          # State helpers (createTrack, formatTime, etc.)
-│   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1218 lines)
+│   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1399 lines)
 │   └── utils/
 │       ├── bpm.ts        # BPM detection (shared TUI+Web, ~310 lines)
 │       ├── dsp.ts        # resample() (~25 lines)
