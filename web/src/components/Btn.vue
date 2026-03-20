@@ -33,7 +33,7 @@ const btnStyle = computed(() => {
 
 <template>
   <button
-    class="border-border shrink-0 cursor-pointer touch-manipulation rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
+    class="border-border inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1 rounded border font-mono text-xs font-bold [-webkit-tap-highlight-color:transparent] active:opacity-70"
     :class="{
       'text-fg w-9 px-0 text-base': square,
       'px-3': !square,

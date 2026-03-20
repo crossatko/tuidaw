@@ -1,5 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import { Check } from 'lucide-vue-next'
 import { useAppState } from '../composables/useAppState'
 
 const state = useAppState()
@@ -95,12 +96,11 @@ function onBackdropClick(e: MouseEvent) {
           </div>
 
           <!-- Check mark for active -->
-          <span
+          <Check
             v-if="dev.deviceId === currentDeviceId"
-            class="text-accent-cyan text-sm font-bold"
-          >
-            ✓
-          </span>
+            :size="16"
+            class="text-accent-cyan shrink-0"
+          />
         </button>
       </div>
     </div>

@@ -1,5 +1,6 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
+import { Metronome } from 'lucide-vue-next'
 import MiniSlider from './MiniSlider.vue'
 import {
   DEFAULT_CLICK_VOLUME,
@@ -75,14 +76,14 @@ function resetClickPan() {
     <!-- Row 1: Click icon + label -->
     <div class="flex items-center gap-2">
       <span
-        class="cursor-pointer text-sm"
+        class="cursor-pointer"
         :class="{
           'text-accent-cyan': state.clickEnabled,
           'text-dim': !state.clickEnabled
         }"
         @click.stop="toggleClick"
       >
-        ♩
+        <Metronome :size="16" />
       </span>
       <span
         class="cursor-pointer text-xs font-bold"
