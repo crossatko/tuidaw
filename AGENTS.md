@@ -2,581 +2,219 @@
 
 ## Goal
 
-Build a full-featured DAW (Digital Audio Workstation) with two UIs:
+Full-featured DAW with two UIs sharing the same native miniaudio audio engine:
 
-1. **TUI mode** (`bun run start`): Terminal interface using OpenTUI with braille waveforms, keyboard/mouse controls
-2. **Web UI mode** (`bun run start --host`): Browser interface on port 3666 using Canvas 2D rendering
+1. **TUI** (`bun run start`): OpenTUI terminal UI with braille waveforms, keyboard/mouse
+2. **Web** (`bun run start --host`): Vue 3.6 Vapor + Tailwind 4 + Canvas 2D on port 3666
 
-Both UIs share the same native miniaudio audio engine. The TUI uses `bun:ffi` (`dlopen`) to call the native `.so` library. The Web UI uses the same C source compiled to WebAssembly via Emscripten — miniaudio auto-selects its Web Audio backend when compiled with `emcc`.
+Features: sidebar with tracks, waveform display, playhead, BPM/click, recording, loop region, project save/open, WAV import (with BPM detection + beat-phase alignment), export mixdown, WSOLA time-stretch, per-track input device selection.
 
-The app has a left sidebar with tracks, a main window with waveforms (braille in TUI, Canvas 2D in web), a playhead, BPM control with click/metronome, live waveform drawing during recording, project save/open, and WAV mixdown export. Mouse wheel controls for scrolling, volume, and pan are implemented. Audio I/O uses the native miniaudio engine in both modes — no PipeWire, no CLI audio tools, no process spawning for audio.
+## Workflow
 
-## Workflow preferences
+- **Auto-commit + push** after each task. Concise title + detailed description body.
+- **Update AGENTS.md** on significant changes.
+- **Never commit real filesystem paths** (e.g. `/home/kreejzak/...`) — `.gitignore` such files.
+- **Run `bun run check`** after changes (runs prettier + tsc + vue-tsc).
 
-- **Do not print summaries of changes to the user.** Instead, put the summary into the git commit description and commit the changes automatically after each task.
-- Commit messages should have a concise title line and a detailed description body listing what was done.
-- **Always `git push` after committing.** Never leave commits unpushed.
-- **Always update AGENTS.md** when significant changes are made (new features, architecture changes, bug fixes, new discoveries). Keep the Accomplished list, File structure, and Discoveries sections current.
-- **Never commit files containing the user's real filesystem paths** (e.g. `/home/kreejzak/...`). Such files (test scripts, debug scripts) must be `.gitignore`d. If a file with real paths was previously tracked, `git rm --cached` it before committing.
+## Tech Stack & Rules
 
-## Instructions
-
-- Use OpenTUI (`@opentui/core`) for the terminal UI framework - it's a Zig-native TUI core with TypeScript bindings, uses Bun runtime
-- Audio I/O via native C library (`native/libtuidaw_audio.so`) wrapping miniaudio, called from TypeScript via `bun:ffi` (`dlopen`)
-- **No PipeWire, no pw-play/pw-record/pw-dump/wpctl** — all audio goes through the native miniaudio engine
-- Can use `ffmpeg` for export mixdown (non-realtime, not performance-critical)
-- Braille characters (Unicode 0x2800 range, 2x4 dot grid per char) for waveform rendering in FrameBuffer
-- OpenTUI uses an imperative API with `FrameBufferRenderable` for custom drawing (setCell, fillRect, drawText, setCellWithAlphaBlending)
-- Layout uses Yoga flexbox engine (flexDirection, flexGrow, etc.)
-- Keyboard input via `renderer.keyInput.on("keypress", (key: KeyEvent) => ...)`
-- Mouse input via `renderable.onMouseScroll = (event: MouseEvent) => ...` (and onMouseDown, onMouseUp, onMouseMove, onMouseDrag, onMouseOver, onMouseOut)
-- Mouse enabled via `createCliRenderer({ useMouse: true })`
-- `MouseEvent` has: `type`, `button`, `x`, `y` (relative to renderable), `modifiers: { shift, alt, ctrl }`, `scroll?: { direction: "up"|"down"|"left"|"right", delta: number }`, `target`, `stopPropagation()`, `preventDefault()`
-- Renderer has `requestLive()`/`dropLive()` for continuous rendering mode (animations/recording)
-- **Must call `renderer.requestRender()` after drawing to frame buffers** for changes to flush to terminal in idle/stopped state (it's a no-op during live mode)
-- Bun is at `/usr/sbin/bun` (in PATH)
+- **TUI**: OpenTUI (`@opentui/core` v0.1.88), Bun runtime, `bun:ffi` (`dlopen`) to native `.so`
+- **Web**: Vue 3.6.0-beta.8 (Vapor Mode), Vite, Tailwind 4, WASM via Emscripten
+- **Audio**: Native C library wrapping miniaudio — **no PipeWire/pw-play/pw-record/wpctl**
+- **Export**: ffmpeg for TUI mixdown; WASM `tuidaw_render()` for web export (no ffmpeg needed)
 - `tsconfig.json` has `noUncheckedIndexedAccess: false`
-- **Run `bun run check` after changes to verify type-correctness**
+- Bun is at `/usr/sbin/bun` (in PATH)
 
-### Native audio engine architecture:
+### OpenTUI specifics
 
-- C shared library wraps miniaudio, exports flat C API, called from TypeScript via `bun:ffi` (`dlopen`)
-- The native audio callback handles mixing, pan, volume, click generation, loop regions, and WSOLA time-stretch sample-accurately — no temp files, no process spawning
-- **WSOLA time-stretch**: per-track Waveform Similarity Overlap-Add for pitch-preserving speed changes (window=1024, hop=512, search=±256)
-- Recording uses per-track miniaudio capture devices with ring buffers polled from JS via `pollRecordingData()`
-- Pan/volume changes are instant (atomic updates in native engine) — no WAV rewrite or process restart
-- Playhead position is sample-accurate from the audio thread via `tuidaw_get_playhead()`
-- Built with `zig cc` (Zig 0.14.0 downloaded to `native/zig-toolchain/`)
+- Imperative API: `FrameBufferRenderable` for custom drawing (setCell, fillRect, drawText)
+- Yoga flexbox layout. Keyboard: `renderer.keyInput.on("keypress", ...)`. Mouse: `renderable.onMouseScroll = ...`
+- `createCliRenderer({ useMouse: true })` enables mouse
+- **Must call `renderer.requestRender()`** after drawing to FBs (no-op during live mode)
+- `requestLive()`/`dropLive()` for continuous rendering
+- **Ctrl+key shortcuts DON'T WORK** — framework intercepts them
 
-### Native API surface (all implemented in C, exported as `EXPORT`):
+### Vue/Web UI specifics
 
-- `tuidaw_init/deinit` — engine lifecycle
-- `tuidaw_init_null` — engine lifecycle with null (silent) backend for tests
-- `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` — device enumeration
-- `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` — output device
-- `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` — track management
-- `tuidaw_play(position)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` — transport
-- `tuidaw_set_click(enabled, bpm)` — metronome enable/disable (bpm param is legacy/unused — BPM is baked into click_samples buffer length)
-- `tuidaw_set_click_volume(volume)` — click volume (0.0–2.0+, allows above 100%)
-- `tuidaw_set_click_pan(pan)` — click panning (-1.0 L to 1.0 R)
-- `tuidaw_generate_click(bpm, duration_frames)` — generate long pre-rendered click buffer in C (GCD-exact beat positions, malloc'd, realloc'd for efficiency)
-- `tuidaw_set_click_samples(ptr, len)` — set external click buffer (backward compat / tests; frees native-owned buffer first)
-- `tuidaw_set_loop(start, end)` — loop region (handled sample-accurately in callback)
-- `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer(id)`, `tuidaw_get_recording_length(id)` — recording
-- `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA time-stretch speed control (0.25x–2.0x)
-- `tuidaw_render(output, frame_count)` — offline render: calls playback_callback into a user-provided buffer (bypasses audio device, deterministic output for tests)
+- **Vapor Mode**: `<script setup vapor lang="ts">` on child SFCs. `App.vue` must NOT have `vapor` (root must be VDOM for `createApp()`).
+- **VDOM components crash inside Vapor** — no `lucide-vue-next`. Custom `Icon.vue` + `useIcons.ts` using base `lucide` package.
+- Runtime alias: `vue` → `vue.runtime-with-vapor.esm-browser.js` in Vite config
+- **Composables with singleton pattern** (no Pinia): useAppState, useAudio, useTransport, useProject, useKeyboard, useIcons
+- **Tailwind everywhere** — no inline CSS or `<style>` blocks. `:style` only for dynamic values.
+- Theme colors via `@theme` in `main.css` (Catppuccin Mocha + OLED black). `C` object only in composable logic / canvas code.
+- Object notation for conditional `:class`. Avoid `watch` (use callbacks/events). No rounding except color dot.
+- **Prettier**: single quotes, no semi, no trailing comma, tailwind plugin. `bun run format` to fix.
+- **IBM Plex Mono** self-hosted in `web/public/fonts/`
+- **Canvas render perf**: `RenderSnapshot` pattern reads reactive state once per frame. `scheduleRender()` coalesces. Off-screen track culling.
 
-### Recording behavior:
+## Native Audio Engine
 
-- **`R` key toggles arm state** on the selected track -- during transport, it also punches in/out recording live
-- **Multiple tracks can be armed simultaneously**, each with different input devices
-- **SPACE starts recording if any tracks are armed**, otherwise just plays
-- **Recording writes from the playhead position forward** -- audio before the playhead is preserved, new audio overwrites from playhead onward
-- **Multi-track simultaneous recording**: one native capture device per armed track
-- Non-armed, non-muted tracks play back during recording
+C shared library (`native/tuidaw_audio.c`, ~1151 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored).
 
-### Live controls during transport (all implemented):
+### API surface (all `EXPORT`ed):
 
-- **M** = live mute/unmute (instant atomic update in native engine)
-- **S** = live solo toggle (re-evaluates all tracks via native engine)
-- **C** = live click toggle (enables/disables click in native callback)
-- **R** = live punch-in/out (starts/stops native recording without stopping transport)
-- **+/-** = live BPM change (instant update in native click generator; when BPM locked, changes base tempo without speed change)
-- **B** = toggle BPM lock (locked: +/- relabels tempo without speed change; unlocked: +/- changes WSOLA speed)
-- **Up/Down** = track selection during playback
-- **A/D** blocked during transport with status message
+| Category | Functions |
+|----------|-----------|
+| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests) |
+| Devices | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default` |
+| Output | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device` |
+| Tracks | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device` |
+| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead` |
+| Click | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)` |
+| Loop | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection |
+| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length` |
+| Speed | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x |
+| Render | `tuidaw_render(output, frame_count)` — offline render for tests/export |
 
-### D key behavior (two-step):
+### Key behaviors
 
-- First press: if track has audio content, clears the content (nulls samples)
-- Second press: if track is empty, deletes the track (or resets state if last track)
+- **Audio callback** handles mixing, pan, volume, click, loop, WSOLA — all sample-accurately
+- **WSOLA time-stretch**: per-track, window=1024, hop=512, search=±256
+- **All param changes are instant** atomic updates (no WAV rewrite / process restart)
+- **Playhead** from `wsola.input_pos` when WSOLA active, atomic counter otherwise
+- **Content-space coordinates**: ALL coords (playhead, scroll, loop, beat grid) are in source-sample space. UI does NOT apply speed scaling. Beat grid uses `originalBpm`.
+- **Click**: long pre-rendered buffer generated by `tuidaw_generate_click()` in C. GCD-exact beat positions, output-space `click_frame_counter`, counter-based loop wrap. Buffer is C-owned (malloc/realloc).
+- **Recording**: per-track capture devices with ring buffers, polled from JS via `pollRecordingData()`. Web uses getUserMedia + ScriptProcessorNode (WASM capture unreliable).
+- **`tuidaw_set_speed` resets WSOLA** for all active tracks (prevents stale `input_pos` jumps)
+- **Output device switch** requires `stop_playback_device` + `start_playback_device` after `set_output_device`
 
-### File operations use zenity (GTK native dialogs):
+## Keyboard Shortcuts (TUI)
 
-- **F5** = Save project, **F6** = Open project, **I** = Import WAV, **E** = Export mixdown
-- Ctrl+key shortcuts do NOT work in OpenTUI (intercepted internally)
+| Key | Action | During transport? |
+|-----|--------|-------------------|
+| SPACE | Play/stop (record if armed) | Yes (stop) |
+| R | Arm/disarm (punch in/out during transport) | Yes |
+| M/S | Mute/solo toggle | Yes |
+| C | Click toggle | Yes |
+| +/- | BPM change (WSOLA speed if BPM unlocked) | Yes |
+| B | Toggle BPM lock | - |
+| A/D | Add/delete track (blocked during transport) | No |
+| D | Two-step: 1st=clear content, 2nd=delete track | - |
+| Up/Down | Track selection | Yes |
+| Left/Right | Scroll view 1 beat (Shift: 1 bar) | - |
+| [ / ] | Scrub playhead ±1 bar | Yes |
+| { / } | Nudge track ±1/16 beat | - |
+| Home/0/End | Jump to start/end | Yes |
+| V | Volume adjust | - |
+| < / > | Pan ±0.1 | - |
+| F1 | Help overlay | - |
+| F2/F3 | Input/output device selector | - |
+| F5/F6 | Save/open project (.tuidaw) | - |
+| I/E | Import WAV / export mixdown | - |
+| Q | Quit | - |
 
-### Timeline and playhead navigation (beat-based):
+File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't work in OpenTUI.
 
-- **Left/Right arrows** = scroll view by 1 beat (Shift: 1 bar / 4 beats)
-- **[ / ]** = scrub playhead left/right by 1 bar (4 beats) — **works during playback** (seeks native engine + resets WSOLA)
-- **{ / }** = nudge selected track earlier/later by 1/16 beat — trims from start or prepends silence, syncs to native engine instantly
-- **Mouse wheel** on main area = scroll view by 1 beat per tick
-- **Home / 0** = jump to beginning, **End** = jump to end of audio — **works during playback**
-- **Mouse click** on timeline = set playhead to clicked position — **works during playback**
-- **View always recenters** when playhead moves outside the visible area (ensurePlayheadVisible)
-- Timeline beat grid renders based on `samplesPerBeat = (60 / originalBpm) * sampleRate`
+## WAV Import Pipeline
 
-### Mouse wheel controls:
+1. Parse (chunk-scanning, handles JUNK/LIST/bext)
+2. Decode (16-bit PCM, 24-bit PCM, 32-bit float)
+3. Stereo→mono downmix
+4. Resample to 48kHz (linear interpolation)
+5. BPM detection (two-pass onset ACF + multi-candidate sample-level refinement, 60-300 BPM, iterative octave promotion with demotion for >200 BPM)
+6. Beat-phase alignment (`findBeatOffset` — multi-window contrast scoring, later windows weighted higher, median/IQR refinement)
+7. Set project BPM if empty
 
-- **Main waveform area**: scroll = move view by 1 beat per tick
-- **Sidebar volume zone**: scroll on any track row (except pan zone) = adjust volume +/-5% per tick
-- **Sidebar pan zone**: scroll on row 1 at x >= 17 = adjust pan +/-0.05 per tick
-- **Sidebar click row**: scroll adjusts click volume (x<13) or click pan (x≥13) +/-0.05 per tick
-- Pan keyboard shortcuts: `<` = pan left 0.1, `>` = pan right 0.1
+## Project Format
 
-### WAV import features:
+`.tuidaw` = gzipped tarball containing `project.json` (ProjectDescriptor) + `tracks/*.wav`
 
-- Chunk-scanning parser (handles JUNK, LIST, bext chunks before fmt)
-- Supports 16-bit PCM, 24-bit PCM, 32-bit IEEE float
-- Stereo-to-mono downmix
-- Automatic resampling to 48kHz (linear interpolation) when source sample rate differs
-- **Automatic BPM detection** on import (two-pass: onset ACF + sample-level refinement)
-  - Sets project BPM when project is empty (all tracks have no audio)
-  - Range: 60-300 BPM, iterative octave promotion for high tempos
-  - **Octave demotion** for BPM > 200: halves result if a sub-harmonic peak exists with >= 50% strength (catches fast hi-hat/subdivision dominance)
-  - Parabolic interpolation for sub-frame accuracy
-- **Automatic beat-phase alignment** on import (`findBeatOffset`)
-  - Trims audio from the start so beat 1 sits at sample 0 (click track aligns with music)
-  - Robust multi-window analysis: divides audio into overlapping 8-bar windows, scores each phase offset using on-beat vs off-beat contrast (not raw onset amplitude)
-  - Later windows weighted more heavily (de-emphasizes intros with guitar slides, non-matching percussion, count-ins)
-  - Contrast-based scoring: rejects one-off loud transients (guitar slides, cymbal crashes) since they don't repeat periodically — only consistent rhythmic onsets at beat positions score high
-  - Coarse search at 5ms resolution, refined to sample level using median/IQR onset strength (robust to outliers)
-  - Refinement uses audio from 10s+ in (or 25% into track), skipping intro artifacts entirely
-  - **Validated against click.wav ground truth**: average beat error **0.01ms**, max 0.5ms over 60 beats — error is pure click-export jitter, not algorithm error.
+## Discoveries (gotchas for future sessions)
 
-### Project file format:
+- **`Bun.write()` returns a Promise** — must be awaited
+- miniaudio.h too large for Zig `@cImport` — use plain C with `zig cc`
+- No system Zig / no `sudo` — Zig binary downloaded to `native/zig-toolchain/`
+- WAV files often have JUNK/LIST/bext chunks before `fmt` — must scan by iterating RIFF sub-chunks
+- BPM octave ambiguity: iterative promotion (not single-pass). 3:2 sub-harmonic filtering. Promoted candidate gets +0.05 correlation advantage.
+- Loop boundaries in content-space, WSOLA `input_pos` also content-space — no speed scaling for loop bounds
+- `ma_backend_null` for tests via `tuidaw_init_null()` — callback fires, no sound
+- Click loop wrap via counter self-wrap (not playhead comparison) — avoids WSOLA look-ahead offset
+- BPM on empty project: +/- changes `originalBpm` directly, keeping speed 1.0x
+- Output device: `set_output_device` stores index but doesn't restart device. Must stop+start.
+- **Safari user activation**: file dialog `.click()` must be in synchronous trusted gesture stack. Fix: topbar is real DOM buttons.
+- **Safari canvas sizing**: `100vh` ≠ `innerHeight` on iOS. Fix: programmatic `style.width/height` + `visualViewport` resize listener.
+- **Flex min-width: auto**: canvas needs `min-width: 0; min-height: 0`
+- **WASM requires COOP/COEP headers** — configured in Vite dev server + `web/public/_headers` for Cloudflare Pages
+- **Vue Vapor**: root component must be VDOM. VDOM components crash inside Vapor (no `lucide-vue-next`).
+- **Tailwind v4 cascade**: conflicting `bg-*` in static `class` vs dynamic `:class` — winner depends on stylesheet order, not HTML class order. Put conflicting base in conditional too.
+- **Canvas render perf**: Vue Proxy `get` traps add overhead in hot loops. `RenderSnapshot` pattern reads state once per frame.
+- User hardware: Focusrite Scarlett Solo (3rd Gen., 2 inputs), Logitech G535 headset
+- User terminal: Ghostty (Kitty keyboard protocol), Hyprland
 
-- `.tuidaw` files are gzipped tarballs (`tar czf` / `tar xzf`)
-- Contains `project.json` (ProjectDescriptor) + `tracks/*.wav` (individual track WAVs)
-
-### Export mixdown:
-
-- Uses ffmpeg with `volume` and `pan` filters per track (equal-power panning law)
-- **WSOLA time-stretch applied offline** when speed != 1.0: each track's samples are pitch-preserving time-stretched in TypeScript before writing to temp WAV (matching native engine's window=1024, hop=512, search=±256 algorithm)
-- Single track: volume + pan + aformat
-- Multiple tracks: volume + pan per input, then amix with normalize=0, aformat
-- When clickEnabled: generates synthetic click WAV (1kHz sine, 20ms decay, 48kHz) at adjusted BPM, duration matched to stretched track length, includes as additional ffmpeg input with click's volume and pan
-- Output: pcm_s16le WAV, stereo
-
-## Discoveries
-
-- OpenTUI is at `@opentui/core` (v0.1.88), repo at `github.com/anomalyco/opentui`, docs at `opentui.com`
-- OpenTUI ships prebuilt native binaries - no Zig installation needed
-- **Critical OpenTUI discovery**: `renderer.requestRender()` must be called after writing to FrameBuffers for screen to update in non-live mode
-- **Ctrl+key shortcuts DON'T WORK in OpenTUI** -- framework intercepts Ctrl+S/O/P internally
-- User's audio hardware: Focusrite Scarlett Solo (3rd Gen.) with 2 inputs, Logitech G535 headset
-- User's terminal: Ghostty (supports Kitty keyboard protocol), Hyprland desktop
-- **`Bun.write()` returns a Promise** -- must be awaited
-- miniaudio.h is 95,864 lines — too large for Zig's `@cImport`, so native code is plain C compiled with `zig cc`
-- Zig is not installed system-wide and `sudo` is not available — downloaded Zig 0.14.0 binary to `native/zig-toolchain/`
-- All 32 exported symbols verified via `nm -D` on the compiled shared library
-- **WAV parser pitfalls**: Real-world WAV files often have JUNK/LIST/bext chunks before `fmt` — must scan by iterating RIFF sub-chunks, not assume fixed byte offsets
-- **Stereo WAV files** need explicit mono downmix (average channels)
-- **Sample rate mismatch**: Native engine runs at 48kHz. Files at other rates (e.g. 44.1kHz) must be resampled on import or they play at wrong speed
-- **BPM detection resolution**: At 100 onset frames/sec, ACF lag resolution is too coarse (~3.5 BPM jumps around 145 BPM). Use 200 fps + parabolic interpolation + sample-level refinement for accuracy
-- **BPM octave ambiguity**: Must do iterative octave promotion (not single-pass) to handle high tempos like 250 BPM (62.5→125→250). Multi-candidate refinement handles promotion overshoot (e.g. 185 BPM where promotion goes 61→124→230, and 185 is collected as a candidate between pre- and post-promotion values). 3:2 sub-harmonic candidates are filtered out (e.g. 103 is 2/3 of 155). Sample-level autocorrelation is biased toward lower BPM, so the promoted candidate gets a +0.05 correlation advantage over alternatives.
-- **Loop + WSOLA coordinate mismatch**: Loop boundaries are in content-space and WSOLA's `input_pos` also operates in content-space, so `wsola_generate` wraps `input_pos` at `loop_end` back to `loop_start` directly (no speed scaling needed for loop bounds).
-- **miniaudio null backend**: `ma_backend_null` runs the audio callback on a timer thread but produces no sound output. Used for tests via `tuidaw_init_null()` to avoid blasting audio through speakers during `bun test`
-- **Content-space coordinate system**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid) are in source-sample space. When WSOLA is active, the native playhead is derived from `wsola.input_pos` (which advances at `speed * hop` per output hop). The UI does NOT apply speed scaling to `samplesPerSubCol` or `scrollOffset` — those are zoom/scroll in content-space. Beat grid uses `originalBpm` (the original tempo of the source audio).
-- **`tuidaw_set_speed` must reset WSOLA states**: When speed changes (especially crossing the 1.0 threshold), WSOLA `input_pos` can be stale from whenever WSOLA was last active. Without resetting, switching from 1.0x to 0.5x causes a massive playhead backward jump (e.g. 47616 → 5120) because `input_pos` was still at position 0 from when `tuidaw_play` initially called `wsola_reset`. Fixed by always calling `wsola_reset(current_playhead)` for all active tracks in `tuidaw_set_speed`.
-- **WSOLA initialization vs reset distinction**: `tuidaw_play()`, `tuidaw_set_playhead()`, and `tuidaw_set_speed()` all reset WSOLA states. The callback's `if (!tk->wsola.initialized)` check is a safety net but should rarely trigger since these three functions cover all transitions.
-- **Click timing model (final)**: Click uses a **long pre-rendered buffer in OUTPUT-SPACE** generated natively in C by `tuidaw_generate_click(displayBpm, duration_frames)`. The buffer contains click tones at GCD-exact beat positions using the display BPM. The native callback indexes the buffer by `click_frame_counter` (ABSOLUTE output-space counter = content_position / speed). On play/seek, the counter is set to `position / speed` so clicks align to the absolute beat grid — NOT reset to 0 (which would cause clicks to fire immediately regardless of beat position). On loop, the counter wraps when it reaches `loop_end / speed`, resetting to `loop_start / speed` (absolute output-space positions, no `transport_start_pos` offset needed). Buffer is C-owned (malloc/realloc), regenerated on every BPM change. Click tone is 960 samples of 1kHz sine + 20ms decay, BPM-independent. GCD math (in C): `bpm_scaled = round(bpm*100)`, `total_scaled = SAMPLE_RATE*60*100`, `N = bpm_scaled / gcd(bpm_scaled, total_scaled)`. Beat k position: `group * samples_per_N + (local * samples_per_N / N)` where `group = k/N`, `local = k%N`. Buffer duration: `max(projectDuration/speed + 60s, 10min)` (output-space). Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). `tuidaw_set_click_samples` kept for backward compatibility / tests (frees native-owned buffer first).
-- **Click loop wrap via counter-based detection**: The click counter wraps based on its OWN value reaching the output-space loop boundary — NOT based on playhead comparison (`new_playhead < playhead`). This avoids the WSOLA look-ahead problem where `wsola.input_pos` wraps 1-2 hops before the output actually reaches the loop point. The counter-based approach correctly handles on-beat and off-beat loop regions at all speeds. Verified with 4 tests: on-beat 120 BPM, fractional 155 BPM, 0.75x speed, and off-beat loop boundaries.
-- **BPM on empty project**: When `getProjectDurationSamples() === 0`, BPM +/- should change `originalBpm` (base tempo) along with `bpm`, keeping speed at 1.0x. Otherwise you get nonsensical speed ratios when there's no audio to stretch.
-- **Export click generation**: For mixdown export, a synthetic click WAV is generated in TypeScript (matching native engine's 1kHz sine / 20ms linear decay / 48kHz) and fed to ffmpeg as an additional input with click's volume and pan filters.
-- **Click content-space playback**: Click tone is a BPM-independent 960-sample buffer (1kHz sine + 20ms decay). The native engine uses a long pre-rendered buffer generated by `tuidaw_generate_click()` with click tones at GCD-exact beat positions, indexed by output-space `click_frame_counter` — no WSOLA, no pitch shifting, no floating-point BPM math. Loop wrapping handled by counter self-wrap (counter reaches output-space loop boundary, resets to loop start position).
-- **`tuidaw_set_click_samples(float*, int len)`**: Sets external buffer (backward compat / tests). Frees any native-owned buffer first. Race-safe (sets len=0 before pointer update).
-- **`tuidaw_generate_click(float bpm, int duration_frames)`**: Generates click buffer in C using malloc/realloc. GCD-exact integer arithmetic for beat positions. Buffer is C-owned (`click_samples_capacity > 0`). Called from JS via `updateClickBuffer(bpm, durationFrames)`.
-- **Click track is always visible**: CLICK_ROW_HEIGHT=2 content rows, click track row always rendered in sidebar and main area. Uses dim colors when disabled, bright when enabled or selected. SEPARATOR_HEIGHT controls the gap between track rows (default 1, supports 0 for no separator or 2+ for wider gaps).
-- **`CLICK_TRACK_INDEX = -1`**: Sentinel for click track selected. Up arrow from track 0 navigates to click track. Down arrow from click track navigates to track 0.
-- **Click track navigation**: V key adjusts click volume, `<`/`>` adjust click pan, M key toggles clickEnabled — all when click track is selected (index -1).
-- **Mouse click on click row**: Clicking click track row in sidebar or main area sets `selectedTrackIndex = -1`.
-- **`updateClickBuffer` called on C toggle**: Ensures click tone buffer is set. Tone is BPM-independent (960 samples). BPM changes are handled by `startClick(bpm)` which updates `click_displayed_bpm` in native.
-- **`updateClickBuffer(bpm, durationFrames)` calls native `tuidaw_generate_click`**: Called on BPM change, C toggle, M toggle (click track), WAV import, and transport start. Duration is `max(projectDuration/speed + 60s, 10min)` (output-space). Buffer is C-owned (no JS pinning needed).
-
-- **Output device selection was broken**: `tuidaw_set_output_device()` only stores the device index — it does NOT restart the playback device. The playback device is created once in the constructor and never restarted. To switch devices, must call `tuidaw_stop_playback_device()` + `tuidaw_start_playback_device()` after setting the index. Input devices worked because each recording creates a new `ma_device`.
-
-### Web UI architecture:
-
-- **Dual-mode entry point**: `index.ts` is a 15-line dispatcher — `--host` flag dynamically imports `web/server.ts`, no flag imports `tui.ts`
-- **WASM audio engine**: Same `tuidaw_audio.c` compiled to WASM via Emscripten (`native/build-wasm.sh`). miniaudio auto-selects Web Audio backend. SharedArrayBuffer required (COOP/COEP headers).
-- **Emscripten SDK**: Installed at `native/emsdk/` (v5.0.3, gitignored, ~400MB). Build with `-DMA_ENABLE_AUDIO_WORKLETS -sASYNCIFY -sUSE_PTHREADS=1 -sAUDIO_WORKLET=1 -sWASM_WORKERS=1 -sMODULARIZE=1`
-- **AudioBridge**: Typed wrapper around WASM exports with string→numeric track ID mapping and WASM heap memory management
-- **Bun HTTP server**: `web/server.ts` bundles `web/app.ts` via `Bun.build` at startup, serves static files from `web/` with COOP/COEP headers
-- **Separate tsconfigs**: Root tsconfig excludes browser files (`web/app.ts`, `web/audio-bridge.ts`); `web/tsconfig.json` extends root with DOM libs, includes only browser files
-- **Canvas 2D rendering**: Waveforms, beat grid, playhead, track sidebar all rendered via Canvas 2D API
-- **WAV import**: Built-in parser in browser (16/24-bit PCM, 32-bit float, stereo downmix, auto-resample to 48kHz) — no server round-trip needed
-- **BPM detection on import (Web UI)**: Full shared pipeline — detectBPM → resample → findBeatOffset → trim. Auto-sets project BPM when project is empty. Track renamed from filename.
-- **WAV parsing unification**: TUI version used Node `Buffer` API (`readUInt32LE`, `readInt16LE`), Web version used `DataView`/`Uint8Array`. Shared implementation in `src/utils/wav.ts` uses `Uint8Array`/`DataView` which works in both Bun (`Buffer extends Uint8Array`) and browser. Both had identical algorithm: chunk-scanning RIFF/WAVE parser.
-- **Full-canvas conversion**: Previous web UI used HTML DOM (topbar div, sidebar div with innerHTML-rebuilt track rows, statusbar div, 2 canvases). Track heights didn't align between DOM sidebar rows and canvas waveform rows due to HTML margins/padding/borders. Converted to single `<canvas id="app">` for sidebar/timeline/waveforms/statusbar — all rendered via Canvas 2D. Mouse handling uses zone-based hit testing (`hitTest()` returns zone type + track index + button action). **Topbar is HTML DOM** (not canvas) — real `<button>` elements guarantee Safari/iOS user activation for file dialogs.
-- **Safari user activation chain**: Safari blocks programmatic `.click()` on file inputs unless it happens in the synchronous call stack of a trusted user gesture. Three things broke this: (1) `async` functions consumed the activation token before reaching `.click()`, (2) file inputs not in the DOM are silently ignored by Safari, (3) `touchstart preventDefault()` on the canvas consumed the activation token. Ultimate fix: move topbar to real DOM buttons so file dialog triggers are native user gestures — canvas `touchstart preventDefault()` doesn't interfere since topbar is outside the canvas.
-- **Safari/iOS canvas sizing mismatch**: CSS `height: calc(100vh - 56px)` vs JS `window.innerHeight - 56` causes vertical coordinate displacement on iOS Safari. `100vh` equals the "large viewport" (toolbar hidden) while `innerHeight` is the current visible viewport (smaller when toolbar visible). The canvas buffer gets stretched vertically to fill the larger CSS box, causing y-coordinates to be displaced — the offset increases with y position (pan sliders worse than volume sliders). Fix: set `canvas.style.width/height` programmatically in `resize()` to match logical dimensions exactly, and add `visualViewport` resize listener for iOS toolbar show/hide.
-- **Sidebar vertical scrolling (Web UI)**: `trackScrollY` state tracks vertical scroll offset for track rows. Click track row is always pinned at top (unaffected by scroll). Both `drawSidebar()` and `drawWaveformArea()` apply the same scroll offset so sidebar and waveform rows stay aligned. Hit testing accounts for scroll offset. Sidebar touch interaction uses a "pending scroll" pattern with 5px movement threshold — below threshold it's a tap-to-select, above it triggers vertical scrolling.
-- **Flex min-width: auto problem**: Body is `display: flex; flex-direction: column`, canvas is a flex item. Default `min-width: auto` for replaced elements = intrinsic size = canvas buffer size (`W * dpr`). On iPad dpr=2, canvas forced to display at 2x. Fix: `min-width: 0; min-height: 0` on canvas CSS.
-- **Final canvas sizing solution**: CSS has `display: block; min-width: 0; min-height: 0;` (no width/height). JS `resize()` sets `canvas.style.width = W + "px"` and `canvas.style.height = H + "px"` programmatically. `visualViewport` resize listener handles iOS toolbar show/hide.
-- **Stale bundle issue**: Server bundles `app.ts` once at startup via `Bun.build()`. HTML is served fresh from disk. If user reloads without restarting server, they get new HTML but old JS. Server needs `Cache-Control: no-cache` headers for `sw.js` to ensure browsers check for service worker updates.
-- **PWA with COOP/COEP**: Service workers work fine alongside `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. The SW scope is same-origin so COOP doesn't interfere. All cached resources are same-origin too, so COEP `require-corp` is satisfied.
-
-### OpenTUI Mouse Event API:
-
-- Mouse enabled via `createCliRenderer({ useMouse: true })`
-- `onMouseScroll` handler on any Renderable: `(event: MouseEvent) => void`
-- `event.scroll?.direction` is `"up" | "down" | "left" | "right"`, `event.scroll?.delta` is numeric
-- `event.x`, `event.y` give position within the renderable
-- Can attach via constructor options (`onMouseScroll: ...`) or property setters (`renderable.onMouseScroll = ...`)
-- `FrameBufferRenderable` and `BoxRenderable` both inherit mouse handlers from `Renderable`
-- Other handlers: `onMouseDown`, `onMouseUp`, `onMouseMove`, `onMouseDrag`, `onMouseDragEnd`, `onMouseDrop`, `onMouseOver`, `onMouseOut`, `onMouse`
-
-## Accomplished
-
-**All completed and working (type-checks pass):**
-
-1. **Project initialized** with Bun + `@opentui/core`
-2. **Full project structure** with 5 source files + index.ts + native C library
-3. **Braille waveform renderer** (2x4 dot grid, bottom-up envelope display — absolute amplitude fills from bottom, no mirroring)
-4. **Track manager** with add/remove/select, mute/solo/arm, volume/pan, color assignment
-5. **Full UI**: top bar (transport/BPM/time/output device indicator), left sidebar (track list with M/S/R controls + level meters + input device labels + volume + pan), main area (braille waveforms + beat grid timeline + playhead), status bar (shortcuts)
-6. **Transport controls**: play, stop, record with live waveform drawing
-7. **All keyboard shortcuts**: SPACE, R, A, D, M, S, C, +/-, arrows, Home/End/0, F1-F3, F5, F6, I, E, V, <, >, [, ], {, }, Q
-8. **D key two-step**: first press clears content, second press deletes track
-9. **Audio device selection**: F2 (input per track), F3 (global output), device selector overlay
-10. **Multi-track recording** via native miniaudio capture devices
-11. **Live transport controls**: M/S/C/R/+/- all work during playback/recording with instant native engine updates
-12. **Punch-in/out**: R key during transport starts/stops recording on individual tracks
-13. **`refreshLivePlayback()`**: syncs mute/solo state to native engine for all tracks
-14. **Metronome click**: generated sample-accurately in native audio callback
-15. **Loop region**: handled sample-accurately in native audio callback
-16. **Zenity file dialogs**: F5 save, F6 open, I import, E export
-17. **Project save/open** (.tuidaw gzipped tarball)
-18. **Export mixdown** (ffmpeg amix filter with per-track volume + equal-power pan)
-19. **Status messages**: temporary 3-second auto-dismiss
-20. **Help overlay** (F1) with all shortcuts + mouse hints
-21. **Mouse wheel scroll** on main waveform area (beat-based timeline scroll)
-22. **Mouse wheel volume** on sidebar track rows
-23. **Mouse wheel pan** on sidebar pan zone (row 1, x >= 17)
-24. **Pan display** in sidebar (C/L##/R## format)
-25. **Pan keyboard shortcuts** (< and >)
-26. **Native audio engine** (miniaudio-based C library with 32 exported FFI functions)
-27. **TypeScript FFI bridge** (bun:ffi dlopen with full native API coverage)
-28. **Replaced PipeWire CLI tools** with native miniaudio for cross-platform support
-29. **WAV import**: chunk-scanning parser, 16/24/32-bit support, stereo downmix, 48kHz resampling
-30. **Automatic BPM detection** on import (two-pass onset ACF + multi-candidate sample-level refinement, 60-300 BPM, iterative octave promotion with overshoot correction)
-31. **Beat-based timeline**: Left/Right scroll by beats, Shift for bars, mouse wheel by beats
-32. **Beat-based playhead scrub**: [ / ] move playhead by 1 bar (4 beats)
-33. **Auto-recentering view**: playhead always stays visible, view recenters when playhead leaves screen
-34. **Free-scroll mode**: during playback, manual scroll (mouse wheel, arrows) enters free-roam mode — view stays where user scrolled. Auto-scroll re-engages when playhead naturally enters the visible area. Cleared on stop, seeks, and playhead jumps. Timeline clicks during playback also enter free-roam mode (view stays at the clicked area). Loop-centering in `autoScroll()` only activates when playhead is inside the loop region — seeking past the loop disables both native loop and loop-centering.
-35. **WSOLA time-stretch**: pitch-preserving speed control via native C engine (0.25x–2.0x), BPM +/- adjusts speed ratio relative to originalBpm, speed % shown in top bar when != 100%
-36. **Content-space coordinate unification**: ALL coordinates (playhead, scrollOffset, loopStart, loopEnd, beat grid, waveform rendering) use source-sample space. UI does NOT apply speed scaling — `samplesPerSubCol` is pure zoom, `scrollOffset` is pure content position. Beat grid uses `originalBpm`. Playhead in native engine is derived from `wsola.input_pos` when WSOLA is active.
-37. **Unified TRACK_ROW_HEIGHT=4** for both sidebar and waveform (pure content rows, no separator), sidebar has dedicated volume/pan row
-38. **Live seeking during playback**: [ / ], Home/End/0, and timeline mouse click all work during transport — native `tuidaw_set_playhead` resets WSOLA states for glitch-free seeking
-39. **Null audio backend for tests**: `tuidaw_init_null()` uses `ma_backend_null` so `bun test` runs silently — callback still fires, playhead advances, WSOLA works, no sound output
-40. **Playhead-sync tests**: 6 tests verifying content-space playhead consistency across speed changes (0.5x, 2.0x, mid-playback speed change, multiple speed changes, rapid toggling, 1.0x wall-clock match). All pass with null audio backend.
-41. **WSOLA reset on speed change**: `tuidaw_set_speed()` resets WSOLA states for all active tracks with the current playhead, preventing stale `input_pos` jumps when crossing the WSOLA/non-WSOLA threshold
-42. **Loop-playhead interaction**: Loop is enforced when playhead is at or before loopEnd; disabled only when manually seeking past the loop. Playback from before the loop enters it naturally. `autoScroll()` centers the loop region on screen when it fits the view. 6 tests verify all scenarios.
-43. **Click track volume control**: Native `tuidaw_set_click_volume(float)` with atomic float, range 0.0–2.0+ (allows above 100%), applied as amplitude multiplier in audio callback
-44. **Click track pan control**: Native `tuidaw_set_click_pan(float)` with equal-power panning (-1.0 L to 1.0 R), same cosine/sine law as track panning
-45. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
-46. **Click track sidebar row**: Compact 1-row (CLICK_ROW_HEIGHT=1) click track row at top of sidebar. Shows ♩ icon, volume%, pan indicator. CLICK_COLOR when enabled, FG_DIM when disabled.
-47. **Click track braille waveform**: 1-row braille beat pattern (⣿ spikes at beat positions) in main area above regular track waveforms when clickEnabled
-48. **Mouse wheel click controls**: Scroll on click row in sidebar adjusts volume (x<13) or pan (x≥13) with ±0.05 per tick
-49. **BPM on empty project**: When no tracks have audio, +/- changes `originalBpm` (base tempo) instead of creating a speed ratio, so speed stays 1.0x
-50. **Export mixdown with click**: When clickEnabled, generates synthetic click WAV (1kHz/20ms/decay matching native engine) and includes in ffmpeg mixdown with click's volume and pan
-51. **Click volume/pan persistence**: `clickVolume` and `clickPan` saved/loaded in .tuidaw project files with backward-compatible defaults (0.5 / 0)
-52. **Click volume/pan sync on transport**: `playAll()` syncs click volume and pan to native engine before starting playback
-53. **Click WSOLA via pre-generated buffer**: Native click engine replaced with WSOLA-based buffer playback. `generateClickBuffer(originalBpm)` generates one beat of 1kHz sine + 20ms decay; passed to native via `tuidaw_set_click_samples`. Pitch-preserving at all speeds. Click buffer regenerated on BPM change and C toggle.
-54. **Click track always visible**: CLICK_ROW_HEIGHT=1 (compact single row). Click track row shown in sidebar and main area at all times (not gated on `clickEnabled`). Dim colors when disabled, bright/selected colors when enabled or selected.
-55. **Click track as first-class navigable track**: `CLICK_TRACK_INDEX = -1` sentinel. Up from track 0 selects click track. Down from click track goes to track 0. V, `<`, `>`, M keys all work on click track when selected.
-56. **Click track mouse selection**: Clicking click row in sidebar or main area sets `selectedTrackIndex = -1`.
-57. **Click waveform uses `┊` chars**: Beat positions shown as `┊` dotted vertical bars (same as timeline beat markers) spanning all content rows.
-58. **Automatic beat-phase alignment on import**: `findBeatOffset()` trims audio so beat 1 sits at sample 0. Uses multi-window contrast scoring (8-bar overlapping windows, later windows weighted higher) + median/IQR sample-level refinement. Handles intros with guitar slides, non-matching percussion, count-ins.
-59. **Pre-baked click buffer (GCD-exact, native C generation)**: Click buffer generated natively by `tuidaw_generate_click(bpm, duration_frames)` in C. Long buffer (10min+ project duration) with click tones at GCD-exact beat positions. Native callback indexes buffer by `click_frame_counter` (output-space wall-clock counter). On loop, counter wraps when it reaches the output-space position of `loop_end`, resetting to `loop_start`'s output-space position — independent of WSOLA look-ahead. Buffer is C-owned (malloc/realloc). JS-side `generateClickBuffer`, `setClickSamples`, `pinnedClickBuffer`, `gcd()` removed. `updateClickBuffer(bpm, durationFrames)` calls native. Duration computed as `max(projectDuration/speed + 60s, 10min)` (output-space). Verified drift-free: 776 beats over 5 minutes at 155 BPM with max error 1.00 samples (0.021ms). 12 click precision tests pass (120/145/155/212 BPM, single/chunked render, with-track, non-zero start, 5-min drift, 3-min stress, loop on-beat/off-beat/fractional/speed).
-60. **Fix output device selection (F3)**: F3 device selection now actually switches the audio output device. Native engine tracks `active_device_index` (the device that was used when `tuidaw_start_playback_device()` last succeeded) separately from `output_device_index` (requested). `AudioEngine.setOutputDevice()` compares requested vs active index and only restarts the device when they differ — avoids unnecessary stop+start that can confuse PipeWire/PulseAudio routing policies. `AudioEngine.forceRestartOutputDevice()` always restarts (used by F3 callback). F3 callback has try-catch + status message. `playAll()` uses smart `setOutputDevice()` (skip if same). New native export: `tuidaw_get_active_device_index()`.
-61. **Fix input device selection (F2)**: F2 callback now immediately syncs input device to native engine via `audioEngine.syncTrack()` so the input device is ready for recording right after selection (previously only synced on `playAll()`). Shows status message with selected device name.
-62. **Output device applied on project open (F6)**: When opening a saved project, the restored `outputDeviceId` is immediately applied via `setOutputDevice()` instead of waiting for the next play.
-63. **Web UI foundation (feature/webui branch)**: Dual-mode entry point (`index.ts` dispatcher), Bun HTTP server on port 3666 with COOP/COEP headers for SharedArrayBuffer, Canvas 2D waveform rendering, beat grid, playhead animation, track sidebar, transport controls (Space/M/S/R/C/+/-), keyboard shortcuts, mouse interaction, WAV file import with built-in parser (16/24-bit PCM, 32-bit float, auto-resample to 48kHz).
-64. **WASM audio engine**: Same `tuidaw_audio.c` compiled to WebAssembly via Emscripten. miniaudio auto-selects Web Audio backend. Typed `AudioBridge` wrapper maps string track IDs to numeric IDs, manages WASM heap memory for sample buffers. All 37 `tuidaw_*` exports available.
-65. **TUI refactoring**: `index.ts` (was 1043 lines) split into 15-line dispatcher + `tui.ts` (1048 lines). TUI functionality preserved.
-66. **Extract BPM detection + DSP to shared utils**: `detectBPM`, `refineBPM`, `refineBPMMulti`, `findBeatOffset` extracted from `AudioEngine` class methods to standalone functions in `src/utils/bpm.ts` (~310 lines). `resample` extracted to `src/utils/dsp.ts` (~25 lines). Both used by TUI (`src/audio-engine.ts`) and Web UI (`web/app.ts`). Web UI import pipeline now runs full BPM detection → resample → beat offset trim → auto-set project BPM → rename track from filename.
-67. **Extract WAV parsing to shared utils**: `parseWav`, `float32ToPcmS16`, `pcmS16ToFloat32`, `buildWavHeader`, `encodeWav` (mono), `encodeWavStereo` (stereo with equal-power pan) extracted to `src/utils/wav.ts` (~192 lines). Uses `Uint8Array`/`DataView` only (works in both Bun and browser). TUI's `AudioEngine` removed 6 WAV methods (~170 lines), now imports from shared utils. Web UI removed local `parseWavFile` (~90 lines), imports `parseWav` from shared utils.
-68. **Full-canvas Web UI**: Rewrote Web UI from DOM-based (HTML divs + dual canvas) to single `<canvas>` rendering entire app via Canvas 2D. Eliminates HTML margin/padding height misalignment between sidebar and waveform tracks. Zone-based hit testing (`hitTest()` returns zone type + track index + button). `index.html` reduced from 306 to 26 lines. `app.ts` fully rewritten (~1208 lines). Layout constants: `SIDEBAR_W=220`, `TOPBAR_H=44`, `STATUSBAR_H=28`, `TIMELINE_H=24`, `TRACK_H=80`, `CLICK_ROW_H=32`.
-69. **OLED theme for Web UI**: Replaced Tokyo Night color palette with OLED-optimized theme. True black (`#000000`) background, white/near-white (`#e8e8e8`) foreground, subtle gray borders (`#2a2a2a`). Color accents only for active UI states: green for playing, red for armed, orange for mute active, yellow for solo active, cyan for click active. Inactive buttons use dark fill (`#1a1a1a`) with border outlines. Active button text is black for maximum contrast. Track waveform colors adjusted for OLED visibility.
-70. **Loop region UI in Web UI**: Full loop region support matching TUI behavior. P key 3-step cycle (set start → set end → clear). Touch-friendly Loop button in topbar (64px wide, 28px tall) for iPad usage. Purple (`#b080e0`) visual rendering: tinted overlay on timeline and waveform area, solid start/end markers with triangle indicators on timeline, vertical lines on waveform area, dashed line while setting loop start. Loop-aware auto-scroll centers loop region on screen during playback when it fits. `syncLoopAfterSeek()` disables native loop when playhead seeks past loopEnd (linear continuation). Audio bridge fixed to pass -1 (not 0) for no-loop sentinel matching native C engine.
-71. **Fix WSOLA audio quality in Web UI**: Added missing `-DMA_ENABLE_AUDIO_WORKLETS` and `-sASYNCIFY` flags to `native/build-wasm.sh`. Without `-DMA_ENABLE_AUDIO_WORKLETS`, miniaudio's C code never compiled the AudioWorklet path — it fell back to the deprecated ScriptProcessorNode which runs the audio callback on the main thread (subject to GC pauses, layout recalc, event handling delays). `-sASYNCIFY` is required because miniaudio's AudioWorklet init path calls `emscripten_sleep()` while waiting for the worklet to start. Updated `audio-bridge.ts` to `await` the `_tuidaw_init()` and `_tuidaw_start_playback_device()` calls since they are now async with ASYNCIFY.
-72. **Touch-friendly Web UI overhaul**: Major layout and interaction redesign for touch/tablet usage. Layout constants enlarged: `SIDEBAR_W=260`, `TOPBAR_H=56`, `TRACK_H=120`, `CLICK_ROW_H=48`, `STATUSBAR_H=36`, `BTN_H=36`. Topbar now has Click button, BPM [-]/[+] buttons, Import/Export/+Track buttons. Sidebar tracks have visual draggable volume and pan sliders (volume: 0-100% range, click volume: 0-200% range, pan: fill-from-center). Click track row has compact volume/pan sliders. MSR buttons enlarged (32x28px). Pointer events for drag interaction (pointerdown/pointermove/pointerup). Double-click/double-tap resets: volume→0.8, pan→0, BPM→originalBpm, clickVol→0.5, clickPan→0. Touch event `preventDefault()` to block iOS scroll/zoom. Extended hit zones: `topbar-click`, `topbar-bpm-minus/plus/text`, `topbar-import/export/add-track`, `sidebar-click-vol/pan`, `sidebar-vol-slider/pan-slider`. Scroll wheel on pan slider zone adjusts pan.
-73. **Fix slider alignment and layout bugs**: Fixed click track pan slider drawing using wrong `SLIDER_W` constant (160px) instead of computed `sliderW` (107px) — 27px offset between visual and hit zone. Removed unused `SLIDER_W` constant. Fixed sidebar click row height (48px) vs timeline height (28px) mismatch causing 20px vertical offset between sidebar track rows and waveform track rows — unified `TIMELINE_H = CLICK_ROW_H = 48`. Fixed track volume range: was incorrectly mapped as 0-2 (200%) in hit test/drag but drawn as 0-1 — unified to 0-1 (100%) range. Click volume remains 0-2 (200%) with correct slider fraction (value/2).
-74. **Project save/open in Web UI**: Full `.tuidaw` project save/open implemented client-side in the browser. Pure JS tar creation/extraction (USTAR format) + browser `CompressionStream`/`DecompressionStream` APIs for gzip. Format is fully interoperable with TUI — projects saved in the browser can be opened in the terminal and vice versa. Save triggers browser download of `.tuidaw` file. Open uses `<input type="file">` dialog. Topbar has [Save] and [Open] buttons (touch-friendly). Restores all state: tracks with audio, BPM, click settings, loop region, playhead position, scroll offset, selected track. Syncs all restored tracks to WASM audio engine.
-75. **Mobile compatibility fixes**: `crypto.randomUUID()` replaced with `genId()` fallback using `crypto.getRandomValues`/`Math.random`. On-screen debug overlay (`#error-log` div) captures uncaught exceptions/rejections and `_debugLog`/`_debugError` calls; auto-hides after successful init. HTTPS server with self-signed TLS cert (generated via openssl, cached in `/tmp/tuidaw-certs/`) for mobile `SharedArrayBuffer` support.
-76. **Delete button + waveform swipe scrolling**: `×` delete button on each track in sidebar (top-right, 28x24px). Two-step: first tap clears audio content, second tap removes track (if >1 tracks). Last empty track shows "Last track — nothing to delete" status. Selects track on tap for visual feedback. Waveform area supports touch swipe scrolling via `DragState` type `"waveform-scroll"`.
-77. **Canvas-relative event coordinates**: All pointer/mouse/wheel events use `canvasCoords()` helper (via `getBoundingClientRect()`) instead of raw `clientX/clientY`. Fixes hit testing when canvas has any offset (mobile address bars, non-zero canvas position).
-78. **Safari file dialog fix**: File input elements (`importWav`, `openProject`) are appended to DOM (`display:none`) before `.click()` — Safari silently ignores clicks on detached inputs. Uses `addEventListener("change", ...)` instead of `onchange` for reliability. Elements cleaned up after selection. Import WAV accept broadened to `audio/x-wav,audio/*` for Safari MIME matching.
-79. **Topbar moved to HTML DOM**: Canvas topbar replaced with real `<button>` elements in `<div id="topbar">` in `index.html`. Guarantees Safari/iOS user activation for file dialogs (Import, Open) since button clicks are native user gestures — canvas `touchstart preventDefault()` no longer interferes. `index.html` expanded to ~142 lines with styled buttons, BPM display, speed/time indicators, status message. `app.ts` removed `drawTopbar()`, `getTopbarLayout()`, all topbar hit zones, `BTN_H`, `inRect()`. Added `setupTopbar()` (wires DOM click handlers) and `updateTopbar()` (syncs button states/text from `render()`). Canvas height = `calc(100vh - 56px)`, all y-offsets in canvas rendering start at 0 instead of TOPBAR_H.
-80. **Fix Safari/iOS canvas sizing mismatch**: Canvas CSS size now set programmatically in `resize()` (`canvas.style.width/height = W/H + "px"`) instead of CSS viewport units. Eliminates vertical coordinate displacement on iOS Safari where `100vh` (large viewport) vs `innerHeight` (visible viewport) mismatch caused canvas buffer stretching — y-coordinates were displaced increasingly with depth (pan sliders worse than volume sliders). Added `visualViewport` resize listener for iOS toolbar show/hide events.
-81. **Sidebar vertical scrolling (Web UI)**: `trackScrollY` state enables vertical scrolling of track rows when they overflow the viewport. Click track row is pinned at top (unaffected by scroll). `drawSidebar()` and `drawWaveformArea()` apply the same scroll offset for alignment. `hitTest()` accounts for scroll offset. Sidebar touch interaction uses "pending scroll" pattern with 5px movement threshold — below threshold it's a tap-to-select, above it triggers vertical scrolling. Mouse wheel on sidebar scrolls vertically. Keyboard track navigation (`j`/`k`/arrows) auto-scrolls to keep selected track visible via `ensureTrackVisible()`. Track add/delete/open operations clamp scroll position via `clampTrackScroll()`. Viewport resize also clamps.
-82. **PWA support**: `web/manifest.json` with app name "tuidaw", standalone display, OLED black theme colors (`#000000`), SVG icons (waveform bars + playhead). `web/sw.js` service worker with stale-while-revalidate strategy, precaches all app assets (`/`, `/index.html`, `/app.js`, WASM files, manifest, icons). `skipWaiting()` + `clients.claim()` for immediate activation. Versioned cache name (`tuidaw-v1`). `index.html` has `<link rel="manifest">`, apple-mobile-web-app meta tags, `<link rel="apple-touch-icon">`, SW registration script.
-83. **PWA icons**: `web/icon-192.svg` and `web/icon-512.svg` — waveform bars (cyan) + playhead (green) on black rounded rect. SVG scales to any size.
-84. **Server Cache-Control for SW**: `web/server.ts` serves `/sw.js` with `Cache-Control: no-cache, no-store, must-revalidate` so browsers always check for service worker updates. Other static files use default caching.
-85. **Track nudge in Web UI**: Touch-friendly `◀` `▶` nudge buttons rendered on the right side of the selected track's waveform area (only shown when stopped and track has audio). Buttons shift track position by 1/16 beat (same as TUI `{`/`}` keys). `◀` trims from start (shift earlier), `▶` prepends silence (shift later). Hit zone `"waveform-nudge"` with `btnAction: "nudge-left" | "nudge-right"`. Keyboard `{`/`}` shortcuts also implemented. Shared `nudgeTrack()` function handles both button and keyboard input. Updates WASM engine via `audio.setTrackSamples()`.
-86. **Full-width volume/pan sliders in Web UI**: Regular track sliders widened from half-width (107px total / 83px rail) to full sidebar width (`FULL_SLIDER_W = SIDEBAR_W - SLIDER_PAD * 2 = 244px` total / 184px rail). `drawMiniSlider()` and `getSliderGeometry()` now accept optional `totalW` parameter — click track sliders remain side-by-side using the default half-width formula. Value text made more prominent: bold 11px font, white color (was dim 9px). Hit testing and drag handlers updated to use matching wider geometry.
-87. **Web recording support**: Full getUserMedia-based recording in the browser. Uses `ScriptProcessorNode` (4096 buffer, mono, 48kHz) for capture — bypasses WASM/native recording path (miniaudio Emscripten capture unreliable). Armed tracks auto-record when Space starts transport. Live punch-in/out via R key or sidebar R button during playback. Recording data polled every animation frame, live-merged into track samples for real-time waveform display. Play button shows red "Rec" indicator during recording. Armed tracks muted during recording (own capture, not playback). Recorded audio written from playhead position forward, preserving existing audio before/after. Multi-track simultaneous recording supported. `web/audio-bridge.ts` has `requestMicAccess()`, `startRecording()`, `pollRecording()`, `stopRecording()` methods.
-88. **Per-track input device and channel selection (Web UI)**: Each track has `inputDeviceId` (string|null, null="Default") and `inputChannel` (0=mono mix, 1..N=specific channel). Multi-channel recording via shared `getUserMedia` streams per unique device (reference-counted `DeviceCapture` with `ChannelSplitterNode`). `InputDeviceInfo` interface with `deviceId`, `label`, `channelCount`. Device enumeration via `enumerateInputDevices()` with `devicechange` listener. Shared stream architecture: one `getUserMedia` per unique deviceId, `ChannelSplitterNode` routes to per-track `ScriptProcessorNode`. Channel 0 = GainNode averaging all channels (mono mix). Channel 1..N = specific splitter output (1-indexed for UI, 0-indexed internally).
-89. **Input device overlay (Web UI)**: Topbar "Input" button opens a centered overlay dialog for selecting input device on the currently selected track. Overlay lists all available input devices with active device highlighted (checkmark + cyan border). First click on Input button requests mic permission + enumerates devices if not yet done. Overlay dismisses on device selection, click outside, or Escape key. All keyboard shortcuts blocked while overlay is open. Channel cycling remains in sidebar via tappable channel badge (Mix → Ch 1 → Ch N → Mix). Removed `sidebar-input-device` hit zone — device selection is now exclusively via the overlay. Input button highlights orange (`#e89040`) when overlay is open. `updateTopbar()` syncs Input button visual state.
-90. **Auto-disarm on stop after recording (TUI + Web)**: When transport stops after a recording session (`wasRecording`), all armed tracks are automatically disarmed. Normal play-stop cycles (no recording) don't affect arm state. Implemented in both `tui.ts` `stop()` and `web/app.ts` `stopTransport()`.
-91. **Vue 3.6 Vapor Mode migration (feature/vue-migration branch)**: Web UI being rewritten from monolithic Canvas 2D `app.ts` (~3308 lines) to Vite + Vue 3.6 (Vapor Mode) + Tailwind 4. Sidebar and track rows are DOM-based Vue components, waveform/timeline area is a canvas wrapped in a Vue component. State management uses composables with singleton pattern (no Pinia). `bun run dev` serves on port 3666.
-    - **Dependencies**: `vue@3.6.0-beta.8`, `vite@6.4.1`, `@vitejs/plugin-vue@6.0.5`, `tailwindcss@4.2.2`, `@tailwindcss/vite@4.2.2`, `vue-tsc@2.2.12`, `prettier@3.8.1`, `prettier-plugin-tailwindcss@0.7.2`
-    - **Vue SFC structure**: `<script setup vapor lang="ts">` first, then `<template>`, then `<style>` (rare — Tailwind used everywhere)
-    - **Composables**: `useAppState.ts` (reactive singleton + helpers), `useAudio.ts` (WASM bridge wrapper), `useTransport.ts` (play/stop/record/loop/seek), `useProject.ts` (save/open/import with tar/gzip), `useKeyboard.ts` (global keyboard shortcuts)
-    - **Components**: `Btn.vue` (generic button with variant/outline), `MiniSlider.vue` (native range with accent-color), `TopBar.vue`, `StatusBar.vue`, `ClickTrackRow.vue`, `TrackRow.vue`, `SideBar.vue`, `InputOverlay.vue`, `WaveformCanvas.vue` (canvas for timeline + waveform + playhead + loop + nudge buttons)
-    - **Theme**: OLED colors defined as Tailwind `@theme` variables in `main.css`. Colors available as utilities: `bg-surface`, `text-fg`, `text-accent-cyan`, etc.
-    - **Type checking**: `bun run check` runs prettier + tsc + vue-tsc (root tsconfig excludes `web/src/**`, vue-tsc uses `web/tsconfig.json` with DOM libs)
-    - **Mic permissions fix**: Removed eager `audio.requestMicAccess()` from `ensureAudioReady()` — mic access is now deferred to input overlay open or recording start. Eliminates unwanted browser mic permission prompt on first play.
-    - **Canvas render perf optimization**: `RenderSnapshot` pattern — all reactive state read once per frame into a plain object, eliminating Vue Proxy `get` trap overhead in hot drawing loops (waveform inner loop reads millions of samples per frame). Also: render coalescing via `scheduleRender()` with RAF dirty-flag pattern for watch-driven re-renders; off-screen track culling skips tracks fully outside the visible area.
-    - **Export mixdown (Web UI)**: Offline render via WASM `tuidaw_render()` — renders entire project through native mixer (handles volume, pan, mute/solo, click, WSOLA time-stretch) in 16384-frame chunks. Output encoded as stereo 16-bit PCM WAV and triggered as browser download. No ffmpeg needed. Respects click enabled/volume/pan, speed/WSOLA, mute/solo. Saves/restores engine state (playhead, speed, loop, click) around the render. `E` keyboard shortcut added. `WebAudioBridge.render(frameCount)` wraps `_tuidaw_render` with WASM heap allocation and copy-out.
-
-## File structure
+## File Structure
 
 ```
 ./
-├── AGENTS.md                 # This file - context for future sessions
-├── LICENSE                   # MIT License
-├── README.md                 # Full setup instructions, feature list, shortcuts
-├── setup.sh                  # Bootstrap: downloads Zig, bun install, builds native lib
-├── index.ts                  # Entry point dispatcher (~15 lines):
-│                              #   --host flag → web/server.ts (Web UI on port 3666)
-│                              #   no flag    → tui.ts (Terminal UI)
-├── tui.ts                    # TUI mode — all OpenTUI terminal logic (~1048 lines).
-│                              # Transport, keyboard handling, mouse handlers,
-│                              # punchInTrack/punchOutTrack, refreshLivePlayback,
-│                              # shouldTrackPlay, ensurePlayheadVisible, autoScroll.
-├── package.json              # scripts: start (bun run index.ts), check (tsc --noEmit && tsc --noEmit -p web/tsconfig.json), test (bun test)
-├── tsconfig.json             # strict mode, noUncheckedIndexedAccess: false, excludes native/emsdk/** and web browser files
-├── bun.lock
-├── .github/
-│   └── workflows/
-│       └── build.yml         # CI: multi-arch native lib build on tag push
+├── AGENTS.md, LICENSE, README.md, setup.sh
+├── index.ts              # Entry dispatcher: --host → web/server.ts, else → tui.ts
+├── tui.ts                # TUI mode (~1048 lines)
+├── package.json, tsconfig.json, .prettierrc, bun.lock
+├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c        # C source for miniaudio-based audio engine (~1151 lines)
-│   ├── miniaudio.h           # miniaudio single-header library (95,864 lines, committed)
-│   ├── build.sh              # Build script using zig cc (native .so)
-│   ├── build-wasm.sh         # Build script using emcc (WASM for web UI)
-│   ├── libtuidaw_audio.so    # Pre-built shared library (x86_64 Linux, 32 exported symbols)
-│   ├── emsdk/                # Emscripten SDK v5.0.3 (NOT committed, ~400MB)
-│   └── zig-toolchain/        # Downloaded Zig 0.14.0 binary (NOT committed to git)
+│   ├── tuidaw_audio.c    # C audio engine (~1151 lines, 32+ exported symbols)
+│   ├── miniaudio.h       # miniaudio single-header (committed)
+│   ├── build.sh          # Native .so build (zig cc)
+│   ├── build-wasm.sh     # WASM build (emcc)
+│   ├── libtuidaw_audio.so
+│   ├── emsdk/            # Emscripten SDK (gitignored)
+│   └── zig-toolchain/    # Zig 0.14.0 (gitignored)
 ├── src/
-│   ├── types.ts              # Types: Track, ProjectState, AudioDevice, TransportState,
-│   │                          # ProjectDescriptor, TrackDescriptor, AudioChunk,
-│   │                          # constants (SIDEBAR_WIDTH=22, TOPBAR_HEIGHT=3,
-│   │                          # TRACK_ROW_HEIGHT=4, CLICK_ROW_HEIGHT=2,
-│   │                          # SEPARATOR_HEIGHT=1), TRACK_COLORS, BRAILLE_BASE,
-│   │                          # BRAILLE_DOTS. ~119 lines.
-│   ├── audio-engine.ts       # AudioEngine class - bun:ffi + dlopen to native lib.
-│   │                          # Device enumeration, recording (poll-based), playback,
-│   │                          # instant pan/volume/mute/solo, click, loop, transport.
-│   │                          # WAV read/write (thin wrappers over src/utils/wav.ts),
-│   │                          # exportMixdown (ffmpeg), saveProject, openProject.
-│   │                          # Imports BPM/DSP/WAV from src/utils/.
-│   │                          # Also exports zenitySave()/zenityOpen(). ~1060 lines.
-│   ├── braille.ts            # Braille waveform renderer (renderBrailleWaveform), level meter
-│   │                          # (renderLevelMeter), peak detection (getPeakLevel). ~113 lines.
-│   ├── state.ts              # State management - createDefaultState, createTrack,
-│   │                          # getSelectedTrack, getArmedTrack, getArmedTracks, formatTime,
-│   │                          # formatBeatPosition, getProjectDurationSamples,
-│   │                          # getProjectDurationSeconds. ~97 lines.
-│   ├── utils/
-│   │   ├── bpm.ts            # BPM detection (shared TUI + Web). detectBPM, refineBPM,
-│   │   │                      # refineBPMMulti, findBeatOffset. Two-pass onset ACF +
-│   │   │                      # multi-candidate sample-level refinement. ~310 lines.
-│   │   ├── dsp.ts            # DSP utilities (shared TUI + Web). resample (linear
-│   │   │                      # interpolation to target sample rate). ~25 lines.
-│   │   └── wav.ts            # WAV parsing + encoding (shared TUI + Web). parseWav,
-│   │                          # float32ToPcmS16, pcmS16ToFloat32, buildWavHeader,
-│   │                          # encodeWav (mono), encodeWavStereo (stereo with
-│   │                          # equal-power pan). Uses Uint8Array/DataView only.
-│   │                          # ~192 lines.
-│   └── ui.ts                 # UIRenderer class - all OpenTUI rendering + mouse handlers.
-│                              # setupMouseHandlers(callbacks) for scroll/volume/pan.
-│                              # Has Tokyo Night color constants. Renders: top bar, sidebar
-│                              # (track list with M/S/R, volume, pan, level meters, input
-│                              # device labels, click track row), main area (braille waveforms
-│                              # + click braille beat pattern + content-space coordinates,
-│                              # beat grid timeline, playhead), status bar, help overlay,
-│                              # device selector overlay, file picker overlay.
-│                              # ~1218 lines.
+│   ├── types.ts          # Track, ProjectState, constants (TRACK_ROW_HEIGHT=4, etc.)
+│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1060 lines)
+│   ├── braille.ts        # Braille waveform + level meter (~113 lines)
+│   ├── state.ts          # State helpers (createTrack, formatTime, etc.)
+│   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1218 lines)
+│   └── utils/
+│       ├── bpm.ts        # BPM detection (shared TUI+Web, ~310 lines)
+│       ├── dsp.ts        # resample() (~25 lines)
+│       └── wav.ts        # WAV parse/encode (Uint8Array/DataView, ~192 lines)
 ├── web/
-│   ├── server.ts             # Bun HTTP server on port 3666 (~115 lines).
-│   │                          # Bundles app.ts via Bun.build for browser.
-│   │                          # Serves static files with COOP/COEP headers
-│   │                          # (required for SharedArrayBuffer / WASM pthreads).
-│   │                          # Cache-Control: no-cache for /sw.js.
-│   ├── index.html            # HTML shell with DOM topbar (<div id="topbar"> with real
-│   │                          # <button> elements for Play, Loop, Click, BPM +/-, Save,
-│   │                          # Open, Import, Export, +Track) + <canvas id="app"> for
-│   │                          # sidebar/timeline/waveforms/statusbar. OLED-themed CSS.
-│   │                          # Topbar is DOM (not canvas) for Safari/iOS user activation
-│   │                          # compatibility with file dialogs. Canvas CSS size set
-│   │                          # programmatically (not viewport units) for iOS Safari
-│   │                          # compatibility. PWA manifest, apple-mobile-web-app meta,
-│   │                          # SW registration. ~191 lines.
-│   ├── manifest.json         # PWA manifest: name "tuidaw", standalone display,
-│   │                          # OLED black theme, SVG icons.
-│   ├── sw.js                 # Service worker: versioned cache (tuidaw-v1), precaches
-│   │                          # all app assets, stale-while-revalidate fetch strategy,
-│   │                          # skipWaiting + clients.claim for immediate activation.
-│   ├── icon-192.svg          # PWA icon 192x192: waveform bars (cyan) + playhead (green)
-│   │                          # on black rounded rect. SVG scales to any size.
-│   ├── icon-512.svg          # PWA icon 512x512: same design as icon-192.svg.
-│   ├── app.ts                # Main browser app (~2960 lines): Canvas 2D rendering
-│   │                          # of sidebar, timeline, waveforms, statusbar (NOT topbar).
-│   │                          # OLED theme (true black bg, white fg, color accents for active states).
-│   │                          # Zone-based hit testing, transport controls, keyboard shortcuts
-│   │                          # (Space/M/S/R/C/+/-/hjkl/arrows/[]/</>/Home/End), mouse
-│   │                          # interaction, WAV import with shared parser + BPM detection.
-│   │                          # Layout: SIDEBAR_W=260, TOPBAR_H=56, TRACK_H=120, CLICK_ROW_H=48.
-│   │                          # Touch-friendly: visual volume/pan sliders, drag interaction,
-│   │                          # double-click reset, pointer events, touch preventDefault.
-│   │                          # setupTopbar() wires DOM button handlers, updateTopbar() syncs
-│   │                          # button states/text. Canvas height = calc(100vh - 56px).
-│   │                          # Project save/open: pure JS tar/gzip (CompressionStream API),
-│   │                          # compatible with TUI .tuidaw format (gzipped tarball).
-│   │                          # Sidebar vertical scrolling: trackScrollY state, pinned click
-│   │                          # track, touch swipe with 5px threshold, ensureTrackVisible().
-│   │                          # Per-track input device/channel selection: tappable
-│   │                          # channel badge, hit zones sidebar-input-channel.
-│   │                          # Input device overlay: centered dialog with device list,
-│   │                          # opened via topbar Input button, dismisses on selection/
-│   │                          # click outside/Escape. drawInputOverlay() + getOverlayLayout().
-│   ├── audio-bridge.ts       # Typed wrapper (~540 lines) around WASM tuidaw_* exports.
-│   │                          # Track ID mapping (string→numeric), WASM heap memory
-│   │                          # management for sample buffers, transport/click/loop/speed.
-│   │                          # Multi-channel recording: shared DeviceCapture per device
-│   │                          # (getUserMedia + ChannelSplitterNode, ref-counted),
-│   │                          # per-track ScriptProcessorNode with channel routing.
-│   │                          # InputDeviceInfo interface, enumerateInputDevices(),
-│   │                          # onDeviceChange listener, requestMicAccess().
-│   ├── tsconfig.json         # Extends root, adds DOM/DOM.Iterable libs. Includes only
-│   │                          # app.ts, audio-bridge.ts, and src/**/* (browser files).
-│   ├── src/                   # Vue 3.6 Vapor Mode app (feature/vue-migration branch)
-│   │   ├── main.ts           #   Vue app entry point (7 lines)
-│   │   ├── main.css          #   Tailwind entry + @theme OLED colors + layout CSS vars
-│   │   ├── App.vue           #   Root layout: TopBar + SideBar + WaveformCanvas + StatusBar + InputOverlay
-│   │   ├── composables/
-│   │   │   ├── useAppState.ts #   Reactive singleton, C color palette, layout constants,
-│   │   │   │                  #   helpers (formatPan, formatTime, genId, createTrack),
-│   │   │   │                  #   track scroll (clampTrackScroll, ensureTrackVisible). ~230 lines.
-│   │   │   ├── useAudio.ts   #   WASM bridge wrapper, lazy init, click buffer. ~89 lines.
-│   │   │   ├── useTransport.ts #   Transport controls, playhead polling, auto-scroll, nudge,
-│   │   │   │                  #   seek, loop toggle, punch in/out, recording. ~412 lines.
-│   │   │   ├── useProject.ts #   Save/open/import with tar/gzip (browser-native). ~477 lines.
-│   │   │   └── useKeyboard.ts #   Global keyboard shortcuts (Space/p/m/s/r/c/+/-/arrows/
-│   │   │                      #   hjkl/[]/Home/End/a/d/</>/{}./i). ~280 lines.
-│   │   └── components/
-│   │       ├── Btn.vue       #   Generic button with variant/outline props
-│   │       ├── MiniSlider.vue #   Native range slider with accent-color
-│   │       ├── TopBar.vue    #   Transport, BPM, file ops, input device button
-│   │       ├── StatusBar.vue #   Shortcuts + status messages
-│   │       ├── ClickTrackRow.vue # Click track row with vol/pan sliders
-│   │       ├── TrackRow.vue  #   Track row with MSR buttons, name, vol/pan sliders
-│   │       ├── SideBar.vue   #   ClickTrackRow + scrollable TrackRow list
-│   │       ├── InputOverlay.vue # Modal input device picker
-│   │       └── WaveformCanvas.vue # Canvas for timeline + waveform + playhead + loop +
-│   │                          #   nudge buttons + pointer/wheel/touch handlers. ~650 lines.
-│   ├── wasm/                 # WASM build output (gitignored):
-│   │   ├── tuidaw_audio.js   #   Emscripten JS glue (~43KB)
-│   │   └── tuidaw_audio.wasm #   Compiled WASM module (~108KB)
-│   └── dist/                 # Bun.build output (gitignored):
-│       └── app.js            #   Bundled browser JS (created at server start)
-├── recordings/               # Auto-created directory for saved WAV files
-├── tests/
-│   ├── click-precision.test.ts # 8 tests for click timing precision (all pass)
-│   ├── loop-wsola.test.ts    # 6 tests for loop+WSOLA behavior (all pass)
-│   ├── loop-playhead.test.ts # 6 tests for loop+playhead interaction (all pass)
-│   └── playhead-sync.test.ts # 6 tests for playhead content-space sync (all pass)
-└── node_modules/
-    └── @opentui/core/        # OpenTUI framework (v0.1.88)
+│   ├── server.ts         # Bun HTTP server (~115 lines, COOP/COEP headers)
+│   ├── index.html        # HTML shell + debug overlay + SW registration
+│   ├── vite.config.ts    # Vite config (Vue, Tailwind, COOP/COEP, vapor runtime alias)
+│   ├── tsconfig.json     # Vue-specific (DOM libs, paths)
+│   ├── env.d.ts          # Vite + Vue SFC type shims
+│   ├── app.ts            # Legacy canvas app (~2960 lines, reference only)
+│   ├── audio-bridge.ts   # WASM wrapper (~540 lines): track ID mapping, recording
+│   ├── src/
+│   │   ├── main.ts, main.css, App.vue
+│   │   ├── composables/  # useAppState, useAudio, useTransport, useProject, useKeyboard, useIcons
+│   │   └── components/   # TopBar, SideBar, TrackRow, ClickTrackRow, WaveformCanvas,
+│   │                     # Btn, MiniSlider, StatusBar, InputOverlay, Icon
+│   └── public/           # Static: _headers, sw.js, manifest.json, icons, fonts/, wasm/
+├── tests/                # click-precision, loop-wsola, loop-playhead, playhead-sync (26 tests)
+└── recordings/           # Auto-created for saved WAVs
 ```
 
-## Key architecture patterns
+## Architecture Patterns
 
-### Native audio engine (miniaudio)
+### Native engine: C → miniaudio → flat API → FFI/WASM
+Audio callback on separate thread: mixing + pan + volume + click + loop + WSOLA. All params atomic.
 
-The C library (`native/tuidaw_audio.c`) wraps miniaudio and exports a flat C API. The audio callback runs on a separate thread and handles:
+### FFI bridge (`audio-engine.ts`)
+String↔int track ID mapping. Pinned Float32Array refs (prevent GC while native holds pointers). Poll-based recording.
 
-- Multi-track mixing with per-track volume and pan (equal-power panning)
-- Metronome click generation (long pre-rendered buffer with GCD-exact beat positions, bounds-check read — zero floating-point BPM math)
-- Loop region handling (sample-accurate boundary detection)
-- Playhead tracking (atomic counter incremented per frame)
+### Recording
+TUI: native capture devices with ring buffers, polled every ~33ms. Web: getUserMedia + ScriptProcessorNode per armed track, shared DeviceCapture per device (ref-counted). Punch-in/out during transport.
 
-All parameter changes (volume, pan, mute, solo, BPM) are instant atomic updates — no WAV rewriting or process restarting needed.
-
-### TypeScript FFI bridge
-
-`AudioEngine` class in `audio-engine.ts` uses `bun:ffi` `dlopen` to call the native library. It maintains:
-
-- Track ID mapping (string IDs ↔ native integer IDs)
-- Pinned buffer references (preventing GC of Float32Arrays while native code holds pointers)
-- Recording state tracking (which tracks are recording, start positions)
-
-### Recording via polling
-
-During recording, the native engine captures audio into ring buffers. TypeScript polls these buffers every ~33ms via `pollRecordingData()`, which returns only new samples since the last poll. These are merged into the track's `samples` Float32Array at the correct offset.
-
-### Live playback refresh
-
-When mute/solo changes during transport, `refreshLivePlayback()` syncs all tracks' mute/solo state to the native engine via `setTrackMuted()` / `setTrackSolo()`. The native mixer handles the rest sample-accurately.
-
-### Punch-in/out
-
-`punchInTrack(track, position)` starts a native capture device mid-transport. `punchOutTrack(track)` stops recording, retrieves the full buffer, merges audio, and saves to file.
-
-### UI rendering model
-
-`UIRenderer.render(state)` redraws all four frame buffers (topbar, sidebar, main, statusbar) every frame. Overlays (help, device selector, file picker) are drawn on top of the main area FB. After rendering, `renderer.requestRender()` is called to flush changes to terminal.
-
-### Mouse handler architecture
-
-`UIRenderer.setupMouseHandlers(callbacks)` is called once after `setup()`, attaching `onMouseScroll` handlers to `mainFB` and `sidebarFB`. The handlers compute which track/zone the cursor is over and invoke the appropriate callback. The callbacks live in `tui.ts` and have access to `state` and `render()`.
+### UI rendering
+TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouseHandlers(callbacks)` for zone-based mouse handling. Web: Vue composables + Canvas for waveforms.
 
 ### Playhead visibility
+`ensurePlayheadVisible()` recenters on manual moves. `autoScroll()` at 80% threshold during playback. Free-scroll mode on manual scroll — re-engages when playhead enters visible area.
 
-`ensurePlayheadVisible()` recenters the scroll offset when the playhead moves outside the visible area (centers playhead in view). Called after all manual playhead movements ([], End, mouse click). During live playback, `autoScroll()` handles forward-scrolling when playhead nears the right edge (80% threshold).
-
-### WAV import pipeline
-
-1. Parse WAV file (scan RIFF chunks for `fmt` + `data`)
-2. Decode samples (16-bit PCM, 24-bit PCM, or 32-bit float)
-3. Downmix stereo to mono (if needed)
-4. Resample to 48kHz (if source rate differs, using linear interpolation)
-5. Detect BPM (two-pass: onset autocorrelation + sample-level refinement)
-6. Set project BPM if project is empty
-
-## Sidebar layout per track row (TRACK_ROW_HEIGHT=4)
+## TUI Sidebar Layout (TRACK_ROW_HEIGHT=4)
 
 ```
-y+0: [sel] [dot] [name............] [input]
-y+1: [sel]  M  S  R
-y+2: [sel]  V:80%  Pan:C
-y+3: [sel] [level meter / input device / "(empty)"]
-(separator drawn between tracks, SEPARATOR_HEIGHT rows of ─)
+y+0: [▌] [●] [name............] [input]
+y+1: [▌]  M  S  R
+y+2: [▌]  V:80%  Pan:C
+y+3: [▌] [level meter / input device / "(empty)"]
+─── separator (SEPARATOR_HEIGHT=1) ───
 ```
 
-- Selection indicator `▌` at x=0 for rows 0-3 when selected
-- Color dot `●` at x=1, row 0
-- Track name starts at x=3, row 0
-- M/S/R buttons at x=1/4/7, row 1
-- Volume `V:xx%` at x=1, row 2
-- Pan `Pan:C`/`Pan:L##`/`Pan:R##` at x=9, row 2
-- Level meter or input device label or "(empty)" at x=1, row 3
-- Separator drawn AFTER content (SEPARATOR_HEIGHT rows), not part of TRACK_ROW_HEIGHT
+Click track (CLICK_ROW_HEIGHT=1, always at top): `[▌] ♩ V:xx%  Pan:C`
 
-## Sidebar click track row (CLICK_ROW_HEIGHT=1, always shown at top)
-
-```
-y+0: [sel] ♩ V:xx%  Pan:C
-(separator drawn between click and first track, SEPARATOR_HEIGHT rows of ─)
-```
-
-- Always visible regardless of clickEnabled
-- Selection indicator `▌` at x=0 when `selectedTrackIndex === CLICK_TRACK_INDEX (-1)`
-- ♩ icon at x=1, volume at x=3, pan at x=9
-- CLICK_COLOR when enabled, FG_DIM when disabled
-- Separator drawn AFTER content (SEPARATOR_HEIGHT rows), not part of CLICK_ROW_HEIGHT
-
-Mouse zones for sidebar scroll:
-
-- Click row (y < CLICK_ROW_HEIGHT, always): x<9 = click volume, x≥9 = click pan
-- Row 2, x >= 9 = pan control
-- Everything else = volume control
-
-## TODO:
+## TODO
 
 (none)
