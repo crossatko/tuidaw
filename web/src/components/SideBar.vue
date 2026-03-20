@@ -1,10 +1,38 @@
 <script setup vapor lang="ts">
+import { ref, watch } from 'vue'
 import ClickTrackRow from './ClickTrackRow.vue'
 import TrackRow from './TrackRow.vue'
 import { useAppState, showStatus } from '../composables/useAppState'
 import { getAudio } from '../composables/useAudio'
 
 const state = useAppState()
+const trackListRef = ref<HTMLElement | null>(null)
+
+// Guard to prevent circular scroll updates
+let scrollSyncFromCode = false
+
+// Sidebar native scroll → state.trackScrollY (drives canvas waveform offset)
+function onTrackListScroll(e: Event) {
+  if (scrollSyncFromCode) return
+  const el = e.target as HTMLElement
+  state.trackScrollY = el.scrollTop
+}
+
+// state.trackScrollY → sidebar native scroll (keyboard nav, ensureTrackVisible)
+watch(
+  () => state.trackScrollY,
+  (val) => {
+    const el = trackListRef.value
+    if (!el) return
+    if (Math.abs(el.scrollTop - val) < 1) return
+    scrollSyncFromCode = true
+    el.scrollTo({ top: val })
+    // Reset guard after browser processes the scroll
+    requestAnimationFrame(() => {
+      scrollSyncFromCode = false
+    })
+  }
+)
 
 function selectTrack(index: number) {
   state.selectedTrackIndex = index
@@ -53,7 +81,11 @@ function deleteTrack(index: number) {
     <ClickTrackRow />
 
     <!-- Scrollable track list -->
-    <div class="flex-1 overflow-y-auto [scrollbar-width:thin]">
+    <div
+      ref="trackListRef"
+      class="flex-1 overflow-y-auto [scrollbar-width:thin]"
+      @scroll="onTrackListScroll"
+    >
       <TrackRow
         v-for="(track, i) in state.tracks"
         :key="track.id"
