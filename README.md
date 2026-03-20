@@ -1,26 +1,52 @@
 # TUIDAW
 
-A full-featured TUI Digital Audio Workstation built with [OpenTUI](https://opentui.com) and [miniaudio](https://miniaud.io).
+A full-featured Digital Audio Workstation with a TUI and a Web UI, built with [OpenTUI](https://opentui.com), [Vue 3.6 Vapor](https://vuejs.org), and [miniaudio](https://miniaud.io).
 
-Practice guitar at half speed without pitch shift. Record multi-track audio. Export mixdowns. All from your terminal.
+Practice guitar at half speed without pitch shift. Record multi-track audio. Export mixdowns. From your terminal or browser.
+
+**Web UI: [webdaw.crossatko.dev](https://webdaw.crossatko.dev)**
 
 > **Note:** This project is vibecoded -- built entirely through AI-assisted development for personal use on Arch Linux. It works on my machine, but there are no guarantees of support for other platforms or distributions. Contributions and bug reports welcome.
 
 ## Features
 
-- **Braille waveform display** -- 2x4 dot grid rendering, real-time level meters
-- **Native audio engine** -- miniaudio C library via Bun FFI, zero-latency parameter changes
+- **Two UIs** -- terminal (TUI) and browser (Web), sharing the same audio engine
+- **Braille waveform display** -- 2x4 dot grid rendering in TUI, Canvas 2D in Web
+- **Native audio engine** -- miniaudio C library via Bun FFI (TUI) or WebAssembly (Web)
 - **WSOLA time-stretch** -- pitch-preserving speed control (0.25x - 2.0x)
 - **Multi-track recording** -- simultaneous capture with per-track input device selection
 - **Metronome click** -- sample-accurate, configurable volume and pan
 - **Loop regions** -- sample-accurate looping
 - **Beat-based timeline** -- navigate by beats/bars, auto BPM detection on import
 - **WAV import** -- 16/24/32-bit, stereo downmix, automatic 48kHz resampling
-- **Project save/open** -- `.tuidaw` project files
-- **Export mixdown** -- WAV export with WSOLA stretch, click track, per-track volume/pan
-- **Mouse controls** -- scroll, volume, pan via mouse wheel
+- **Project save/open** -- `.tuidaw` project files (interoperable between TUI and Web)
+- **Export mixdown** -- WAV export via ffmpeg (TUI) or offline WASM render (Web)
+- **Mouse & touch controls** -- scroll, volume, pan via mouse wheel or touch
 
-## Requirements
+## Web UI
+
+The Web UI runs entirely in the browser -- no server-side audio processing. The same C audio engine is compiled to WebAssembly via Emscripten, and miniaudio uses the Web Audio backend automatically.
+
+**Try it at [webdaw.crossatko.dev](https://webdaw.crossatko.dev)**
+
+- Works on desktop and mobile browsers (Chrome, Firefox, Safari)
+- Uses your device's microphone for recording (permission requested on first use)
+- Projects saved in the browser are fully compatible with the TUI and vice versa
+- PWA installable -- works offline after first load
+
+### Self-hosting the Web UI
+
+```bash
+# Development (Vite dev server on port 3666)
+bun run dev
+
+# Production build
+bun run build:web
+# Serve web/dist/ with any static file server
+# COOP/COEP headers required for SharedArrayBuffer (see web/public/_headers)
+```
+
+## TUI Requirements
 
 - [Bun](https://bun.sh) (JavaScript runtime)
 - Linux (x86_64 or aarch64) or macOS (x86_64 or aarch64)
@@ -86,7 +112,7 @@ cd native && ./build.sh
 
 ## Keyboard Shortcuts
 
-Press **F1** in-app for the full reference. Key shortcuts:
+Press **F1** in the TUI for the full reference. Key shortcuts:
 
 | Key              | Action                                      |
 | ---------------- | ------------------------------------------- |
@@ -126,14 +152,24 @@ Press **F1** in-app for the full reference. Key shortcuts:
 
 ## Architecture
 
-- **`index.ts`** -- main entry, transport logic, keyboard/mouse handling
-- **`src/ui.ts`** -- OpenTUI rendering (top bar, sidebar, waveforms, overlays)
-- **`src/audio-engine.ts`** -- Bun FFI bridge to native library, WAV I/O, BPM detection, export
-- **`src/braille.ts`** -- braille waveform renderer
-- **`src/state.ts`** -- state management
-- **`src/types.ts`** -- type definitions and constants
-- **`native/tuidaw_audio.c`** -- C audio engine wrapping miniaudio (32 exported functions)
-- **`native/miniaudio.h`** -- [miniaudio](https://miniaud.io) single-header library (Public Domain / MIT-0)
+```
+├── index.ts              # Entry dispatcher: --host → Web UI, else → TUI
+├── tui.ts                # TUI mode (OpenTUI)
+├── src/
+│   ├── ui.ts             # OpenTUI rendering
+│   ├── audio-engine.ts   # Bun FFI bridge to native library
+│   ├── braille.ts        # Braille waveform renderer
+│   ├── state.ts          # State management
+│   ├── types.ts          # Type definitions and constants
+│   └── utils/            # Shared: BPM detection, WAV parsing, DSP
+├── web/
+│   ├── src/              # Vue 3.6 Vapor components + composables
+│   ├── audio-bridge.ts   # WASM audio engine wrapper
+│   └── public/           # Static assets, WASM, fonts, PWA
+└── native/
+    ├── tuidaw_audio.c    # C audio engine (miniaudio, 32 exports)
+    └── miniaudio.h       # miniaudio single-header library
+```
 
 ## License
 
