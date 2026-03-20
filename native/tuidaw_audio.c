@@ -1237,10 +1237,13 @@ EXPORT int tuidaw_start_monitoring(int id) {
     // JACK only supports default devices (no pDeviceID), so device selection
     // is skipped when using JACK. For PulseAudio fallback, set device IDs.
     ma_context* mon_ctx;
+    int used_jack = 0;
     if (g_engine.jack_available) {
         mon_ctx = &g_engine.jack_context;
         // JACK controls buffer size — periodSizeInFrames is ignored.
-        // PipeWire JACK typically uses quantum 64-256 (~1.3-5.3ms).
+        // PIPEWIRE_LATENCY hints PipeWire to lower the quantum for this
+        // client's driver group only, without affecting other apps globally.
+        setenv("PIPEWIRE_LATENCY", "256/48000", 1);
     } else {
         mon_ctx = &g_engine.context;
         config.periodSizeInFrames = 128;  // ~2.7ms (PulseAudio may override)
@@ -1262,6 +1265,7 @@ EXPORT int tuidaw_start_monitoring(int id) {
     if (ma_device_init(mon_ctx, &config, &tk->mon_device) != MA_SUCCESS) {
         // If JACK failed, try fallback to main context
         if (mon_ctx == &g_engine.jack_context) {
+            unsetenv("PIPEWIRE_LATENCY");
             mon_ctx = &g_engine.context;
             config.periodSizeInFrames = 128;
             config.periods = 2;
@@ -1279,6 +1283,9 @@ EXPORT int tuidaw_start_monitoring(int id) {
         } else {
             return -1;
         }
+    } else if (mon_ctx == &g_engine.jack_context) {
+        used_jack = 1;
+        unsetenv("PIPEWIRE_LATENCY");
     }
 
     if (ma_device_start(&tk->mon_device) != MA_SUCCESS) {
