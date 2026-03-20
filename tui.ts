@@ -919,6 +919,11 @@ export default async function main() {
             track.inputDeviceId = device ? device.id : null
             // Sync input device to native engine immediately so it's ready for recording
             audioEngine.syncTrack(track)
+            // Restart monitoring with the new input device if active
+            if (track.monitoring) {
+              audioEngine.stopMonitoring(track.id)
+              audioEngine.startMonitoring(track.id)
+            }
             const devName = device ? device.description : 'Default'
             ui.showStatusMessage(`Input: ${devName}`)
           }
@@ -944,6 +949,14 @@ export default async function main() {
           // Force-restart playback device with the new output immediately
           try {
             audioEngine.forceRestartOutputDevice(state.outputDeviceId)
+            // Restart monitoring on all tracks that have it active,
+            // since the duplex device targets a specific output device
+            for (const track of state.tracks) {
+              if (track.monitoring) {
+                audioEngine.stopMonitoring(track.id)
+                audioEngine.startMonitoring(track.id)
+              }
+            }
             const devName = device ? device.description : 'Default'
             ui.showStatusMessage(`Output: ${devName}`)
           } catch {
