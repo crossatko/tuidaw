@@ -6,6 +6,10 @@ Practice guitar at half speed without pitch shift. Record multi-track audio. Exp
 
 **Web UI: [webdaw.crossatko.dev](https://webdaw.crossatko.dev)**
 
+![TUI](web/public/tui.png)
+
+![Web UI](web/public/webui.png)
+
 > **Note:** This project is vibecoded -- built entirely through AI-assisted development for personal use on Arch Linux. It works on my machine, but there are no guarantees of support for other platforms or distributions. Contributions and bug reports welcome.
 
 ## Features
