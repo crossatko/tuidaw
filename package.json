@@ -6,7 +6,9 @@
   "scripts": {
     "start": "bun run index.ts",
     "check": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "install:all": "bash setup.sh && bash native/build-wasm.sh",
+    "build": "bun run check && bun test && bash native/build.sh && bash native/build-wasm.sh"
   },
   "devDependencies": {
     "@types/bun": "latest"
