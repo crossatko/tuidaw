@@ -1,1 +1,25 @@
 @import 'tailwindcss';
+
+@theme {
+  /* OLED color palette */
+  --color-surface: #000000;
+  --color-surface-highlight: #1a1a1a;
+  --color-border: #2a2a2a;
+  --color-fg: #e8e8e8;
+  --color-dim: #666666;
+  --color-accent-blue: #5b9cf5;
+  --color-accent-cyan: #56d4f0;
+  --color-accent-green: #6cc644;
+  --color-accent-magenta: #c678dd;
+  --color-accent-red: #f05060;
+  --color-accent-orange: #e89040;
+  --color-accent-yellow: #e0c050;
+  --color-accent-purple: #b080e0;
+
+  /* Layout */
+  --topbar-h: 56px;
+  --sidebar-w: 260px;
+  --statusbar-h: 36px;
+  --track-h: 120px;
+  --click-row-h: 48px;
+}
