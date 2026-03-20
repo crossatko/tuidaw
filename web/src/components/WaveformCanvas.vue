@@ -691,7 +691,9 @@ watch(
     state.loopEnd,
     state.bpm,
     state.originalBpm,
-    state.trackScrollY
+    state.trackScrollY,
+    state.playheadPosition,
+    state.scrollOffset
   ],
   () => scheduleRender()
 )

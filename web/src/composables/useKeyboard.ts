@@ -34,8 +34,12 @@ import { importWav } from './useProject'
 
 export function useKeyboard(): void {
   function onKeyDown(e: KeyboardEvent) {
-    // Skip when typing in an input
-    if ((e.target as HTMLElement).tagName === 'INPUT') return
+    // Skip when typing in a text input (but not range sliders or buttons)
+    const tag = (e.target as HTMLElement).tagName
+    if (tag === 'INPUT') {
+      const inputType = (e.target as HTMLInputElement).type
+      if (inputType !== 'range') return
+    }
 
     const state = useAppState()
 
