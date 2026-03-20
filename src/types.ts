@@ -101,16 +101,16 @@ export const BRAILLE_DOTS = [
 ]
 
 export const TRACK_COLORS = [
-  '#FF6B6B', // red
-  '#4ECDC4', // teal
-  '#45B7D1', // blue
-  '#96CEB4', // green
-  '#FFEAA7', // yellow
-  '#DDA0DD', // plum
-  '#98D8C8', // mint
-  '#F7DC6F', // gold
-  '#BB8FCE', // purple
-  '#85C1E9' // sky
+  '#89b4fa', // Blue
+  '#a6e3a1', // Green
+  '#f38ba8', // Red
+  '#fab387', // Peach
+  '#cba6f7', // Mauve
+  '#89dceb', // Sky
+  '#f9e2af', // Yellow
+  '#94e2d5', // Teal
+  '#f5c2e7', // Pink
+  '#b4befe' // Lavender
 ]
 
 export const SIDEBAR_WIDTH = 22

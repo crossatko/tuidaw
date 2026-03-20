@@ -32,24 +32,24 @@ import {
   getSelectedTrack
 } from './state'
 
-// Color constants
-const BG = RGBA.fromHex('#1a1b26')
-const BG_DARKER = RGBA.fromHex('#13141c')
-const BG_SIDEBAR = RGBA.fromHex('#1f2335')
-const BG_TOPBAR = RGBA.fromHex('#24283b')
-const BG_SELECTED = RGBA.fromHex('#292e42')
+// Color constants — Catppuccin Mocha + OLED Black (matches Web UI)
+const BG = RGBA.fromHex('#000000')
+const BG_DARKER = RGBA.fromHex('#000000')
+const BG_SIDEBAR = RGBA.fromHex('#000000')
+const BG_TOPBAR = RGBA.fromHex('#000000')
+const BG_SELECTED = RGBA.fromHex('#313244')
 const BG_ARMED = RGBA.fromHex('#3b2020')
-const FG_PRIMARY = RGBA.fromHex('#c0caf5')
-const FG_DIM = RGBA.fromHex('#565f89')
-const FG_ACCENT = RGBA.fromHex('#7aa2f7')
-const FG_GREEN = RGBA.fromHex('#9ece6a')
-const FG_RED = RGBA.fromHex('#f7768e')
-const FG_YELLOW = RGBA.fromHex('#e0af68')
-const FG_ORANGE = RGBA.fromHex('#ff9e64')
-const PLAYHEAD_COLOR = RGBA.fromHex('#ff9e64')
-const LOOP_COLOR = RGBA.fromHex('#bb9af7') // purple for loop region
-const CLICK_COLOR = RGBA.fromHex('#e0af68') // yellow for click track
-const GRID_COLOR = RGBA.fromHex('#292e42')
+const FG_PRIMARY = RGBA.fromHex('#cdd6f4')
+const FG_DIM = RGBA.fromHex('#a6adc8')
+const FG_ACCENT = RGBA.fromHex('#89b4fa')
+const FG_GREEN = RGBA.fromHex('#a6e3a1')
+const FG_RED = RGBA.fromHex('#f38ba8')
+const FG_YELLOW = RGBA.fromHex('#f9e2af')
+const FG_ORANGE = RGBA.fromHex('#fab387')
+const PLAYHEAD_COLOR = RGBA.fromHex('#a6e3a1')
+const LOOP_COLOR = RGBA.fromHex('#b4befe')
+const CLICK_COLOR = RGBA.fromHex('#89dceb')
+const GRID_COLOR = RGBA.fromHex('#45475a')
 const TRANSPARENT = RGBA.fromValues(0, 0, 0, 0)
 
 export class UIRenderer {
@@ -93,7 +93,7 @@ export class UIRenderer {
       width: '100%',
       height: '100%',
       flexDirection: 'column',
-      backgroundColor: '#1a1b26'
+      backgroundColor: '#000000'
     })
 
     // Top bar
@@ -429,8 +429,8 @@ export class UIRenderer {
         ' LOCK ',
         speedX,
         1,
-        RGBA.fromHex('#1a1b26'),
-        RGBA.fromHex('#E5C07B')
+        RGBA.fromHex('#000000'),
+        RGBA.fromHex('#f9e2af')
       )
     } else if (speed < 0.99 || speed > 1.01) {
       const pct = Math.round(speed * 100)
@@ -438,15 +438,15 @@ export class UIRenderer {
         ` ${pct}% `,
         speedX,
         1,
-        RGBA.fromHex('#1a1b26'),
-        RGBA.fromHex('#BB8FCE')
+        RGBA.fromHex('#000000'),
+        RGBA.fromHex('#cba6f7')
       )
     }
 
     // Click indicator
     const clickX = bpmX + 10
     if (state.clickEnabled) {
-      fb.drawText(' CLICK ', clickX, 1, RGBA.fromHex('#1a1b26'), FG_YELLOW)
+      fb.drawText(' CLICK ', clickX, 1, RGBA.fromHex('#000000'), FG_YELLOW)
     } else {
       fb.drawText(' click ', clickX, 1, FG_DIM, BG_TOPBAR)
     }
@@ -454,7 +454,7 @@ export class UIRenderer {
     // Loop indicator
     const loopX = clickX + 8
     if (state.loopStart !== null && state.loopEnd !== null) {
-      fb.drawText(' LOOP ', loopX, 1, RGBA.fromHex('#1a1b26'), LOOP_COLOR)
+      fb.drawText(' LOOP ', loopX, 1, RGBA.fromHex('#000000'), LOOP_COLOR)
     } else if (state.loopStart !== null) {
       fb.drawText(' loop… ', loopX, 1, LOOP_COLOR, BG_TOPBAR)
     } else {
@@ -665,7 +665,7 @@ export class UIRenderer {
                 x,
                 y + TRACK_ROW_HEIGHT + sepRow,
                 '─',
-                RGBA.fromHex('#292e42'),
+                RGBA.fromHex('#313244'),
                 BG_SIDEBAR
               )
             }
@@ -827,7 +827,7 @@ export class UIRenderer {
       )
       const colStart = Math.max(0, loopStartCol)
       const colEnd = Math.min(width, loopEndCol + 1)
-      const loopTimelineBg = RGBA.fromHex('#2d2050')
+      const loopTimelineBg = RGBA.fromHex('#2a1f3d')
       if (colStart < colEnd) {
         fb.fillRect(colStart, 0, colEnd - colStart, 1, loopTimelineBg)
       }
@@ -844,7 +844,7 @@ export class UIRenderer {
         state.loopEnd !== null &&
         samplePos >= state.loopStart &&
         samplePos < state.loopEnd
-      const cellBg = inLoop ? RGBA.fromHex('#2d2050') : timelineBg
+      const cellBg = inLoop ? RGBA.fromHex('#2a1f3d') : timelineBg
 
       // Mark bar boundaries
       if (beatNum % 4 === 0 && sampleInBeat < samplesPerCol) {
@@ -992,7 +992,7 @@ export class UIRenderer {
     const boxH = 26
     const boxX = Math.floor((w - boxW) / 2)
     const boxY = Math.floor((h - boxH) / 2)
-    const bgHelp = RGBA.fromHex('#24283b')
+    const bgHelp = RGBA.fromHex('#181825')
 
     fb.fillRect(boxX, boxY, boxW, boxH, bgHelp)
 
@@ -1148,8 +1148,8 @@ export class UIRenderer {
     const boxH = Math.min(listCount + 4, h - 2) // title + border + items
     const boxX = Math.floor((w - boxW) / 2)
     const boxY = Math.floor((h - boxH) / 2)
-    const bgOverlay = RGBA.fromHex('#1f2335')
-    const bgSelected = RGBA.fromHex('#364a82')
+    const bgOverlay = RGBA.fromHex('#181825')
+    const bgSelected = RGBA.fromHex('#45475a')
 
     fb.fillRect(boxX, boxY, boxW, boxH, bgOverlay)
 
@@ -1312,8 +1312,8 @@ export class UIRenderer {
     const boxH = Math.min(files.length + 4, h - 2)
     const boxX = Math.floor((w - boxW) / 2)
     const boxY = Math.floor((h - boxH) / 2)
-    const bgOverlay = RGBA.fromHex('#1f2335')
-    const bgSelected = RGBA.fromHex('#364a82')
+    const bgOverlay = RGBA.fromHex('#181825')
+    const bgSelected = RGBA.fromHex('#45475a')
 
     fb.fillRect(boxX, boxY, boxW, boxH, bgOverlay)
 
