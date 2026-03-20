@@ -13,202 +13,38 @@
     <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon-192.svg" />
     <title>tuidaw</title>
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      body {
-        background: #000;
-        overflow: hidden;
-        height: 100vh;
-        width: 100vw;
-        font-family: monospace;
-      }
-      /* ── Topbar ─────────────────────────────────────────────────────── */
-      #topbar {
-        height: 56px;
-        background: #000;
-        border-bottom: 1px solid #2a2a2a;
-        display: flex;
-        align-items: center;
-        padding: 0 12px;
-        gap: 8px;
-        overflow: hidden;
-        touch-action: none;
-      }
-      #topbar .spacer {
-        flex: 1;
-        min-width: 4px;
-      }
-      #topbar .sep {
-        width: 8px;
-      }
-      #topbar button {
-        font-family: monospace;
-        font-weight: bold;
-        font-size: 12px;
-        border: 1px solid #2a2a2a;
-        border-radius: 4px;
-        background: #1a1a1a;
-        color: #666;
-        height: 36px;
-        padding: 0 12px;
-        cursor: pointer;
-        white-space: nowrap;
-        touch-action: manipulation;
-        -webkit-tap-highlight-color: transparent;
-        flex-shrink: 0;
-      }
-      #topbar button:active {
-        opacity: 0.7;
-      }
-      #topbar button.active-green {
-        background: #6cc644;
-        color: #000;
-        border-color: #6cc644;
-      }
-      #topbar button.active-red {
-        background: #f05060;
-        color: #000;
-        border-color: #f05060;
-      }
-      #topbar button.active-purple {
-        background: #b080e0;
-        color: #000;
-        border-color: #b080e0;
-      }
-      #topbar button.active-cyan {
-        background: #56d4f0;
-        color: #000;
-        border-color: #56d4f0;
-      }
-      #topbar button.active-input {
-        background: #e89040;
-        color: #000;
-        border-color: #e89040;
-      }
-      #topbar button.setting-loop {
-        border-color: #b080e0;
-        color: #b080e0;
-      }
-      #topbar #btn-bpm-minus,
-      #topbar #btn-bpm-plus {
-        width: 36px;
-        padding: 0;
-        font-size: 16px;
-        color: #e8e8e8;
-      }
-      #topbar #bpm-display {
-        color: #56d4f0;
-        font-size: 14px;
-        font-weight: bold;
-        padding: 0 4px;
-        white-space: nowrap;
-        flex-shrink: 0;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-      }
-      #topbar #speed-display {
-        color: #e89040;
-        font-size: 12px;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      #topbar #time-display {
-        color: #666;
-        font-size: 13px;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      #topbar #status-msg {
-        color: #e0c050;
-        font-size: 12px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: right;
-        flex-shrink: 1;
-        min-width: 0;
-      }
-      /* ── Canvas ─────────────────────────────────────────────────────── */
-      canvas {
-        display: block;
-        /* Prevent flex min-width: auto from forcing canvas to display
-         at its buffer size (W*dpr) instead of the CSS/inline width */
-        min-width: 0;
-        min-height: 0;
-        /* width/height set programmatically in resize() */
-      }
-      /* ── Error log ──────────────────────────────────────────────────── */
-      #error-log {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.95);
-        color: #f05060;
-        font: 13px/1.5 monospace;
-        padding: 16px;
-        overflow-y: auto;
-        z-index: 9999;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      #error-log .title {
-        color: #e8e8e8;
-        font-size: 16px;
-        font-weight: bold;
-        margin-bottom: 12px;
-      }
-      #error-log .entry {
-        margin-bottom: 8px;
-        padding: 6px 8px;
-        background: #1a1a1a;
-        border-left: 3px solid #f05060;
-      }
-      #error-log .info {
-        color: #56d4f0;
-        border-left-color: #56d4f0;
-      }
-    </style>
   </head>
-  <body>
-    <div id="topbar">
-      <button id="btn-play">&#9654; Play</button>
-      <button id="btn-loop">Loop</button>
-      <button id="btn-click">Click</button>
-      <div class="sep"></div>
-      <button id="btn-bpm-minus">-</button>
-      <span id="bpm-display">120 BPM</span>
-      <button id="btn-bpm-plus">+</button>
-      <span id="speed-display"></span>
-      <span id="time-display">0:00.0</span>
-      <div class="spacer"></div>
-      <span id="status-msg"></span>
-      <button id="btn-save">Save</button>
-      <button id="btn-open">Open</button>
-      <button id="btn-import">Import</button>
-      <button id="btn-export">Export</button>
-      <button id="btn-input">&#127908; Input</button>
-      <button id="btn-add-track">+Track</button>
+  <body class="h-dvh w-dvw overflow-hidden bg-black font-mono">
+    <div id="app"></div>
+    <div id="error-log">
+      <div class="title">tuidaw debug log</div>
     </div>
-    <canvas id="app"></canvas>
-    <div id="error-log"><div class="title">tuidaw debug log</div></div>
     <script>
       // Global error capture — shows errors on screen when no devtools available
       ;(function () {
         var log = document.getElementById('error-log')
+        var style = log.style
+        style.display = 'none'
+        style.position = 'fixed'
+        style.inset = '0'
+        style.background = 'rgba(0,0,0,0.95)'
+        style.color = '#f05060'
+        style.font = '13px/1.5 monospace'
+        style.padding = '16px'
+        style.overflowY = 'auto'
+        style.zIndex = '9999'
+        style.whiteSpace = 'pre-wrap'
+        style.wordBreak = 'break-all'
         var hasErrors = false
         var hidden = false
         function addEntry(msg, isInfo) {
           if (!isInfo) hasErrors = true
-          if (!hidden || !isInfo) log.style.display = 'block'
+          if (!hidden || !isInfo) style.display = 'block'
           var div = document.createElement('div')
-          div.className = 'entry' + (isInfo ? ' info' : '')
+          div.style.cssText =
+            'margin-bottom:8px;padding:6px 8px;background:#1a1a1a;border-left:3px solid ' +
+            (isInfo ? '#56d4f0' : '#f05060')
+          if (isInfo) div.style.color = '#56d4f0'
           div.textContent = new Date().toLocaleTimeString() + ' ' + msg
           log.appendChild(div)
         }
@@ -220,7 +56,7 @@
         }
         window._debugHide = function () {
           hidden = true
-          if (!hasErrors) log.style.display = 'none'
+          if (!hasErrors) style.display = 'none'
         }
         window.addEventListener('error', function (e) {
           addEntry(
@@ -242,9 +78,8 @@
         })
       })()
     </script>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/src/main.ts"></script>
     <script>
-      // Register service worker for offline PWA support
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(function (e) {
           console.warn('SW registration failed:', e)

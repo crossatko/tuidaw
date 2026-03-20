@@ -33,6 +33,7 @@
     "analyze-live-click.ts",
     "native/emsdk/**",
     "web/app.ts",
-    "web/audio-bridge.ts"
+    "web/audio-bridge.ts",
+    "web/src/**"
   ]
 }
