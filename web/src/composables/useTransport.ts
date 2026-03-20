@@ -24,7 +24,7 @@ export function setRenderCallback(fn: () => void): void {
   _renderFn = fn
 }
 
-function requestRender(): void {
+export function requestRender(): void {
   _renderFn?.()
 }
 

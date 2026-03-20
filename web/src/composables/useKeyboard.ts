@@ -28,7 +28,8 @@ import {
   seekByBars,
   ensurePlayheadVisible,
   syncLoopAfterSeek,
-  nudgeTrack
+  nudgeTrack,
+  requestRender
 } from './useTransport'
 import { importWav, exportMixdown } from './useProject'
 
@@ -83,6 +84,7 @@ export function useKeyboard(): void {
           if (track) {
             track.muted = !track.muted
             if (audio.isReady) audio.setTrackMuted(track.id, track.muted)
+            requestRender()
           }
         }
         break
@@ -92,6 +94,7 @@ export function useKeyboard(): void {
         if (track) {
           track.solo = !track.solo
           if (audio.isReady) audio.setTrackSolo(track.id, track.solo)
+          requestRender()
         }
         break
       }
@@ -272,6 +275,7 @@ export function useKeyboard(): void {
             if (track.samples && track.samples.length > 0) {
               track.samples = null
               if (audio.isReady) audio.setTrackSamples(track.id, null)
+              requestRender()
               showStatus(`Cleared "${track.name}"`)
             } else if (state.tracks.length > 1) {
               if (audio.isReady) audio.removeTrack(track.id)

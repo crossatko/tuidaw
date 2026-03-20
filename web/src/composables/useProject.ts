@@ -17,6 +17,7 @@ import {
   TRACK_COLORS
 } from './useAppState'
 import { getAudio, getClickDuration } from './useAudio'
+import { requestRender } from './useTransport'
 
 // ── Tar utilities (pure JS, browser-compatible, USTAR format) ───────────
 
@@ -249,6 +250,7 @@ export function importWav(): void {
         track.sampleRate = SAMPLE_RATE
         track.name = file.name.replace(/\.wav$/i, '')
         if (audio.isReady) audio.setTrackSamples(track.id, samples)
+        requestRender()
         const bpmInfo = detectedBPM ? ` | ${detectedBPM} BPM` : ''
         showStatus(
           `Imported: ${file.name} (${(samples.length / SAMPLE_RATE).toFixed(1)}s${bpmInfo})`
