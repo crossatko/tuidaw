@@ -10,10 +10,8 @@ let _audio: WebAudioBridge | null = null
 let _initStarted = false
 let _initPromise: Promise<void> | null = null
 
-// On-screen debug helpers (defined in index.html)
-declare function _debugLog(msg: string): void
+// On-screen debug helper (defined in index.html) — only used for errors
 declare function _debugError(msg: string): void
-declare function _debugHide(): void
 
 export function getAudio(): WebAudioBridge {
   if (!_audio) _audio = new WebAudioBridge()
@@ -33,9 +31,9 @@ export async function ensureAudioReady(): Promise<boolean> {
   _initStarted = true
   _initPromise = (async () => {
     try {
-      _debugLog('Initializing WASM audio engine...')
+      console.log('[tuidaw] Initializing WASM audio engine...')
       await audio.init()
-      _debugLog('Audio engine ready')
+      console.log('[tuidaw] Audio engine ready')
 
       // Sync existing tracks to WASM
       for (const track of state.tracks) {
@@ -48,8 +46,6 @@ export async function ensureAudioReady(): Promise<boolean> {
       audio.onDeviceChange(() => {
         state.inputDevices = audio.inputDevices
       })
-
-      _debugHide()
     } catch (err) {
       _debugError(`Audio init failed: ${err}`)
       showStatus('Audio init failed — check console')
