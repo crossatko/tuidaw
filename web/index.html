@@ -49,9 +49,11 @@
           log.appendChild(div)
         }
         window._debugLog = function (msg) {
+          console.log('[tuidaw]', msg)
           addEntry(msg, true)
         }
         window._debugError = function (msg) {
+          console.error('[tuidaw]', msg)
           addEntry(msg, false)
         }
         window._debugHide = function () {
@@ -59,22 +61,22 @@
           if (!hasErrors) style.display = 'none'
         }
         window.addEventListener('error', function (e) {
-          addEntry(
+          var msg =
             'Uncaught: ' +
-              e.message +
-              '\n  at ' +
-              (e.filename || '?') +
-              ':' +
-              (e.lineno || '?'),
-            false
-          )
+            e.message +
+            '\n  at ' +
+            (e.filename || '?') +
+            ':' +
+            (e.lineno || '?')
+          console.error('[tuidaw]', msg)
+          addEntry(msg, false)
         })
         window.addEventListener('unhandledrejection', function (e) {
-          addEntry(
+          var msg =
             'Unhandled rejection: ' +
-              ((e.reason && e.reason.stack) || e.reason || 'unknown'),
-            false
-          )
+            ((e.reason && e.reason.stack) || e.reason || 'unknown')
+          console.error('[tuidaw]', msg)
+          addEntry(msg, false)
         })
       })()
     </script>

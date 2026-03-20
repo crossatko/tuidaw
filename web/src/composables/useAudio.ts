@@ -42,9 +42,9 @@ export async function ensureAudioReady(): Promise<boolean> {
         audio.syncTrack(track)
       }
 
-      // Request mic access to prime permission + enumerate devices
-      await audio.requestMicAccess()
-      state.inputDevices = audio.inputDevices
+      // Set up device change listener (enumerate without mic permission —
+      // labels may be limited, but the list updates when permission is later
+      // granted via the input overlay or recording)
       audio.onDeviceChange(() => {
         state.inputDevices = audio.inputDevices
       })
