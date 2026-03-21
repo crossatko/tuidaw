@@ -90,6 +90,10 @@ const lib = dlopen(findLibrary(), {
     returns: FFIType.void,
     args: [FFIType.i32, FFIType.i32]
   },
+  tuidaw_set_track_input_channel: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.i32]
+  },
   tuidaw_play: { returns: FFIType.void, args: [FFIType.i64] },
   tuidaw_stop: { returns: FFIType.void },
   tuidaw_get_playhead: { returns: FFIType.i64 },
@@ -120,6 +124,18 @@ const lib = dlopen(findLibrary(), {
   tuidaw_get_backend_name: {
     returns: FFIType.i32,
     args: [FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_get_device_id: {
+    returns: FFIType.i32,
+    args: [FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_get_device_channels: {
+    returns: FFIType.i32,
+    args: [FFIType.i32, FFIType.i32]
+  },
+  tuidaw_find_device_by_id: {
+    returns: FFIType.i32,
+    args: [FFIType.i32, FFIType.ptr]
   }
 })
 
@@ -259,12 +275,28 @@ export class AudioEngine {
       return new TextDecoder().decode(buf.subarray(0, buf.indexOf(0)))
     }
 
+    const readStableId = (type: number, index: number): string => {
+      const buf = new Uint8Array(256)
+      lib.symbols.tuidaw_get_device_id(type, index, ptr(buf), 256)
+      return new TextDecoder().decode(buf.subarray(0, buf.indexOf(0)))
+    }
+
     // Enumerate capture (input) devices
     const inputCount = lib.symbols.tuidaw_get_device_count(1)
     for (let i = 0; i < inputCount; i++) {
       const name = readName(1, i)
       const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
-      inputs.push({ id: i, name, description: name, type: 'input', isDefault })
+      const stableId = readStableId(1, i)
+      const channels = lib.symbols.tuidaw_get_device_channels(1, i)
+      inputs.push({
+        id: i,
+        name,
+        description: name,
+        type: 'input',
+        isDefault,
+        stableId,
+        channels
+      })
     }
 
     // Enumerate playback (output) devices
@@ -272,12 +304,16 @@ export class AudioEngine {
     for (let i = 0; i < outputCount; i++) {
       const name = readName(0, i)
       const isDefault = lib.symbols.tuidaw_is_device_default(0, i) !== 0
+      const stableId = readStableId(0, i)
+      const channels = lib.symbols.tuidaw_get_device_channels(0, i)
       outputs.push({
         id: i,
         name,
         description: name,
         type: 'output',
-        isDefault
+        isDefault,
+        stableId,
+        channels
       })
     }
 
@@ -334,6 +370,9 @@ export class AudioEngine {
     // Sync input device
     const inputIdx = track.inputDeviceId ?? -1
     lib.symbols.tuidaw_set_track_input_device(nid, inputIdx)
+
+    // Sync input channel selection
+    lib.symbols.tuidaw_set_track_input_channel(nid, track.inputChannel)
 
     // Sync sample buffer
     if (track.samples && track.samples.length > 0) {
@@ -524,6 +563,33 @@ export class AudioEngine {
     return new TextDecoder().decode(
       buf.subarray(0, nullIdx > 0 ? nullIdx : 256)
     )
+  }
+
+  // ── Stable Device ID Helpers ──────────────────────────────────────────
+
+  // Resolve an ephemeral device index to its stable PulseAudio ID string.
+  // Used when saving projects so devices can be found after reboot/hotplug.
+  resolveStableId(
+    type: 'input' | 'output',
+    deviceIndex: number | null,
+    availableDevices: AudioDevice[]
+  ): string | null {
+    if (deviceIndex == null) return null
+    const dev = availableDevices.find((d) => d.id === deviceIndex)
+    return dev?.stableId ?? null
+  }
+
+  // Find a device's current ephemeral index by its stable PulseAudio ID.
+  // Used when loading projects to resolve saved stable IDs to current indices.
+  findDeviceIndexByStableId(
+    type: 'input' | 'output',
+    stableId: string | null
+  ): number | null {
+    if (!stableId) return null
+    const nativeType = type === 'output' ? 0 : 1
+    const buf = new TextEncoder().encode(stableId + '\0')
+    const idx = lib.symbols.tuidaw_find_device_by_id(nativeType, ptr(buf))
+    return idx >= 0 ? idx : null
   }
 
   // ── Transport ──────────────────────────────────────────────────────────
@@ -1013,7 +1079,8 @@ export class AudioEngine {
           samples: clickSamples,
           sampleRate: state.sampleRate,
           filePath: null,
-          inputDeviceId: null
+          inputDeviceId: null,
+          inputChannel: -1
         },
         tempPath: clickTempPath
       })
@@ -1113,6 +1180,12 @@ export class AudioEngine {
           pan: track.pan,
           sampleRate: track.sampleRate,
           inputDeviceId: track.inputDeviceId,
+          inputDeviceStableId: this.resolveStableId(
+            'input',
+            track.inputDeviceId,
+            state.availableInputDevices
+          ),
+          inputChannel: track.inputChannel,
           wavFile
         })
       }
@@ -1131,6 +1204,11 @@ export class AudioEngine {
         loopStart: state.loopStart,
         loopEnd: state.loopEnd,
         outputDeviceId: state.outputDeviceId,
+        outputDeviceStableId: this.resolveStableId(
+          'output',
+          state.outputDeviceId,
+          state.availableOutputDevices
+        ),
         selectedTrackIndex: state.selectedTrackIndex,
         tracks: trackDescs
       }
@@ -1193,6 +1271,18 @@ export class AudioEngine {
           }
         }
 
+        // Resolve device index: prefer stable ID, fall back to legacy index
+        let inputDeviceId = td.inputDeviceId
+        if (td.inputDeviceStableId) {
+          const resolved = this.findDeviceIndexByStableId(
+            'input',
+            td.inputDeviceStableId
+          )
+          if (resolved !== null) {
+            inputDeviceId = resolved
+          }
+        }
+
         tracks.push({
           id: td.id,
           name: td.name,
@@ -1206,11 +1296,24 @@ export class AudioEngine {
           samples,
           sampleRate: td.sampleRate,
           filePath: null,
-          inputDeviceId: td.inputDeviceId
+          inputDeviceId,
+          inputChannel: td.inputChannel ?? -1
         })
       }
 
       rmSync(tmpDir, { recursive: true, force: true })
+
+      // Resolve output device: prefer stable ID, fall back to legacy index
+      let outputDeviceId = desc.outputDeviceId
+      if (desc.outputDeviceStableId) {
+        const resolved = this.findDeviceIndexByStableId(
+          'output',
+          desc.outputDeviceStableId
+        )
+        if (resolved !== null) {
+          outputDeviceId = resolved
+        }
+      }
 
       return {
         bpm: desc.bpm,
@@ -1229,7 +1332,7 @@ export class AudioEngine {
         loopStart: desc.loopStart,
         loopEnd: desc.loopEnd,
         projectName: desc.projectName,
-        outputDeviceId: desc.outputDeviceId,
+        outputDeviceId,
         availableInputDevices: [],
         availableOutputDevices: []
       }

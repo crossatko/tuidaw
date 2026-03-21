@@ -54,3 +54,31 @@ else
     echo "Build failed!"
     exit 1
 fi
+
+# ── Build PipeWire custom node helper (Linux only) ──────────────────────
+# This helper creates custom ALSA nodes without auto-link/node-group properties
+# that cause audio corruption on multi-channel USB devices in pro-audio profile.
+# It requires libpipewire-0.3-dev. If not available, skip silently — monitoring
+# will still work via PulseAudio duplex fallback.
+case "$(uname -s)" in
+    Linux*)
+        if pkg-config --exists libpipewire-0.3 2>/dev/null; then
+            echo "Building pw_custom_node helper..."
+            PW_CFLAGS=$(pkg-config --cflags libpipewire-0.3)
+            PW_LIBS=$(pkg-config --libs libpipewire-0.3)
+            if [ "$MODE" = "debug" ]; then
+                PW_OPT="-g -O0"
+            else
+                PW_OPT="-O2 -DNDEBUG"
+            fi
+            cc $PW_OPT -o "$SCRIPT_DIR/pw_custom_node" "$SCRIPT_DIR/pw_custom_node.c" $PW_CFLAGS $PW_LIBS -lm 2>&1
+            if [ $? -eq 0 ]; then
+                echo "Success: $SCRIPT_DIR/pw_custom_node"
+            else
+                echo "Warning: pw_custom_node build failed (monitoring will use PulseAudio fallback)"
+            fi
+        else
+            echo "Skipping pw_custom_node (libpipewire-0.3-dev not found)"
+        fi
+        ;;
+esac

@@ -122,6 +122,46 @@ static void jack_unload(void) {
     }
 }
 
+// ── PipeWire Custom Node Helper ─────────────────────────────────────────────
+// Some multi-channel USB devices (e.g. Neural DSP Nano Cortex) produce corrupt
+// audio when using PipeWire's pro-audio profile because the auto-generated ALSA
+// nodes have api.alsa.auto-link + node.group properties that cause the capture
+// and playback nodes to share scheduling, corrupting mmap buffer conversion.
+//
+// Fix: set the card profile to "off" (destroying the broken nodes), spawn a
+// helper process (pw_custom_node) that creates clean ALSA nodes without those
+// properties, then proceed with JACK monitoring. The helper must stay alive
+// while monitoring is active.
+//
+// This is only needed on Linux with PipeWire. The helper binary is built
+// alongside libtuidaw_audio.so by build.sh.
+
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <libgen.h>  // dirname
+#include <unistd.h>  // fork, exec, atexit
+
+// State for a custom node helper process associated with a capture device.
+// Multiple tracks can share the same helper if they use the same device.
+typedef struct {
+    pid_t    pid;                     // helper process PID (0 = not running)
+    char     card_name[256];          // PulseAudio card name (for profile restore)
+    char     alsa_device[32];         // ALSA device path (e.g. "hw:5")
+    int      channels;               // number of channels
+    int      ref_count;              // number of tracks using this helper
+    int      helper_id;              // ID used in node naming (tuidaw-custom-cap-N)
+} CustomNodeHelper;
+
+#define MAX_CUSTOM_HELPERS 8
+static CustomNodeHelper g_custom_helpers[MAX_CUSTOM_HELPERS];
+static int g_custom_helper_count = 0;
+
+// Path to the pw_custom_node binary (resolved relative to the .so at init time)
+static char g_helper_path[512] = {0};
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 #define SAMPLE_RATE       48000
@@ -171,6 +211,7 @@ typedef struct {
     float*        rec_buffer;        // ring buffer for captured audio (owned by us)
     _Atomic int   rec_write_pos;     // write position in rec_buffer
     int           rec_device_index;  // miniaudio capture device index (-1 = default)
+    int           rec_channel;       // which channel to capture from multi-ch device (0-based, -1 = mono downmix)
     ma_device     rec_device;        // capture device (active only while recording)
     int           rec_device_active; // is rec_device initialized and started
 
@@ -185,6 +226,9 @@ typedef struct {
     jack_port_t*   jack_playback_L;  // JACK output port (sends to selected output L)
     jack_port_t*   jack_playback_R;  // JACK output port (sends to selected output R)
     int            jack_mon_active;  // is JACK monitoring active
+
+    // PipeWire custom node helper for this track's capture device
+    CustomNodeHelper* custom_helper; // pointer into g_custom_helpers (NULL if not needed)
 
     // WSOLA time-stretch state
     WsolaState    wsola;
@@ -664,6 +708,8 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
 
 // ── Capture Callback (per-track recording) ──────────────────────────────────
 
+static _Atomic int capture_diag_counter = 0; // diagnostic: counts callbacks
+
 static void capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pOutput;
 
@@ -672,10 +718,49 @@ static void capture_callback(ma_device* pDevice, void* pOutput, const void* pInp
 
     const float* input = (const float*)pInput;
     int write_pos = atomic_load(&tk->rec_write_pos);
+    int channels = (int)pDevice->capture.channels;
+    int sel_ch = tk->rec_channel; // -1 = mono downmix, >=0 = specific channel
+
+    // Diagnostic: log first few callbacks to file
+    int diag = atomic_fetch_add(&capture_diag_counter, 1);
+    if (diag < 5) {
+        FILE* f = fopen("debug/capture.log", "a");
+        if (f) {
+            float peak_all = 0.0f;
+            float peak_ch = 0.0f;
+            for (ma_uint32 s = 0; s < frameCount * channels && s < 256; s++) {
+                float v = input[s] < 0 ? -input[s] : input[s];
+                if (v > peak_all) peak_all = v;
+            }
+            // Also measure peak of the selected channel specifically
+            if (sel_ch >= 0 && sel_ch < channels) {
+                for (ma_uint32 i = 0; i < frameCount; i++) {
+                    float v = input[i * channels + sel_ch];
+                    if (v < 0) v = -v;
+                    if (v > peak_ch) peak_ch = v;
+                }
+            }
+            fprintf(f, "capture_cb #%d: frames=%u channels=%d sel_ch=%d write_pos=%d peak_all=%.6f peak_sel_ch=%.6f\n",
+                    diag, frameCount, channels, sel_ch, write_pos, peak_all, peak_ch);
+            fclose(f);
+        }
+    }
 
     for (ma_uint32 i = 0; i < frameCount; i++) {
         if (write_pos >= RECORDING_BUF_LEN) break;
-        tk->rec_buffer[write_pos] = input[i];
+        if (sel_ch >= 0 && sel_ch < channels) {
+            // Extract specific channel from interleaved multi-channel data
+            tk->rec_buffer[write_pos] = input[i * channels + sel_ch];
+        } else if (channels == 1) {
+            tk->rec_buffer[write_pos] = input[i];
+        } else {
+            // Mono downmix: average all channels
+            float sum = 0.0f;
+            for (int ch = 0; ch < channels; ch++) {
+                sum += input[i * channels + ch];
+            }
+            tk->rec_buffer[write_pos] = sum / channels;
+        }
         write_pos++;
     }
 
@@ -704,8 +789,24 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
     float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
     float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
 
+    int cap_channels = (int)pDevice->capture.channels;
+    int sel_ch = tk->rec_channel;
+
     for (ma_uint32 i = 0; i < frameCount; i++) {
-        float sample = input[i] * vol;
+        float sample;
+        if (cap_channels > 1 && sel_ch >= 0 && sel_ch < cap_channels) {
+            // Extract specific channel from interleaved multi-channel input
+            sample = input[i * cap_channels + sel_ch] * vol;
+        } else if (cap_channels > 1) {
+            // Mono downmix of all channels
+            float sum = 0.0f;
+            for (int c = 0; c < cap_channels; c++) {
+                sum += input[i * cap_channels + c];
+            }
+            sample = (sum / cap_channels) * vol;
+        } else {
+            sample = input[i] * vol;
+        }
         output[i * 2 + 0] = sample * left_gain;
         output[i * 2 + 1] = sample * right_gain;
     }
@@ -718,12 +819,13 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
 
 static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
     TrackState* tk = (TrackState*)arg;
+    if (!tk) return 0;
 
     float* in = (float*)g_jack.port_get_buffer(tk->jack_capture, nframes);
     float* out_L = (float*)g_jack.port_get_buffer(tk->jack_playback_L, nframes);
     float* out_R = (float*)g_jack.port_get_buffer(tk->jack_playback_R, nframes);
 
-    if (!tk || !atomic_load(&tk->monitoring)) {
+    if (!atomic_load(&tk->monitoring)) {
         memset(out_L, 0, nframes * sizeof(float));
         memset(out_R, 0, nframes * sizeof(float));
         return 0;
@@ -740,7 +842,418 @@ static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
         out_R[i] = sample * right_gain;
     }
 
+    // If the track is recording, also capture the raw input into the recording
+    // buffer. This handles the case where the PulseAudio device is unavailable
+    // (card profile set to "off" for custom node workaround).
+    if (atomic_load(&tk->recording) && tk->rec_buffer) {
+        int write_pos = atomic_load(&tk->rec_write_pos);
+        for (jack_nframes_t i = 0; i < nframes; i++) {
+            if (write_pos >= RECORDING_BUF_LEN) break;
+            tk->rec_buffer[write_pos++] = in[i];
+        }
+        atomic_store(&tk->rec_write_pos, write_pos);
+    }
+
     return 0;
+}
+
+// ── PipeWire Custom Node Helper Management ──────────────────────────────────
+
+// Resolve the path to the pw_custom_node helper binary.
+// It's expected to be in the same directory as libtuidaw_audio.so.
+static void resolve_helper_path(void) {
+    if (g_helper_path[0]) return;  // already resolved
+
+    // Try to find our .so via /proc/self/maps (Linux-specific)
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (f) {
+        char line[1024];
+        while (fgets(line, sizeof(line), f)) {
+            if (strstr(line, "libtuidaw_audio")) {
+                // Extract path: format is "addr-addr perms offset dev inode pathname"
+                char* path_start = strchr(line, '/');
+                if (path_start) {
+                    char* nl = strchr(path_start, '\n');
+                    if (nl) *nl = '\0';
+                    // Get directory of the .so
+                    char so_path[512];
+                    strncpy(so_path, path_start, sizeof(so_path) - 1);
+                    so_path[sizeof(so_path) - 1] = '\0';
+                    char* dir = dirname(so_path);
+                    snprintf(g_helper_path, sizeof(g_helper_path),
+                             "%s/pw_custom_node", dir);
+                    break;
+                }
+            }
+        }
+        fclose(f);
+    }
+
+    // Fallback: try relative to CWD
+    if (!g_helper_path[0]) {
+        strncpy(g_helper_path, "native/pw_custom_node", sizeof(g_helper_path) - 1);
+    }
+}
+
+// Check if the pw_custom_node helper binary exists and is executable.
+static int helper_available(void) {
+    resolve_helper_path();
+    return access(g_helper_path, X_OK) == 0;
+}
+
+// Determine if a capture device needs the custom node workaround.
+// Returns 1 if the device is a multi-channel (>2) USB device using
+// PipeWire's pro-audio profile (which has the auto-link corruption bug).
+// Writes the ALSA card name and device path to the output params.
+//
+// Detection strategy: parse the PulseAudio stable device ID string.
+// Pro-audio profile devices have IDs like:
+//   "alsa_input.usb-Neural_DSP_Nano_Cortex_NA00AF103-00.pro-input-0"
+// The card name would be:
+//   "alsa_card.usb-Neural_DSP_Nano_Cortex_NA00AF103-00"
+static int device_needs_custom_node(int cap_device_index,
+                                     char* out_card_name, int card_name_len,
+                                     char* out_alsa_device, int alsa_device_len,
+                                     int* out_channels) {
+    if (cap_device_index < 0 || (ma_uint32)cap_device_index >= g_engine.capture_count)
+        return 0;
+
+    // Check channel count — only multi-channel devices have this issue
+    int channels = 0;
+    {
+        ma_device_info detailed;
+        if (ma_context_get_device_info(&g_engine.context, ma_device_type_capture,
+                &g_engine.capture_infos[cap_device_index].id, &detailed) == MA_SUCCESS) {
+            if (detailed.nativeDataFormatCount > 0)
+                channels = (int)detailed.nativeDataFormats[0].channels;
+        }
+    }
+    if (channels <= 2) return 0;  // stereo devices don't have this issue
+
+    // Check if the PulseAudio device ID indicates pro-audio profile
+    const char* pulse_id = g_engine.capture_infos[cap_device_index].id.pulse;
+    if (!strstr(pulse_id, ".pro-")) return 0;  // not pro-audio profile
+
+    // Extract the card name from the device ID
+    // "alsa_input.usb-Foo_Bar-00.pro-input-0" → "alsa_card.usb-Foo_Bar-00"
+    const char* usb_start = strstr(pulse_id, "usb-");
+    if (!usb_start) return 0;
+
+    // Find the ".pro-" suffix to get the bus-id part
+    const char* pro_start = strstr(usb_start, ".pro-");
+    if (!pro_start) return 0;
+
+    int bus_id_len = (int)(pro_start - usb_start);
+    char bus_id[256] = {0};
+    if (bus_id_len > 255) bus_id_len = 255;
+    strncpy(bus_id, usb_start, bus_id_len);
+
+    snprintf(out_card_name, card_name_len, "alsa_card.%s", bus_id);
+
+    // Get the ALSA card number by running pactl
+    // We parse: api.alsa.card = "5" from pactl list cards
+    // Use fork/exec instead of popen to avoid signal interference.
+    {
+        int card_pipe[2];
+        if (pipe(card_pipe) == 0) {
+            pid_t cpid = fork();
+            if (cpid == 0) {
+                close(card_pipe[0]);
+                dup2(card_pipe[1], STDOUT_FILENO);
+                close(card_pipe[1]);
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+                char cmd[512];
+                snprintf(cmd, sizeof(cmd),
+                         "pactl list cards 2>/dev/null | grep -A 50 'Name: %s' | grep 'api.alsa.card =' | head -1",
+                         out_card_name);
+                execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
+                _exit(127);
+            } else if (cpid > 0) {
+                close(card_pipe[1]);
+                char line[256] = {0};
+                ssize_t nr = read(card_pipe[0], line, sizeof(line) - 1);
+                close(card_pipe[0]);
+                waitpid(cpid, NULL, 0);
+                if (nr > 0) {
+                    line[nr] = '\0';
+                    char* eq = strstr(line, "= \"");
+                    if (eq) {
+                        int card_num = atoi(eq + 3);
+                        snprintf(out_alsa_device, alsa_device_len, "hw:%d", card_num);
+                    }
+                }
+            } else {
+                close(card_pipe[0]);
+                close(card_pipe[1]);
+            }
+        }
+    }
+
+    if (!out_alsa_device[0]) return 0;  // couldn't determine ALSA device
+
+    if (out_channels) *out_channels = channels;
+    return 1;
+}
+
+// Run a command via fork/exec/waitpid without using system() or popen(),
+// which can interfere with signal handling in the parent process.
+// Returns the exit status (0 = success).
+static int run_command(const char* cmd) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // Child: redirect stdout/stderr to /dev/null
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+// Find or create a custom node helper for the given capture device.
+// If a helper is already running for this card, increment its ref count.
+// Otherwise, spawn a new helper process.
+// Returns a pointer to the helper, or NULL on failure.
+static CustomNodeHelper* acquire_custom_helper(int cap_device_index) {
+    char card_name[256] = {0};
+    char alsa_device[32] = {0};
+    int channels = 0;
+
+    if (!device_needs_custom_node(cap_device_index, card_name, sizeof(card_name),
+                                   alsa_device, sizeof(alsa_device), &channels))
+        return NULL;
+
+    if (!helper_available()) return NULL;
+
+    // Check if we already have a helper for this card
+    for (int i = 0; i < g_custom_helper_count; i++) {
+        if (g_custom_helpers[i].pid > 0 &&
+            strcmp(g_custom_helpers[i].card_name, card_name) == 0) {
+            g_custom_helpers[i].ref_count++;
+            return &g_custom_helpers[i];
+        }
+    }
+
+    // Need to spawn a new helper
+    if (g_custom_helper_count >= MAX_CUSTOM_HELPERS) return NULL;
+
+    CustomNodeHelper* h = &g_custom_helpers[g_custom_helper_count];
+
+    // Step 1: Set card profile to "off" to destroy the broken auto-linked nodes
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s off", card_name);
+        int ret = run_command(cmd);
+        if (ret != 0) {
+            // Profile switch failed — device may not support it
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  pactl set-card-profile off FAILED (ret=%d)\n", ret);
+                fclose(f);
+            }
+            return NULL;
+        }
+    }
+
+    // Brief delay for PipeWire to process the profile change
+    usleep(100000);  // 100ms
+
+    // Step 2: Spawn the helper process
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        // Restore profile on failure
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null", card_name);
+        run_command(cmd);
+        return NULL;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null", card_name);
+        run_command(cmd);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]);  // close read end
+        dup2(pipefd[1], STDOUT_FILENO);  // redirect stdout to pipe
+        close(pipefd[1]);
+
+        // Redirect stderr to /dev/null to avoid polluting the terminal
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
+        // Set PIPEWIRE_LATENCY so the custom ALSA nodes request a matching
+        // quantum from PipeWire — prevents xruns when the JACK client also
+        // requests 256/48000.
+        setenv("PIPEWIRE_LATENCY", "256/48000", 1);
+
+        char ch_str[8];
+        snprintf(ch_str, sizeof(ch_str), "%d", channels);
+        char id_str[8];
+        snprintf(id_str, sizeof(id_str), "%d", g_custom_helper_count);
+
+        execl(g_helper_path, "pw_custom_node",
+              "--device", alsa_device,
+              "--channels", ch_str,
+              "--track-id", id_str,
+              "--card", card_name,
+              (char*)NULL);
+
+        // If execl fails
+        _exit(127);
+    }
+
+    // Parent process
+    close(pipefd[1]);  // close write end
+
+    // Wait for "READY" from the helper (with timeout)
+    char buf[64] = {0};
+    int ready = 0;
+
+    // Set pipe to non-blocking for timeout
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+    // Wait up to 3 seconds for READY
+    for (int attempt = 0; attempt < 60; attempt++) {
+        ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            if (strstr(buf, "READY")) {
+                ready = 1;
+                break;
+            }
+        }
+        usleep(50000);  // 50ms
+    }
+
+    close(pipefd[0]);
+
+    if (!ready) {
+        // Helper didn't become ready — kill it and restore profile
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null", card_name);
+        run_command(cmd);
+
+        FILE* f = fopen("debug/monitor.log", "a");
+        if (f) {
+            fprintf(f, "  pw_custom_node helper did not become ready\n");
+            fclose(f);
+        }
+        return NULL;
+    }
+
+    // Wait for JACK ports to appear (the custom nodes need a moment to register)
+    usleep(300000);  // 300ms
+
+    // Success — save state
+    strncpy(h->card_name, card_name, sizeof(h->card_name) - 1);
+    strncpy(h->alsa_device, alsa_device, sizeof(h->alsa_device) - 1);
+    h->channels = channels;
+    h->helper_id = g_custom_helper_count;  // matches --track-id arg
+    h->pid = pid;
+    h->ref_count = 1;
+    g_custom_helper_count++;
+
+    FILE* f = fopen("debug/monitor.log", "a");
+    if (f) {
+        fprintf(f, "  custom node helper started: pid=%d card=%s dev=%s ch=%d\n",
+                pid, card_name, alsa_device, channels);
+        fclose(f);
+    }
+
+    return h;
+}
+
+// Release a custom node helper. Decrements ref count, and if it reaches 0,
+// kills the helper process and restores the card profile.
+static void release_custom_helper(CustomNodeHelper* h) {
+    if (!h || h->pid <= 0) return;
+
+    h->ref_count--;
+    if (h->ref_count > 0) return;  // still in use by other tracks
+
+    // Kill the helper process
+    kill(h->pid, SIGTERM);
+    waitpid(h->pid, NULL, 0);
+    h->pid = 0;
+
+    // Restore the card profile
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null", h->card_name);
+    run_command(cmd);
+
+    FILE* f = fopen("debug/monitor.log", "a");
+    if (f) {
+        fprintf(f, "  custom node helper stopped, profile restored for %s\n", h->card_name);
+        fclose(f);
+    }
+}
+
+// Find the custom node helper associated with a capture device index.
+static CustomNodeHelper* find_helper_for_device(int cap_device_index) {
+    if (cap_device_index < 0 || (ma_uint32)cap_device_index >= g_engine.capture_count)
+        return NULL;
+
+    // Extract card name from device ID
+    const char* pulse_id = g_engine.capture_infos[cap_device_index].id.pulse;
+    const char* usb_start = strstr(pulse_id, "usb-");
+    if (!usb_start) return NULL;
+    const char* pro_start = strstr(usb_start, ".pro-");
+    if (!pro_start) return NULL;
+
+    char card_name[256];
+    int bus_id_len = (int)(pro_start - usb_start);
+    char bus_id[256] = {0};
+    if (bus_id_len > 255) bus_id_len = 255;
+    strncpy(bus_id, usb_start, bus_id_len);
+    snprintf(card_name, sizeof(card_name), "alsa_card.%s", bus_id);
+
+    for (int i = 0; i < g_custom_helper_count; i++) {
+        if (g_custom_helpers[i].pid > 0 &&
+            strcmp(g_custom_helpers[i].card_name, card_name) == 0) {
+            return &g_custom_helpers[i];
+        }
+    }
+    return NULL;
+}
+
+// Cleanup all custom node helpers (called on engine shutdown).
+static void cleanup_all_helpers(void) {
+    for (int i = 0; i < g_custom_helper_count; i++) {
+        if (g_custom_helpers[i].pid > 0) {
+            kill(g_custom_helpers[i].pid, SIGTERM);
+            waitpid(g_custom_helpers[i].pid, NULL, 0);
+
+            // Restore card profile
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null",
+                     g_custom_helpers[i].card_name);
+            run_command(cmd);
+
+            g_custom_helpers[i].pid = 0;
+        }
+    }
+    g_custom_helper_count = 0;
 }
 
 // ── Exported API ────────────────────────────────────────────────────────────
@@ -764,6 +1277,12 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.active_device_index = -1;
+
+    // Register atexit handler to clean up custom node helpers if the process
+    // exits without calling tuidaw_deinit(). This ensures the card profile is
+    // restored even on unexpected exit (the helper process itself also has
+    // PR_SET_PDEATHSIG as a further safety net).
+    atexit(cleanup_all_helpers);
 
     ma_context_config ctxConfig = ma_context_config_init();
     if (ma_context_init(NULL, 0, &ctxConfig, &g_engine.context) != MA_SUCCESS) {
@@ -864,6 +1383,9 @@ EXPORT void tuidaw_deinit(void) {
 
     ma_context_uninit(&g_engine.context);
 
+    // Clean up any remaining custom node helpers (kill processes, restore profiles)
+    cleanup_all_helpers();
+
     // Unload JACK library
     if (g_engine.jack_available) {
         jack_unload();
@@ -921,6 +1443,74 @@ EXPORT int tuidaw_is_device_default(int type, int index) {
     }
     if (index < 0 || (ma_uint32)index >= count) return 0;
     return infos[index].isDefault ? 1 : 0;
+}
+
+// Get the stable PulseAudio device ID string.
+// For PulseAudio backend, this is a stable name like
+// "alsa_input.usb-Neural_DSP_Nano_Cortex_NA00AF103-00.pro-input-0".
+// Writes into the provided buffer. Returns 0 on success.
+EXPORT int tuidaw_get_device_id(int type, int index, char* out_id, int max_len) {
+    ma_device_info* infos;
+    ma_uint32 count;
+    if (type == 0) {
+        infos = g_engine.playback_infos;
+        count = g_engine.playback_count;
+    } else {
+        infos = g_engine.capture_infos;
+        count = g_engine.capture_count;
+    }
+    if (index < 0 || (ma_uint32)index >= count || max_len < 1) return -1;
+    // The ma_device_id union's pulse member is a char[256] with the stable name
+    strncpy(out_id, infos[index].id.pulse, max_len - 1);
+    out_id[max_len - 1] = '\0';
+    return 0;
+}
+
+// Get the native channel count for a device.
+// Returns channel count on success, 0 on failure.
+EXPORT int tuidaw_get_device_channels(int type, int index) {
+    ma_device_info* infos;
+    ma_uint32 count;
+    if (type == 0) {
+        infos = g_engine.playback_infos;
+        count = g_engine.playback_count;
+    } else {
+        infos = g_engine.capture_infos;
+        count = g_engine.capture_count;
+    }
+    if (index < 0 || (ma_uint32)index >= count) return 0;
+
+    // ma_context_get_devices() only returns basic info — nativeDataFormats
+    // may not be populated for PulseAudio devices. Do a full device info
+    // query to get the actual native channel count.
+    ma_device_info detailed;
+    ma_device_type devType = (type == 0) ? ma_device_type_playback : ma_device_type_capture;
+    if (ma_context_get_device_info(&g_engine.context, devType, &infos[index].id, &detailed) == MA_SUCCESS) {
+        if (detailed.nativeDataFormatCount > 0 && detailed.nativeDataFormats[0].channels > 0) {
+            return (int)detailed.nativeDataFormats[0].channels;
+        }
+    }
+
+    // Fallback: try the cached info (may be 0)
+    return (int)infos[index].nativeDataFormats[0].channels;
+}
+
+// Find a device by its stable PulseAudio ID string.
+// Returns the array index, or -1 if not found.
+EXPORT int tuidaw_find_device_by_id(int type, const char* device_id) {
+    ma_device_info* infos;
+    ma_uint32 count;
+    if (type == 0) {
+        infos = g_engine.playback_infos;
+        count = g_engine.playback_count;
+    } else {
+        infos = g_engine.capture_infos;
+        count = g_engine.capture_count;
+    }
+    for (ma_uint32 i = 0; i < count; i++) {
+        if (strcmp(infos[i].id.pulse, device_id) == 0) return (int)i;
+    }
+    return -1;
 }
 
 // Get the name of the audio backend in use (e.g. "ALSA", "PulseAudio", "JACK").
@@ -1024,11 +1614,21 @@ EXPORT void tuidaw_remove_track(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return;
 
-    // Stop monitoring if active
+    // Stop monitoring if active (includes custom helper cleanup)
     atomic_store(&tk->monitoring, 0);
+    if (tk->jack_mon_active && g_jack.lib_handle) {
+        g_jack.deactivate(tk->jack_client);
+        g_jack.client_close(tk->jack_client);
+        tk->jack_client = NULL;
+        tk->jack_mon_active = 0;
+    }
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
         tk->mon_device_active = 0;
+    }
+    if (tk->custom_helper) {
+        release_custom_helper(tk->custom_helper);
+        tk->custom_helper = NULL;
     }
 
     // Stop recording if active
@@ -1085,6 +1685,14 @@ EXPORT void tuidaw_set_track_input_device(int id, int device_index) {
     TrackState* tk = find_track(id);
     if (!tk) return;
     tk->rec_device_index = device_index;
+}
+
+// Set which channel to capture from a multi-channel input device.
+// channel: 0-based channel index, -1 = mono downmix (default).
+EXPORT void tuidaw_set_track_input_channel(int id, int channel) {
+    TrackState* tk = find_track(id);
+    if (!tk) return;
+    tk->rec_channel = channel;
 }
 
 // ── Transport ───────────────────────────────────────────────────────────────
@@ -1281,6 +1889,9 @@ EXPORT int tuidaw_start_recording(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return -1;
 
+    // Reset diagnostic counter for fresh capture data
+    atomic_store(&capture_diag_counter, 0);
+
     // Allocate recording buffer if needed
     if (!tk->rec_buffer) {
         tk->rec_buffer = (float*)calloc(RECORDING_BUF_LEN, sizeof(float));
@@ -1288,10 +1899,68 @@ EXPORT int tuidaw_start_recording(int id) {
     }
     atomic_store(&tk->rec_write_pos, 0);
 
+    // If JACK monitoring is active on this track, the JACK process callback
+    // will handle recording directly (it already receives the capture audio).
+    // No need to open a separate PulseAudio capture device — and we can't,
+    // because the card profile may be set to "off" for the custom node workaround.
+    if (tk->jack_mon_active) {
+        // Diagnostic: log JACK-based recording
+        {
+            FILE* f = fopen("debug/capture.log", "w");
+            if (f) {
+                fprintf(f, "start_recording: id=%d JACK-based (monitoring active)\n", id);
+                fprintf(f, "  rec_buffer=%p rec_buffer_len=%d\n",
+                        (void*)tk->rec_buffer, RECORDING_BUF_LEN);
+                fclose(f);
+            }
+        }
+        atomic_store(&tk->recording, 1);
+        return 0;
+    }
+
+    // Determine channel count: if a specific channel is selected on a
+    // multi-channel device, open the device in its native channel count
+    // so the callback can extract the right channel. Otherwise open mono
+    // and let miniaudio handle the downmix.
+    int native_channels = 1;
+    if (tk->rec_channel >= 0 && tk->rec_device_index >= 0 &&
+        (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+        // Do a full device info query — basic enumeration may not populate nativeDataFormats
+        int dev_ch = 0;
+        ma_device_info detailed;
+        if (ma_context_get_device_info(&g_engine.context, ma_device_type_capture,
+                &g_engine.capture_infos[tk->rec_device_index].id, &detailed) == MA_SUCCESS) {
+            if (detailed.nativeDataFormatCount > 0) {
+                dev_ch = (int)detailed.nativeDataFormats[0].channels;
+            }
+        }
+        if (dev_ch <= 0) {
+            // Fallback to cached (may be 0 from basic enumeration)
+            dev_ch = (int)g_engine.capture_infos[tk->rec_device_index].nativeDataFormats[0].channels;
+        }
+        if (dev_ch > 1 && tk->rec_channel < dev_ch) {
+            native_channels = dev_ch;
+        }
+    }
+
+    // Diagnostic: log recording setup
+    {
+        FILE* f = fopen("debug/capture.log", "w");
+        if (f) {
+            fprintf(f, "start_recording: id=%d rec_device_index=%d rec_channel=%d native_channels=%d\n",
+                    id, tk->rec_device_index, tk->rec_channel, native_channels);
+            if (tk->rec_device_index >= 0 && (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+                fprintf(f, "  device_name='%s'\n", g_engine.capture_infos[tk->rec_device_index].name);
+                fprintf(f, "  device_id.pulse='%s'\n", g_engine.capture_infos[tk->rec_device_index].id.pulse);
+            }
+            fclose(f);
+        }
+    }
+
     // Set up capture device
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
     config.capture.format   = ma_format_f32;
-    config.capture.channels = 1;
+    config.capture.channels = native_channels;
     config.sampleRate       = SAMPLE_RATE;
     config.dataCallback     = capture_callback;
     config.pUserData        = tk;
@@ -1304,7 +1973,22 @@ EXPORT int tuidaw_start_recording(int id) {
     }
 
     if (ma_device_init(&g_engine.context, &config, &tk->rec_device) != MA_SUCCESS) {
+        // Diagnostic: log failure
+        FILE* f = fopen("debug/capture.log", "a");
+        if (f) { fprintf(f, "  ma_device_init FAILED\n"); fclose(f); }
         return -1;
+    }
+
+    // Log what miniaudio actually negotiated
+    {
+        FILE* f = fopen("debug/capture.log", "a");
+        if (f) {
+            fprintf(f, "  actual_channels=%d actual_format=%d actual_sampleRate=%d\n",
+                    (int)tk->rec_device.capture.channels,
+                    (int)tk->rec_device.capture.format,
+                    (int)tk->rec_device.sampleRate);
+            fclose(f);
+        }
     }
 
     if (ma_device_start(&tk->rec_device) != MA_SUCCESS) {
@@ -1329,7 +2013,26 @@ EXPORT int tuidaw_stop_recording(int id) {
         tk->rec_device_active = 0;
     }
 
-    return atomic_load(&tk->rec_write_pos);
+    int total = atomic_load(&tk->rec_write_pos);
+
+    // Diagnostic: log stop info + buffer peak
+    {
+        FILE* f = fopen("debug/capture.log", "a");
+        if (f) {
+            float peak = 0.0f;
+            if (tk->rec_buffer && total > 0) {
+                for (int i = 0; i < total && i < 48000; i++) {
+                    float v = tk->rec_buffer[i] < 0 ? -tk->rec_buffer[i] : tk->rec_buffer[i];
+                    if (v > peak) peak = v;
+                }
+            }
+            fprintf(f, "stop_recording: id=%d total_samples=%d buffer_peak=%.6f buf_ptr=%p\n",
+                    id, total, peak, (void*)tk->rec_buffer);
+            fclose(f);
+        }
+    }
+
+    return total;
 }
 
 // Get pointer to the recording buffer and the current write position.
@@ -1368,6 +2071,39 @@ EXPORT int tuidaw_start_monitoring(int id) {
 
     // ── Strategy 1: Direct JACK API ────────────────────────────────────
     if (g_engine.jack_available && !g_engine.use_null_backend) {
+        // Diagnostic: log monitoring setup
+        {
+            FILE* f = fopen("debug/monitor.log", "w");
+            if (f) {
+                fprintf(f, "start_monitoring: id=%d rec_device_index=%d rec_channel=%d\n",
+                        id, tk->rec_device_index, tk->rec_channel);
+                fprintf(f, "  output_device_index=%d\n", g_engine.output_device_index);
+                if (tk->rec_device_index >= 0 && (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+                    fprintf(f, "  cap_device_name='%s'\n", g_engine.capture_infos[tk->rec_device_index].name);
+                    fprintf(f, "  cap_device_id='%s'\n", g_engine.capture_infos[tk->rec_device_index].id.pulse);
+                }
+                if (g_engine.output_device_index >= 0 && (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
+                    fprintf(f, "  pb_device_name='%s'\n", g_engine.playback_infos[g_engine.output_device_index].name);
+                    fprintf(f, "  pb_device_id='%s'\n", g_engine.playback_infos[g_engine.output_device_index].id.pulse);
+                }
+                fclose(f);
+            }
+        }
+
+        // ── PipeWire custom node workaround for multi-channel USB devices ──
+        // Check if this capture device needs custom ALSA nodes to avoid
+        // the auto-link/node-group corruption. If so, spawn the helper
+        // process (which sets profile to off and creates clean nodes).
+        tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
+        if (tk->custom_helper) {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  Using custom node helper (pid=%d) for clean audio\n",
+                        tk->custom_helper->pid);
+                fclose(f);
+            }
+        }
+
         // Set PIPEWIRE_LATENCY before opening the client so PipeWire assigns
         // a low quantum to this client's driver group.
         setenv("PIPEWIRE_LATENCY", "256/48000", 1);
@@ -1421,10 +2157,26 @@ EXPORT int tuidaw_start_monitoring(int id) {
             JACK_DEFAULT_AUDIO_TYPE, 0);
 
         if (!all_ports) {
+            {
+                FILE* f = fopen("debug/monitor.log", "a");
+                if (f) { fprintf(f, "  JACK get_ports returned NULL!\n"); fclose(f); }
+            }
             g_jack.deactivate(tk->jack_client);
             g_jack.client_close(tk->jack_client);
             tk->jack_client = NULL;
             goto jack_failed;
+        }
+
+        // Diagnostic: dump ALL JACK ports
+        {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  ALL JACK PORTS:\n");
+                for (int i = 0; all_ports[i]; i++) {
+                    fprintf(f, "    [%d] %s\n", i, all_ports[i]);
+                }
+                fclose(f);
+            }
         }
 
         // Get the miniaudio device name for the track's selected input device.
@@ -1433,6 +2185,15 @@ EXPORT int tuidaw_start_monitoring(int id) {
         if (tk->rec_device_index >= 0 &&
             (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
             cap_device_name = g_engine.capture_infos[tk->rec_device_index].name;
+        }
+
+        // When using a custom node helper, override the capture device name
+        // to match the custom node's JACK port naming (tuidaw-custom-cap-N).
+        char custom_cap_node[64] = {0};
+        if (tk->custom_helper && tk->custom_helper->pid > 0) {
+            snprintf(custom_cap_node, sizeof(custom_cap_node),
+                     "tuidaw-custom-cap-%d", tk->custom_helper->helper_id);
+            cap_device_name = custom_cap_node;
         }
 
         // Get the miniaudio device name for the selected output device.
@@ -1456,14 +2217,18 @@ EXPORT int tuidaw_start_monitoring(int id) {
         char pb_R_name[256] = {0};
 
         // ── Capture port selection ──
-        // Strategy: if we have a device name, find JACK capture ports whose
-        // node name (before ':') contains a significant part of the device name.
-        // We try progressively shorter substrings for matching.
+        // Strategy: if we have a device name, find ALL JACK capture ports
+        // matching the device, then pick the one at the selected channel index.
+        // If no channel selected (rec_channel < 0), pick the first one.
         if (cap_device_name) {
+            // Collect matching capture ports (up to 16)
+            const char* cap_matches[16];
+            int cap_match_count = 0;
+
             // Try to find capture ports matching the device name.
             // JACK port format: "Node Name:port_name". We check if the device
             // name (or a keyword from it) appears in the port's node part.
-            for (int i = 0; all_ports[i] && cap_name[0] == 0; i++) {
+            for (int i = 0; all_ports[i] && cap_match_count < 16; i++) {
                 if (!strstr(all_ports[i], "capture")) continue;
 
                 // Extract node name (before ':')
@@ -1477,13 +2242,13 @@ EXPORT int tuidaw_start_monitoring(int id) {
                 // Check if the miniaudio device name appears in the JACK node name
                 // or vice versa. PipeWire usually makes them similar.
                 if (strstr(node, cap_device_name) || strstr(cap_device_name, node)) {
-                    strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
+                    cap_matches[cap_match_count++] = all_ports[i];
                 }
             }
 
             // If exact match failed, try keyword matching. Extract significant
             // words from the device name and try each.
-            if (cap_name[0] == 0) {
+            if (cap_match_count == 0) {
                 // Build a list of keywords from the device name (words >=4 chars,
                 // skip generic words like "Input", "Output", "Line", "Audio")
                 char name_copy[256];
@@ -1502,21 +2267,44 @@ EXPORT int tuidaw_start_monitoring(int id) {
                         strcasecmp(tok, "Analog") != 0 &&
                         strcasecmp(tok, "Digital") != 0 &&
                         strcasecmp(tok, "Stereo") != 0 &&
-                        strcasecmp(tok, "Mono") != 0) {
+                        strcasecmp(tok, "Mono") != 0 &&
+                        strcasecmp(tok, "Surround") != 0 &&
+                        strcasecmp(tok, "Monitor") != 0) {
                         keywords[kw_count++] = tok;
                     }
                     tok = strtok(NULL, " ()-/.,");
                 }
 
                 // Try matching each keyword against capture ports
-                for (int k = 0; k < kw_count && cap_name[0] == 0; k++) {
-                    for (int i = 0; all_ports[i]; i++) {
+                for (int k = 0; k < kw_count && cap_match_count == 0; k++) {
+                    for (int i = 0; all_ports[i] && cap_match_count < 16; i++) {
                         if (!strstr(all_ports[i], "capture")) continue;
                         if (strstr(all_ports[i], keywords[k])) {
-                            strncpy(cap_name, all_ports[i], sizeof(cap_name) - 1);
-                            break;
+                            cap_matches[cap_match_count++] = all_ports[i];
                         }
                     }
+                }
+            }
+
+            // Pick the right capture port based on channel selection
+            if (cap_match_count > 0) {
+                int idx = 0;
+                if (tk->rec_channel >= 0 && tk->rec_channel < cap_match_count) {
+                    idx = tk->rec_channel;
+                }
+                strncpy(cap_name, cap_matches[idx], sizeof(cap_name) - 1);
+            }
+
+            // Diagnostic: log capture port matching results
+            {
+                FILE* f = fopen("debug/monitor.log", "a");
+                if (f) {
+                    fprintf(f, "  cap_match_count=%d (device-matched)\n", cap_match_count);
+                    for (int j = 0; j < cap_match_count; j++) {
+                        fprintf(f, "    cap_match[%d]='%s'\n", j, cap_matches[j]);
+                    }
+                    if (cap_name[0]) fprintf(f, "  selected cap_name='%s'\n", cap_name);
+                    fclose(f);
                 }
             }
         }
@@ -1556,16 +2344,17 @@ EXPORT int tuidaw_start_monitoring(int id) {
                 if (!strstr(node, pb_device_name) && !strstr(pb_device_name, node))
                     continue;
 
-                // Match L/FL and R/FR channels
+                // Match L/FL/AUX0 and R/FR/AUX1 channels
+                // Pro Audio profile uses AUX0/AUX1 instead of FL/FR
                 const char* port_part = colon + 1;
                 if (pb_L_name[0] == 0 &&
                     (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                     strstr(port_part, "_L"))) {
+                     strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
                     strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
                 }
                 if (pb_R_name[0] == 0 &&
                     (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                     strstr(port_part, "_R"))) {
+                     strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
                     strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
                 }
             }
@@ -1588,7 +2377,9 @@ EXPORT int tuidaw_start_monitoring(int id) {
                         strcasecmp(tok, "Analog") != 0 &&
                         strcasecmp(tok, "Digital") != 0 &&
                         strcasecmp(tok, "Stereo") != 0 &&
-                        strcasecmp(tok, "Mono") != 0) {
+                        strcasecmp(tok, "Mono") != 0 &&
+                        strcasecmp(tok, "Surround") != 0 &&
+                        strcasecmp(tok, "Monitor") != 0) {
                         keywords[kw_count++] = tok;
                     }
                     tok = strtok(NULL, " ()-/.,");
@@ -1602,12 +2393,12 @@ EXPORT int tuidaw_start_monitoring(int id) {
                         const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
                         if (pb_L_name[0] == 0 &&
                             (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                             strstr(port_part, "_L"))) {
+                             strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
                             strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
                         }
                         if (pb_R_name[0] == 0 &&
                             (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                             strstr(port_part, "_R"))) {
+                             strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
                             strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
                         }
                     }
@@ -1616,7 +2407,17 @@ EXPORT int tuidaw_start_monitoring(int id) {
             }
         }
 
-        // Fallback: any playback ports with FL/FR or _1/_2
+        // Diagnostic: log playback port matching results after device matching
+        {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  pb_L_name (after device match)='%s'\n", pb_L_name[0] ? pb_L_name : "(none)");
+                fprintf(f, "  pb_R_name (after device match)='%s'\n", pb_R_name[0] ? pb_R_name : "(none)");
+                fclose(f);
+            }
+        }
+
+        // Fallback: any playback ports with FL/FR, _1/_2, or AUX0/AUX1
         if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
             for (int i = 0; all_ports[i]; i++) {
                 if (!strstr(all_ports[i], "playback")) continue;
@@ -1624,12 +2425,12 @@ EXPORT int tuidaw_start_monitoring(int id) {
                 const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
                 if (pb_L_name[0] == 0 &&
                     (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                     strstr(port_part, "_L"))) {
+                     strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
                     strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
                 }
                 if (pb_R_name[0] == 0 &&
                     (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                     strstr(port_part, "_R"))) {
+                     strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
                     strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
                 }
             }
@@ -1637,7 +2438,27 @@ EXPORT int tuidaw_start_monitoring(int id) {
 
         g_jack.free(all_ports);
 
+        // Diagnostic: log final selected ports
+        {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  FINAL cap_name='%s'\n", cap_name[0] ? cap_name : "(none)");
+                fprintf(f, "  FINAL pb_L_name='%s'\n", pb_L_name[0] ? pb_L_name : "(none)");
+                fprintf(f, "  FINAL pb_R_name='%s'\n", pb_R_name[0] ? pb_R_name : "(none)");
+                fclose(f);
+            }
+        }
+
         if (cap_name[0] == 0 || pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+            // Diagnostic: log failure reason
+            {
+                FILE* f = fopen("debug/monitor.log", "a");
+                if (f) {
+                    fprintf(f, "  JACK FAILED: missing ports (cap=%d pb_L=%d pb_R=%d)\n",
+                            cap_name[0] != 0, pb_L_name[0] != 0, pb_R_name[0] != 0);
+                    fclose(f);
+                }
+            }
             g_jack.deactivate(tk->jack_client);
             g_jack.client_close(tk->jack_client);
             tk->jack_client = NULL;
@@ -1649,23 +2470,62 @@ EXPORT int tuidaw_start_monitoring(int id) {
         const char* our_out_L = g_jack.port_name(tk->jack_playback_L);
         const char* our_out_R = g_jack.port_name(tk->jack_playback_R);
 
-        g_jack.connect(tk->jack_client, cap_name, our_input);
-        g_jack.connect(tk->jack_client, our_out_L, pb_L_name);
-        g_jack.connect(tk->jack_client, our_out_R, pb_R_name);
+        int rc1 = g_jack.connect(tk->jack_client, cap_name, our_input);
+        int rc2 = g_jack.connect(tk->jack_client, our_out_L, pb_L_name);
+        int rc3 = g_jack.connect(tk->jack_client, our_out_R, pb_R_name);
+
+        // Diagnostic: log connection results
+        {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  jack_connect cap->input: rc=%d\n", rc1);
+                fprintf(f, "  jack_connect out_L->pb_L: rc=%d\n", rc2);
+                fprintf(f, "  jack_connect out_R->pb_R: rc=%d\n", rc3);
+                fprintf(f, "  our_input='%s'\n", our_input ? our_input : "(null)");
+                fprintf(f, "  our_out_L='%s'\n", our_out_L ? our_out_L : "(null)");
+                fprintf(f, "  our_out_R='%s'\n", our_out_R ? our_out_R : "(null)");
+                fprintf(f, "  JACK monitoring ACTIVE\n");
+                fclose(f);
+            }
+        }
 
         tk->jack_mon_active = 1;
         atomic_store(&tk->monitoring, 1);
         return 0;
 
     jack_failed:;
+        // Diagnostic: log fallback
+        {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) { fprintf(f, "  JACK failed, falling back to PulseAudio duplex\n"); fclose(f); }
+        }
+        // Release custom helper if it was acquired (JACK failed despite custom nodes)
+        if (tk->custom_helper) {
+            release_custom_helper(tk->custom_helper);
+            tk->custom_helper = NULL;
+        }
         // Fall through to PulseAudio duplex
     }
 
     // ── Strategy 2: PulseAudio Duplex Fallback ─────────────────────────
     {
+        // Determine capture channel count: if a specific channel is selected,
+        // open the device in native channel count so the callback can extract it.
+        int mon_cap_channels = 1;
+        if (tk->rec_channel >= 0 && tk->rec_device_index >= 0 &&
+            (ma_uint32)tk->rec_device_index < g_engine.capture_count) {
+            ma_device_info detailed;
+            if (ma_context_get_device_info(&g_engine.context, ma_device_type_capture,
+                    &g_engine.capture_infos[tk->rec_device_index].id, &detailed) == MA_SUCCESS) {
+                if (detailed.nativeDataFormatCount > 0 && (int)detailed.nativeDataFormats[0].channels > 1) {
+                    mon_cap_channels = (int)detailed.nativeDataFormats[0].channels;
+                }
+            }
+        }
+
         ma_device_config config = ma_device_config_init(ma_device_type_duplex);
         config.capture.format    = ma_format_f32;
-        config.capture.channels  = 1;
+        config.capture.channels  = mon_cap_channels;
         config.playback.format   = ma_format_f32;
         config.playback.channels = 2;
         config.sampleRate        = SAMPLE_RATE;
@@ -1722,6 +2582,12 @@ EXPORT void tuidaw_stop_monitoring(int id) {
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
         tk->mon_device_active = 0;
+    }
+
+    // Release the custom node helper (kills process + restores profile if ref_count hits 0)
+    if (tk->custom_helper) {
+        release_custom_helper(tk->custom_helper);
+        tk->custom_helper = NULL;
     }
 }
 

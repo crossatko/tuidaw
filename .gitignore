@@ -43,11 +43,21 @@ recordings/
 native/zig-toolchain/
 native/emsdk/
 
+# native build artifacts (binaries)
+native/pw_custom_node
+
 # WASM build output (canonical copy is web/public/wasm/)
 web/wasm/
 
 # local test/debug scripts (contain user-specific paths)
 test-bpm.ts
 debug-bpm.ts
+test-recording.ts
 analyze-clicks.ts
 analyze-live-click.ts
+
+# local debug logs
+debug/
+
+# OpenCode session files
+session-*.md

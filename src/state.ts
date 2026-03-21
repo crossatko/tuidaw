@@ -47,7 +47,8 @@ export function createTrack(name?: string): Track {
     samples: null,
     sampleRate: 48000,
     filePath: null,
-    inputDeviceId: null
+    inputDeviceId: null,
+    inputChannel: -1
   }
 }
 

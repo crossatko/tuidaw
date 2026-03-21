@@ -7,7 +7,7 @@ Full-featured DAW with two UIs sharing the same native miniaudio audio engine:
 1. **TUI** (`bun run start`): OpenTUI terminal UI with braille waveforms, keyboard/mouse
 2. **Web** (`bun run start --host`): Vue 3.6 Vapor + Tailwind 4 + Canvas 2D on port 3666
 
-Features: sidebar with tracks, waveform display, playhead, BPM/click, recording, loop region, project save/open, WAV import (with BPM detection + beat-phase alignment), export mixdown, WSOLA time-stretch, per-track input device selection, low-latency input monitoring.
+Features: sidebar with tracks, waveform display, playhead, BPM/click, recording, loop region, project save/open, WAV import (with BPM detection + beat-phase alignment), export mixdown, WSOLA time-stretch, per-track input device + channel selection, low-latency input monitoring.
 
 ## Workflow
 
@@ -49,23 +49,23 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1780 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
+C shared library (`native/tuidaw_audio.c`, ~1946 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
 
 ### API surface (all `EXPORT`ed):
 
-| Category  | Functions                                                                                                                                                                                    |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                                                |
-| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`                                                         |
-| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                                                  |
-| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`                                             |
-| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                                              |
-| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)`                     |
-| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                                           |
-| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                                              |
-| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                                           |
-| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)`, `tuidaw_has_jack_monitoring()` — direct JACK API passthrough via dlopen, PulseAudio duplex fallback |
-| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                                       |
+| Category  | Functions                                                                                                                                                                                                              |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle | `tuidaw_init`, `tuidaw_deinit`, `tuidaw_init_null` (silent backend for tests)                                                                                                                                          |
+| Devices   | `tuidaw_refresh_devices`, `tuidaw_get_device_count`, `tuidaw_get_device_name`, `tuidaw_is_device_default`, `tuidaw_get_backend_name`, `tuidaw_get_device_id`, `tuidaw_get_device_channels`, `tuidaw_find_device_by_id` |
+| Output    | `tuidaw_set_output_device`, `tuidaw_get_active_device_index`, `tuidaw_start_playback_device`, `tuidaw_stop_playback_device`                                                                                            |
+| Tracks    | `tuidaw_add_track`, `tuidaw_remove_track`, `tuidaw_set_track_samples`, `tuidaw_set_track_volume/pan/muted/solo`, `tuidaw_set_track_input_device`, `tuidaw_set_track_input_channel`                                     |
+| Transport | `tuidaw_play(pos)`, `tuidaw_stop`, `tuidaw_get_playhead`, `tuidaw_set_playhead`                                                                                                                                        |
+| Click     | `tuidaw_set_click(enabled, bpm)`, `tuidaw_set_click_volume`, `tuidaw_set_click_pan`, `tuidaw_generate_click(bpm, duration_frames)`, `tuidaw_set_click_samples(ptr, len)`                                               |
+| Loop      | `tuidaw_set_loop(start, end)` — sample-accurate boundary detection                                                                                                                                                     |
+| Recording | `tuidaw_start_recording(id)`, `tuidaw_stop_recording(id)`, `tuidaw_get_recording_buffer/length`                                                                                                                        |
+| Speed     | `tuidaw_set_speed(speed)`, `tuidaw_get_speed()` — WSOLA 0.25x–2.0x                                                                                                                                                     |
+| Monitor   | `tuidaw_start_monitoring(id)`, `tuidaw_stop_monitoring(id)`, `tuidaw_is_monitoring(id)`, `tuidaw_has_jack_monitoring()` — direct JACK API passthrough via dlopen, PulseAudio duplex fallback                           |
+| Render    | `tuidaw_render(output, frame_count)` — offline render for tests/export                                                                                                                                                 |
 
 ### Key behaviors
 
@@ -75,7 +75,7 @@ C shared library (`native/tuidaw_audio.c`, ~1780 lines) wrapping miniaudio. Buil
 - **Playhead** from `wsola.input_pos` when WSOLA active, atomic counter otherwise
 - **Content-space coordinates**: ALL coords (playhead, scroll, loop, beat grid) are in source-sample space. UI does NOT apply speed scaling. Beat grid uses `originalBpm`.
 - **Click**: long pre-rendered buffer generated by `tuidaw_generate_click()` in C. GCD-exact beat positions, output-space `click_frame_counter`, counter-based loop wrap. Buffer is C-owned (malloc/realloc).
-- **Recording**: per-track capture devices with ring buffers, polled from JS via `pollRecordingData()`. Web uses getUserMedia + ScriptProcessorNode (WASM capture unreliable).
+- **Recording**: per-track capture devices with ring buffers, polled from JS via `pollRecordingData()`. Multi-channel capture: opens device in native channel count when specific channel selected, extracts in callback. Web uses getUserMedia + ScriptProcessorNode (WASM capture unreliable).
 - **`tuidaw_set_speed` resets WSOLA** for all active tracks (prevents stale `input_pos` jumps)
 - **Output device switch** requires `stop_playback_device` + `start_playback_device` after `set_output_device`
 
@@ -143,13 +143,16 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Full-duplex monitoring**: Ring buffer approach (capture→ringbuf→playback callback) had ~100ms+ latency via PulseAudio. Fix: `ma_device_type_duplex` gives input+output in same callback, eliminating inter-thread hop.
 - **Direct JACK API for monitoring**: miniaudio's JACK backend fails for duplex on PipeWire because it uses `JackPortIsPhysical` to find ports, and PipeWire's split/filter ports (e.g., Scarlett Inst/Line input) don't have that flag. Fix: bypass miniaudio entirely — `dlopen("libjack.so.0")`, register ports via `jack_port_register`, find correct capture/playback ports by name pattern (searching ALL ports, not just physical), and connect manually via `jack_connect`. Result: ~42ms round-trip vs ~68ms via PulseAudio duplex.
 - **JACK port selection uses track's device**: JACK monitoring port connections respect `rec_device_index` and `output_device_index`. Maps miniaudio device names to JACK port node names (before ':') via substring matching with keyword fallback. Falls back to "Inst" capture / any capture if no device-specific match.
-- **Nano Cortex 8-channel surround**: Neural DSP Nano Cortex presents as 8-channel surround 7.1 (`s32le 8ch 48000Hz`) in PulseAudio. Guitar signal is on capture_FL (first channel). miniaudio handles 8→1 downmix for recording, but PulseAudio volume must be at 100% (not default 10% / -60dB) or recordings will be silent.
+- **Nano Cortex 8-channel surround**: Neural DSP Nano Cortex presents as 8-channel (`s32le 8ch 48000Hz`) in PulseAudio. In default profile uses surround 7.1 channel map; in Pro Audio profile uses AUX0-AUX7. PulseAudio volume must be at 100% (not default 10% / -60dB) or recordings will be silent.
 - **PulseAudio source volume can silence recordings**: Some USB devices default to very low PulseAudio source volume (Nano Cortex: 10% / -60dB). JACK monitoring bypasses PulseAudio volume entirely (direct port connections), so monitoring works while recording captures silence. Fix: check `pactl list sources` for volume levels.
 - **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `PIPEWIRE_LATENCY=256/48000` env var set before `jack_client_open` — PipeWire lowers the quantum for this client's driver group only, without affecting other apps. `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other applications (Discord chipmunk effect). `unsetenv` after client open to avoid leaking to child processes.
 - **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
 - **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
 - **Scarlett Solo USB latency floor**: Physical loopback measurement (output → instrument input) shows ~42ms round-trip minimum via JACK. PipeWire quantum locks at 256 frames (5.33ms) regardless of requesting lower values. The remaining ~31ms is USB audio interface buffering + PipeWire graph traversal.
+- **Multi-channel device capture**: `ma_context_get_devices()` only returns basic info — `nativeDataFormats` is not populated for PulseAudio devices. Must use `ma_context_get_device_info()` for accurate native channel count. When a specific channel is selected (`rec_channel >= 0`), the capture device opens in native channel count and the callback extracts the selected channel from interleaved data. Channel convention: C/TUI uses `-1` = mono downmix, `0+` = 0-indexed specific channel. Web uses `0` = mono mix, `1+` = 1-indexed. Project descriptor uses the C/TUI convention.
+- **Nano Cortex Pro Audio profile**: In PipeWire Pro Audio mode (`pactl set-card-profile ... pro-audio`), Nano Cortex exposes 8 channels as AUX0-AUX7. Official spec is 4in/3out: USB IN 1 (DI/dry) = AUX0, USB IN 2 (processed/wet) = AUX1, USB IN 3 (capture input return) = AUX2, USB IN 4 (capture reference) = AUX3. AUX4-7 are padding. JACK ports appear as `Nano Cortex Pro:capture_AUX0` through `capture_AUX7`.
+- **Stable device IDs**: `ma_device_id.pulse` contains a stable PulseAudio device name string (e.g., `alsa_input.usb-Neural_DSP_Nano_Cortex_NA00AF103-00.pro-input-0`) that persists across enumerations and reboots. Used in project save/load to resolve devices by stable ID instead of fragile ephemeral indices.
 
 ## File Structure
 
@@ -157,11 +160,11 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ./
 ├── AGENTS.md, LICENSE, README.md, setup.sh
 ├── index.ts              # Entry dispatcher: --host → web/server.ts, else → tui.ts
-├── tui.ts                # TUI mode (~1232 lines)
+├── tui.ts                # TUI mode (~1282 lines)
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1780 lines, 36+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~1946 lines, 40+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)
@@ -170,10 +173,10 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 │   └── zig-toolchain/    # Zig 0.14.0 (gitignored)
 ├── src/
 │   ├── types.ts          # Track, ProjectState, constants (TRACK_ROW_HEIGHT=4, etc.)
-│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1285 lines)
+│   ├── audio-engine.ts   # AudioEngine: bun:ffi bridge (~1352 lines)
 │   ├── braille.ts        # Braille waveform + level meter (~113 lines)
 │   ├── state.ts          # State helpers (createTrack, formatTime, etc.)
-│   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1399 lines)
+│   ├── ui.ts             # UIRenderer: OpenTUI rendering + mouse (~1559 lines)
 │   └── utils/
 │       ├── bpm.ts        # BPM detection (shared TUI+Web, ~310 lines)
 │       ├── dsp.ts        # resample() (~25 lines)

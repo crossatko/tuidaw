@@ -72,6 +72,11 @@ export class UIRenderer {
   private deviceSelectorCallback:
     | ((device: AudioDevice | null) => void)
     | null = null
+  private channelSelectorVisible = false
+  private channelSelectorIndex = 0
+  private channelSelectorChannels = 0
+  private channelSelectorDeviceName = ''
+  private channelSelectorCallback: ((channel: number) => void) | null = null
   private filePickerVisible = false
   private filePickerFiles: string[] = []
   private filePickerIndex = 0
@@ -341,6 +346,9 @@ export class UIRenderer {
     if (this.deviceSelectorVisible) {
       this.renderDeviceSelectorOverlay()
     }
+    if (this.channelSelectorVisible) {
+      this.renderChannelSelectorOverlay()
+    }
     if (this.filePickerVisible) {
       this.renderFilePickerOverlay()
     }
@@ -573,11 +581,15 @@ export class UIRenderer {
         const dev = state.availableInputDevices.find(
           (d) => d.id === track.inputDeviceId
         )
-        const shortName = dev
+        let shortName = dev
           ? dev.description.length > 6
             ? dev.description.substring(0, 6)
             : dev.description
           : '?'
+        // Append channel label for multi-channel devices
+        if (track.inputChannel >= 0) {
+          shortName += `:${track.inputChannel}`
+        }
         const label = `[${shortName}]`
         const labelX = w - 2 - label.length
         if (labelX > 2 + name.length + 1) {
@@ -648,7 +660,11 @@ export class UIRenderer {
         const dev = state.availableInputDevices.find(
           (d) => d.id === track.inputDeviceId
         )
-        const devLabel = dev ? dev.description : `ID:${track.inputDeviceId}`
+        let devLabel = dev ? dev.description : `ID:${track.inputDeviceId}`
+        // Append channel info for multi-channel devices
+        if (track.inputChannel >= 0) {
+          devLabel += ` [AUX${track.inputChannel}]`
+        }
         const truncated =
           devLabel.length > w - 4
             ? devLabel.substring(0, w - 7) + '...'
@@ -1147,6 +1163,150 @@ export class UIRenderer {
 
   deviceSelectorCancel(): void {
     this.closeDeviceSelector()
+  }
+
+  // =========================================================================
+  // CHANNEL SELECTOR - Pick channel from multi-channel device
+  // =========================================================================
+
+  openChannelSelector(
+    deviceName: string,
+    channelCount: number,
+    currentChannel: number,
+    callback: (channel: number) => void
+  ): void {
+    this.channelSelectorVisible = true
+    this.channelSelectorDeviceName = deviceName
+    this.channelSelectorChannels = channelCount
+    this.channelSelectorCallback = callback
+    // +1 because index 0 is "All (downmix)", 1+ are specific channels
+    if (currentChannel >= 0 && currentChannel < channelCount) {
+      this.channelSelectorIndex = currentChannel + 1
+    } else {
+      this.channelSelectorIndex = 0
+    }
+  }
+
+  closeChannelSelector(): void {
+    this.channelSelectorVisible = false
+    this.channelSelectorCallback = null
+  }
+
+  isChannelSelectorVisible(): boolean {
+    return this.channelSelectorVisible
+  }
+
+  channelSelectorUp(): void {
+    if (this.channelSelectorIndex > 0) {
+      this.channelSelectorIndex--
+    }
+  }
+
+  channelSelectorDown(): void {
+    if (this.channelSelectorIndex < this.channelSelectorChannels) {
+      this.channelSelectorIndex++
+    }
+  }
+
+  channelSelectorConfirm(): void {
+    const channel =
+      this.channelSelectorIndex === 0 ? -1 : this.channelSelectorIndex - 1
+    if (this.channelSelectorCallback) this.channelSelectorCallback(channel)
+    this.closeChannelSelector()
+  }
+
+  channelSelectorCancel(): void {
+    this.closeChannelSelector()
+  }
+
+  renderChannelSelectorOverlay(): void {
+    const fb = this.mainFB.frameBuffer
+    const w = this.mainFB.width
+    const h = this.mainFB.height
+    const channels = this.channelSelectorChannels
+
+    const boxW = Math.min(50, w - 4)
+    const listCount = channels + 1 // +1 for "All (downmix)"
+    const boxH = Math.min(listCount + 4, h - 2)
+    const boxX = Math.floor((w - boxW) / 2)
+    const boxY = Math.floor((h - boxH) / 2)
+    const bgOverlay = RGBA.fromHex('#181825')
+    const bgSelected = RGBA.fromHex('#45475a')
+
+    fb.fillRect(boxX, boxY, boxW, boxH, bgOverlay)
+
+    // Border
+    for (let x = boxX; x < boxX + boxW; x++) {
+      fb.setCell(x, boxY, '─', FG_ACCENT, bgOverlay)
+      fb.setCell(x, boxY + boxH - 1, '─', FG_ACCENT, bgOverlay)
+    }
+    for (let y = boxY; y < boxY + boxH; y++) {
+      fb.setCell(boxX, y, '│', FG_ACCENT, bgOverlay)
+      fb.setCell(boxX + boxW - 1, y, '│', FG_ACCENT, bgOverlay)
+    }
+    fb.setCell(boxX, boxY, '╭', FG_ACCENT, bgOverlay)
+    fb.setCell(boxX + boxW - 1, boxY, '╮', FG_ACCENT, bgOverlay)
+    fb.setCell(boxX, boxY + boxH - 1, '╰', FG_ACCENT, bgOverlay)
+    fb.setCell(boxX + boxW - 1, boxY + boxH - 1, '╯', FG_ACCENT, bgOverlay)
+
+    // Title
+    const title = `  ${this.channelSelectorDeviceName} — Channel  `
+    const truncTitle =
+      title.length > boxW - 2 ? title.substring(0, boxW - 2) : title
+    fb.drawText(
+      truncTitle,
+      boxX + Math.floor((boxW - truncTitle.length) / 2),
+      boxY,
+      FG_ACCENT,
+      bgOverlay,
+      TextAttributes.BOLD
+    )
+
+    // Instructions
+    const instructions = '↑↓:Navigate  Enter:Select  Esc:Cancel'
+    fb.drawText(
+      instructions,
+      boxX + Math.floor((boxW - instructions.length) / 2),
+      boxY + boxH - 1,
+      FG_DIM,
+      bgOverlay
+    )
+
+    // List items
+    const maxVisible = boxH - 3
+    const scrollStart = Math.max(0, this.channelSelectorIndex - maxVisible + 1)
+
+    let row = 0
+    for (let i = scrollStart; i <= channels && row < maxVisible; i++, row++) {
+      const y = boxY + 2 + row
+      const isSelected = i === this.channelSelectorIndex
+      const bg = isSelected ? bgSelected : bgOverlay
+      const fg = isSelected ? FG_PRIMARY : FG_DIM
+
+      fb.fillRect(boxX + 1, y, boxW - 2, 1, bg)
+
+      const marker = isSelected ? ' > ' : '   '
+      if (i === 0) {
+        fb.drawText(
+          `${marker}All (downmix)`,
+          boxX + 2,
+          y,
+          fg,
+          bg,
+          isSelected ? TextAttributes.BOLD : 0
+        )
+      } else {
+        const chLabel = `AUX${i - 1}`
+        fb.drawText(
+          `${marker}${chLabel}`,
+          boxX + 2,
+          y,
+          fg,
+          bg,
+          isSelected ? TextAttributes.BOLD : 0
+        )
+      }
+    }
   }
 
   renderDeviceSelectorOverlay(): void {

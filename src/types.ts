@@ -8,6 +8,8 @@ export interface AudioDevice {
   description: string // Display name
   type: 'input' | 'output' // Capture or playback device
   isDefault: boolean // Whether this is the system default device
+  stableId: string // Stable PulseAudio device ID (persists across reboots/hotplug)
+  channels: number // Native channel count (e.g. 8 for Nano Cortex in Pro Audio)
 }
 
 export interface Track {
@@ -24,6 +26,7 @@ export interface Track {
   sampleRate: number
   filePath: string | null
   inputDeviceId: number | null // Input device index for recording (null = default)
+  inputChannel: number // Which channel to capture (0-based), -1 = mono downmix (default)
 }
 
 export type TransportState = 'stopped' | 'playing' | 'recording'
@@ -69,7 +72,8 @@ export interface ProjectDescriptor {
   scrollOffset: number
   loopStart: number | null
   loopEnd: number | null
-  outputDeviceId: number | null
+  outputDeviceId: number | null // Legacy: ephemeral index (kept for compat)
+  outputDeviceStableId: string | null // Stable PulseAudio device ID
   selectedTrackIndex: number
   tracks: TrackDescriptor[]
 }
@@ -84,7 +88,9 @@ export interface TrackDescriptor {
   volume: number
   pan: number
   sampleRate: number
-  inputDeviceId: number | null
+  inputDeviceId: number | null // Legacy: ephemeral index (kept for compat)
+  inputDeviceStableId: string | null // Stable PulseAudio device ID
+  inputChannel: number // 0-based channel, -1 = mono downmix
   // Relative path to the WAV file inside the tarball (e.g. "tracks/track_1.wav")
   wavFile: string | null
 }

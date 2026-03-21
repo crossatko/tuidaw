@@ -299,6 +299,11 @@ export async function saveProject(): Promise<void> {
         pan: track.pan,
         sampleRate: track.sampleRate,
         inputDeviceId: null,
+        inputDeviceStableId: null,
+        inputChannel:
+          track.inputChannel != null && track.inputChannel > 0
+            ? track.inputChannel - 1
+            : -1,
         wavFile
       })
     }
@@ -317,6 +322,7 @@ export async function saveProject(): Promise<void> {
       loopStart: state.loopStart,
       loopEnd: state.loopEnd,
       outputDeviceId: null,
+      outputDeviceStableId: null,
       selectedTrackIndex: state.selectedTrackIndex,
       tracks: trackDescs
     }
@@ -429,7 +435,10 @@ export function openProject(): void {
           samples,
           sampleRate: td.sampleRate,
           inputDeviceId: null,
-          inputChannel: 0
+          inputChannel:
+            td.inputChannel != null && td.inputChannel >= 0
+              ? td.inputChannel + 1
+              : 0
         })
       }
 

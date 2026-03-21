@@ -536,6 +536,32 @@ export default async function main() {
       return
     }
 
+    // Channel selector overlay - intercept navigation keys
+    if (ui.isChannelSelectorVisible()) {
+      if (key.name === 'up' || key.name === 'k') {
+        ui.channelSelectorUp()
+        render()
+        return
+      }
+      if (key.name === 'down' || key.name === 'j') {
+        ui.channelSelectorDown()
+        render()
+        return
+      }
+      if (key.name === 'return') {
+        ui.channelSelectorConfirm()
+        render()
+        return
+      }
+      if (key.name === 'escape') {
+        ui.channelSelectorCancel()
+        render()
+        return
+      }
+      // Ignore other keys while channel selector is open
+      return
+    }
+
     // Space - Play/Stop toggle (records if any tracks are armed)
     if (key.name === 'space') {
       if (state.transportState !== 'stopped') {
@@ -920,15 +946,39 @@ export default async function main() {
           track.inputDeviceId,
           (device) => {
             track.inputDeviceId = device ? device.id : null
-            // Sync input device to native engine immediately so it's ready for recording
-            audioEngine.syncTrack(track)
-            // Restart monitoring with the new input device if active
-            if (track.monitoring) {
-              audioEngine.stopMonitoring(track.id)
-              audioEngine.startMonitoring(track.id)
+
+            if (device && device.channels > 1) {
+              // Multi-channel device: show channel selector
+              ui.openChannelSelector(
+                device.description,
+                device.channels,
+                track.inputChannel,
+                (channel) => {
+                  track.inputChannel = channel
+                  audioEngine.syncTrack(track)
+                  if (track.monitoring) {
+                    audioEngine.stopMonitoring(track.id)
+                    audioEngine.startMonitoring(track.id)
+                  }
+                  const chLabel = channel >= 0 ? `[AUX${channel}]` : '[downmix]'
+                  ui.showStatusMessage(
+                    `Input: ${device.description} ${chLabel}`
+                  )
+                  render()
+                }
+              )
+              render()
+            } else {
+              // Mono or default device: reset channel to downmix
+              track.inputChannel = -1
+              audioEngine.syncTrack(track)
+              if (track.monitoring) {
+                audioEngine.stopMonitoring(track.id)
+                audioEngine.startMonitoring(track.id)
+              }
+              const devName = device ? device.description : 'Default'
+              ui.showStatusMessage(`Input: ${devName}`)
             }
-            const devName = device ? device.description : 'Default'
-            ui.showStatusMessage(`Input: ${devName}`)
           }
         )
         render()
