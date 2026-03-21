@@ -178,6 +178,136 @@ export default async function main() {
       )
       audioEngine.setClickPan(state.clickPan)
       render()
+    },
+    onButtonClick: async (
+      trackIndex: number,
+      button: 'M' | 'S' | 'R' | 'O'
+    ) => {
+      // Select the clicked track first
+      if (trackIndex >= 0 && trackIndex < state.tracks.length) {
+        state.selectedTrackIndex = trackIndex
+      }
+      const track = state.tracks[trackIndex]
+      if (!track) return
+
+      switch (button) {
+        case 'M':
+          track.muted = !track.muted
+          if (state.transportState !== 'stopped') {
+            refreshLivePlayback()
+          }
+          break
+        case 'S':
+          track.solo = !track.solo
+          if (state.transportState !== 'stopped') {
+            refreshLivePlayback()
+          }
+          break
+        case 'R':
+          track.armed = !track.armed
+          if (state.transportState !== 'stopped') {
+            const currentPos = audioEngine.getPlayhead()
+            if (track.armed) {
+              // Punch-in
+              audioEngine.setTrackMuted(track.id, true)
+              if (state.transportState === 'playing') {
+                state.transportState = 'recording'
+              }
+              await punchInTrack(track, currentPos)
+            } else {
+              // Punch-out
+              if (trackRecordStartPositions.has(track.id)) {
+                await punchOutTrack(track)
+                if (shouldTrackPlay(track)) {
+                  audioEngine.setTrackMuted(track.id, false)
+                }
+              }
+              const stillRecording = state.tracks.some(
+                (t) => t.armed && trackRecordStartPositions.has(t.id)
+              )
+              if (!stillRecording && state.transportState === 'recording') {
+                state.transportState = 'playing'
+              }
+            }
+          }
+          break
+        case 'O':
+          if (track.monitoring) {
+            audioEngine.stopMonitoring(track.id)
+            track.monitoring = false
+            ui.showStatusMessage(`Monitoring OFF: ${track.name}`)
+          } else {
+            audioEngine.syncTrack(track)
+            const ok = audioEngine.startMonitoring(track.id)
+            if (ok) {
+              track.monitoring = true
+              const monBackend = audioEngine.hasJackMonitoring()
+                ? 'JACK'
+                : audioEngine.getBackendName()
+              ui.showStatusMessage(
+                `Monitoring ON: ${track.name} [${monBackend}]`
+              )
+            } else {
+              ui.showStatusMessage(
+                'Failed to start monitoring — check input device (F2)'
+              )
+            }
+          }
+          break
+      }
+      render()
+    },
+    onInputDeviceClick: async (trackIndex: number) => {
+      // Select the clicked track first
+      if (trackIndex >= 0 && trackIndex < state.tracks.length) {
+        state.selectedTrackIndex = trackIndex
+      }
+      const track = state.tracks[trackIndex]
+      if (!track) return
+
+      // Refresh device list (same as F2)
+      const devs = await audioEngine.enumerateDevices()
+      state.availableInputDevices = devs.inputs
+      state.availableOutputDevices = devs.outputs
+
+      ui.openDeviceSelector(
+        'input',
+        state.availableInputDevices,
+        track.inputDeviceId,
+        (device) => {
+          track.inputDeviceId = device ? device.id : null
+
+          if (device && device.channels > 1) {
+            ui.openChannelSelector(
+              device.description,
+              device.channels,
+              track.inputChannel,
+              (channel) => {
+                track.inputChannel = channel
+                audioEngine.syncTrack(track)
+                if (track.monitoring) {
+                  audioEngine.stopMonitoring(track.id)
+                  audioEngine.startMonitoring(track.id)
+                }
+                const chLabel = channel >= 0 ? `[AUX${channel}]` : '[downmix]'
+                ui.showStatusMessage(`Input: ${device.description} ${chLabel}`)
+                render()
+              }
+            )
+            render()
+          } else {
+            track.inputChannel = -1
+            audioEngine.syncTrack(track)
+            if (track.monitoring) {
+              audioEngine.stopMonitoring(track.id)
+              audioEngine.startMonitoring(track.id)
+            }
+            const devName = device ? device.description : 'Default'
+            ui.showStatusMessage(`Input: ${devName}`)
+          }
+        }
+      )
+      render()
     }
   })
 

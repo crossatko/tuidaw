@@ -52,6 +52,12 @@ const CLICK_COLOR = RGBA.fromHex('#89dceb')
 const GRID_COLOR = RGBA.fromHex('#45475a')
 const TRANSPARENT = RGBA.fromValues(0, 0, 0, 0)
 
+// Dark background colors for active M/S/R/O buttons
+const BG_MUTE_ACTIVE = RGBA.fromHex('#3b2020') // dark red
+const BG_SOLO_ACTIVE = RGBA.fromHex('#3b3520') // dark yellow
+const BG_ARM_ACTIVE = RGBA.fromHex('#3b2020') // dark red (same as mute)
+const BG_MON_ACTIVE = RGBA.fromHex('#203b20') // dark green
+
 export class UIRenderer {
   private renderer: CliRenderer
   private rootContainer!: BoxRenderable
@@ -188,6 +194,8 @@ export class UIRenderer {
     onTimelineClick: (x: number, mainWidth: number) => void
     onClickVolumeChange: (delta: number) => void
     onClickPanChange: (delta: number) => void
+    onButtonClick: (trackIndex: number, button: 'M' | 'S' | 'R' | 'O') => void
+    onInputDeviceClick: (trackIndex: number) => void
   }): void {
     // Debounce scroll events — some terminals fire multiple events per physical wheel tick.
     // Accept only the first event in a 10ms window.
@@ -262,7 +270,7 @@ export class UIRenderer {
       callbacks.onVolumeChange(delta * 0.05)
     }
 
-    // Sidebar: click to select track
+    // Sidebar: click to select track, toggle M/S/R/O buttons, open input device
     this.sidebarFB.onMouse = (event: MouseEvent) => {
       if (event.type !== 'down') return
       const contentY = event.y - TOPBAR_HEIGHT
@@ -283,6 +291,41 @@ export class UIRenderer {
       const rowInTrack = trackContentY % trackStride
       // Don't select if clicking on separator row
       if (rowInTrack >= TRACK_ROW_HEIGHT) return
+
+      // Row 1: M/S/R/O button hit-testing
+      // Button positions: M at x=1-2, S at x=4-5, R at x=7-8, O at x=10-11
+      if (rowInTrack === 1) {
+        const x = event.x
+        if (x >= 1 && x <= 2) {
+          callbacks.onButtonClick(trackIndex, 'M')
+          return
+        }
+        if (x >= 4 && x <= 5) {
+          callbacks.onButtonClick(trackIndex, 'S')
+          return
+        }
+        if (x >= 7 && x <= 8) {
+          callbacks.onButtonClick(trackIndex, 'R')
+          return
+        }
+        if (x >= 10 && x <= 11) {
+          callbacks.onButtonClick(trackIndex, 'O')
+          return
+        }
+      }
+
+      // Row 0 (input device label area) or Row 4 (input device / level meter):
+      // open input device selector
+      if (rowInTrack === 0 || rowInTrack === 4) {
+        // Check if click is in the input label zone on row 0 (right side)
+        // or anywhere on row 4 — trigger input device selector
+        if (rowInTrack === 4) {
+          callbacks.onInputDeviceClick(trackIndex)
+          return
+        }
+      }
+
+      // Default: select the track
       callbacks.onTrackClick(trackIndex)
     }
 
@@ -604,17 +647,22 @@ export class UIRenderer {
         }
       }
 
-      // Row 1: Mute / Solo / Arm buttons
+      // Row 1: Mute / Solo / Arm / Monitor buttons (colored bg when active)
       const muteColor = track.muted ? FG_RED : FG_DIM
+      const muteBg = track.muted ? BG_MUTE_ACTIVE : bg
       const soloColor = track.solo ? FG_YELLOW : FG_DIM
+      const soloBg = track.solo ? BG_SOLO_ACTIVE : bg
       const armColor = track.armed ? FG_RED : FG_DIM
+      const armBg = track.armed ? BG_ARM_ACTIVE : bg
+      const monColor = track.monitoring ? FG_GREEN : FG_DIM
+      const monBg = track.monitoring ? BG_MON_ACTIVE : bg
 
       fb.drawText(
         ' M',
         1,
         y + 1,
         muteColor,
-        bg,
+        muteBg,
         track.muted ? TextAttributes.BOLD : 0
       )
       fb.drawText(
@@ -622,7 +670,7 @@ export class UIRenderer {
         4,
         y + 1,
         soloColor,
-        bg,
+        soloBg,
         track.solo ? TextAttributes.BOLD : 0
       )
       fb.drawText(
@@ -630,17 +678,15 @@ export class UIRenderer {
         7,
         y + 1,
         armColor,
-        bg,
+        armBg,
         track.armed ? TextAttributes.BOLD : 0
       )
-
-      const monColor = track.monitoring ? FG_GREEN : FG_DIM
       fb.drawText(
         ' O',
         10,
         y + 1,
         monColor,
-        bg,
+        monBg,
         track.monitoring ? TextAttributes.BOLD : 0
       )
 
