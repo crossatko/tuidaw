@@ -271,12 +271,10 @@ typedef struct {
     ma_device     mon_device;        // full-duplex device for monitoring (PulseAudio fallback)
     int           mon_device_active; // is mon_device initialized and started
 
-    // Direct JACK monitoring state (preferred — ~58ms vs ~68ms PulseAudio)
-    jack_client_t* jack_client;      // JACK client for this track's monitoring
-    jack_port_t*   jack_capture;     // JACK input port (receives from selected capture device)
-    jack_port_t*   jack_playback_L;  // JACK output port (sends to selected output L)
-    jack_port_t*   jack_playback_R;  // JACK output port (sends to selected output R)
-    int            jack_mon_active;  // is JACK monitoring active
+    // JACK monitoring uses the shared client's pre-registered port slots.
+    // The slot index is assigned when monitoring starts.
+    int            jack_mon_slot;    // index into g_engine.jack_mon_* arrays (-1 = none)
+    int            jack_mon_active;  // are this track's JACK ports connected
 
     // Direct JACK recording state (for devices needing custom nodes, without monitoring)
     jack_client_t* jack_rec_client;  // JACK client for capture-only recording
@@ -298,9 +296,23 @@ typedef struct {
     int           playback_active;
 
     // Direct JACK API availability (loaded via dlopen at init time).
-    // When available, monitoring uses JACK for lower latency (~42ms round-trip)
+    // When available, monitoring uses JACK for lower latency (~58ms round-trip)
     // vs PulseAudio fallback (~68ms round-trip).
     int           jack_available;
+
+    // Shared JACK monitoring client. All tracks share a single JACK client
+    // to avoid PipeWire graph reconfiguration when enabling monitoring on
+    // additional tracks. Port triples (capture + playback L/R) are pre-registered
+    // at client activation time — tracks just claim a slot and connect/disconnect.
+    // No port_register/unregister after activation = no graph reconfiguration.
+    jack_client_t* jack_mon_client;       // shared JACK monitoring client
+    int            jack_mon_client_active; // is the shared client activated
+
+    #define JACK_MON_SLOTS 8  // max simultaneous monitoring tracks
+    jack_port_t*   jack_mon_capture[JACK_MON_SLOTS];    // pre-registered input ports
+    jack_port_t*   jack_mon_playback_L[JACK_MON_SLOTS]; // pre-registered output L ports
+    jack_port_t*   jack_mon_playback_R[JACK_MON_SLOTS]; // pre-registered output R ports
+    int            jack_mon_slot_owner[JACK_MON_SLOTS];  // track index owning each slot (-1 = free)
 
     TrackState    tracks[MAX_TRACKS];
 
@@ -873,41 +885,65 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
 // audio and outputs stereo with volume/pan applied. Same logic as the miniaudio
 // duplex callback above, but uses JACK port buffers directly.
 
+// ── Shared JACK Monitoring Process Callback ─────────────────────────────────
+// Single callback for the shared JACK monitoring client. Iterates all active
+// tracks and processes audio for each one that has monitoring enabled.
+
 static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
-    TrackState* tk = (TrackState*)arg;
-    if (!tk) return 0;
+    (void)arg;  // unused — we use g_engine directly
 
-    float* in = (float*)g_jack.port_get_buffer(tk->jack_capture, nframes);
-    float* out_L = (float*)g_jack.port_get_buffer(tk->jack_playback_L, nframes);
-    float* out_R = (float*)g_jack.port_get_buffer(tk->jack_playback_R, nframes);
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        TrackState* tk = &g_engine.tracks[i];
+        if (!tk->active || !tk->jack_mon_active) continue;
+        int slot = tk->jack_mon_slot;
+        if (slot < 0 || slot >= JACK_MON_SLOTS) continue;
 
-    if (!atomic_load(&tk->monitoring)) {
-        memset(out_L, 0, nframes * sizeof(float));
-        memset(out_R, 0, nframes * sizeof(float));
-        return 0;
-    }
+        jack_port_t* cap_port = g_engine.jack_mon_capture[slot];
+        jack_port_t* pb_L_port = g_engine.jack_mon_playback_L[slot];
+        jack_port_t* pb_R_port = g_engine.jack_mon_playback_R[slot];
+        if (!cap_port || !pb_L_port || !pb_R_port) continue;
 
-    float vol = atomic_load(&tk->volume);
-    float pan = atomic_load(&tk->pan);
-    float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-    float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+        float* in = (float*)g_jack.port_get_buffer(cap_port, nframes);
+        float* out_L = (float*)g_jack.port_get_buffer(pb_L_port, nframes);
+        float* out_R = (float*)g_jack.port_get_buffer(pb_R_port, nframes);
 
-    for (jack_nframes_t i = 0; i < nframes; i++) {
-        float sample = in[i] * vol;
-        out_L[i] = sample * left_gain;
-        out_R[i] = sample * right_gain;
-    }
-
-    // If the track is recording, also capture the raw input into the recording
-    // buffer. This handles the case where the PulseAudio device is unavailable
-    // (card profile set to "off" for custom node workaround).
-    if (atomic_load(&tk->recording) && tk->rec_buffer) {
-        int write_pos = atomic_load(&tk->rec_write_pos);
-        for (jack_nframes_t i = 0; i < nframes; i++) {
-            if (write_pos >= RECORDING_BUF_LEN) break;
-            tk->rec_buffer[write_pos++] = in[i];
+        if (!atomic_load(&tk->monitoring)) {
+            memset(out_L, 0, nframes * sizeof(float));
+            memset(out_R, 0, nframes * sizeof(float));
+            // Still capture for recording even when monitoring is off
+            if (atomic_load(&tk->recording) && tk->rec_buffer) {
+                int write_pos = atomic_load(&tk->rec_write_pos);
+                for (jack_nframes_t j = 0; j < nframes; j++) {
+                    if (write_pos >= RECORDING_BUF_LEN) break;
+                    tk->rec_buffer[write_pos++] = in[j];
+                }
+                atomic_store(&tk->rec_write_pos, write_pos);
+            }
+            continue;
         }
-        atomic_store(&tk->rec_write_pos, write_pos);
+
+        float vol = atomic_load(&tk->volume);
+        float pan = atomic_load(&tk->pan);
+        float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+        float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+
+        for (jack_nframes_t j = 0; j < nframes; j++) {
+            float sample = in[j] * vol;
+            out_L[j] = sample * left_gain;
+            out_R[j] = sample * right_gain;
+        }
+
+        // If the track is recording, also capture the raw input into the recording
+        // buffer. This handles the case where the PulseAudio device is unavailable
+        // (card profile set to "off" for custom node workaround).
+        if (atomic_load(&tk->recording) && tk->rec_buffer) {
+            int write_pos = atomic_load(&tk->rec_write_pos);
+            for (jack_nframes_t j = 0; j < nframes; j++) {
+                if (write_pos >= RECORDING_BUF_LEN) break;
+                tk->rec_buffer[write_pos++] = in[j];
+            }
+            atomic_store(&tk->rec_write_pos, write_pos);
+        }
     }
 
     return 0;
@@ -1374,6 +1410,8 @@ EXPORT int tuidaw_init(void) {
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.active_device_index = -1;
+    for (int s = 0; s < JACK_MON_SLOTS; s++)
+        g_engine.jack_mon_slot_owner[s] = -1;
 
     // Register atexit handler to clean up custom node helpers if the process
     // exits without calling tuidaw_deinit(). This ensures the card profile is
@@ -1415,6 +1453,8 @@ EXPORT int tuidaw_init_null(void) {
     atomic_store(&g_engine.playback_speed, 1.0f);
     g_engine.output_device_index = -1;
     g_engine.active_device_index = -1;
+    for (int s = 0; s < JACK_MON_SLOTS; s++)
+        g_engine.jack_mon_slot_owner[s] = -1;
     g_engine.use_null_backend = 1;
 
     ma_backend backends[] = { ma_backend_null };
@@ -1450,11 +1490,11 @@ EXPORT void tuidaw_deinit(void) {
         TrackState* tk = &g_engine.tracks[i];
         atomic_store(&tk->monitoring, 0);
         atomic_store(&tk->recording, 0);
-        // Clean up JACK monitoring
-        if (tk->jack_mon_active && g_jack.lib_handle) {
-            g_jack.deactivate(tk->jack_client);
-            g_jack.client_close(tk->jack_client);
-            tk->jack_client = NULL;
+        // Release JACK monitoring slot
+        if (tk->jack_mon_active) {
+            if (tk->jack_mon_slot >= 0 && tk->jack_mon_slot < JACK_MON_SLOTS)
+                g_engine.jack_mon_slot_owner[tk->jack_mon_slot] = -1;
+            tk->jack_mon_slot = -1;
             tk->jack_mon_active = 0;
         }
         // Clean up JACK recording
@@ -1478,6 +1518,20 @@ EXPORT void tuidaw_deinit(void) {
             tk->rec_buffer = NULL;
         }
         tk->active = 0;
+    }
+
+    // Close the shared JACK monitoring client (ports are destroyed with it)
+    if (g_engine.jack_mon_client_active && g_jack.lib_handle) {
+        g_jack.deactivate(g_engine.jack_mon_client);
+        g_jack.client_close(g_engine.jack_mon_client);
+        g_engine.jack_mon_client = NULL;
+        g_engine.jack_mon_client_active = 0;
+        for (int s = 0; s < JACK_MON_SLOTS; s++) {
+            g_engine.jack_mon_capture[s] = NULL;
+            g_engine.jack_mon_playback_L[s] = NULL;
+            g_engine.jack_mon_playback_R[s] = NULL;
+            g_engine.jack_mon_slot_owner[s] = -1;
+        }
     }
 
     // Stop playback device
@@ -1711,6 +1765,8 @@ EXPORT int tuidaw_add_track(int id) {
     tk->samples_len = 0;
     atomic_store(&tk->monitoring, 0);
     tk->mon_device_active = 0;
+    tk->jack_mon_slot = -1;
+    tk->jack_mon_active = 0;
     return 0;
 }
 
@@ -1722,10 +1778,14 @@ EXPORT void tuidaw_remove_track(int id) {
     // Stop monitoring if active (includes custom helper cleanup)
     atomic_store(&tk->monitoring, 0);
     atomic_store(&tk->recording, 0);
-    if (tk->jack_mon_active && g_jack.lib_handle) {
-        g_jack.deactivate(tk->jack_client);
-        g_jack.client_close(tk->jack_client);
-        tk->jack_client = NULL;
+    // Release JACK monitoring slot (don't unregister ports — they're pre-registered)
+    if (tk->jack_mon_active) {
+        if (tk->jack_mon_slot >= 0 && tk->jack_mon_slot < JACK_MON_SLOTS) {
+            // Disconnect the slot's ports from external ports
+            // (JACK disconnect is safe and doesn't cause graph reconfiguration)
+            g_engine.jack_mon_slot_owner[tk->jack_mon_slot] = -1;
+        }
+        tk->jack_mon_slot = -1;
         tk->jack_mon_active = 0;
     }
     if (tk->jack_rec_active && g_jack.lib_handle) {
@@ -2336,14 +2396,16 @@ EXPORT int tuidaw_start_monitoring(int id) {
     if (!tk) return -1;
     if (atomic_load(&tk->monitoring)) return 0; // already monitoring
 
-    // If the JACK client is already running (kept alive from a previous
-    // monitoring session), just re-enable monitoring via the atomic flag.
-    // The process callback checks this flag and starts passing audio through.
-    if (tk->jack_mon_active && tk->jack_client) {
+    // If this track already has a JACK monitoring slot assigned and connected
+    // (kept alive from a previous monitoring session), just re-enable
+    // monitoring via the atomic flag. The shared process callback checks
+    // this flag and starts passing audio through.
+    if (tk->jack_mon_active && tk->jack_mon_slot >= 0) {
         atomic_store(&tk->monitoring, 1);
         FILE* f = fopen("debug/monitor.log", "a");
         if (f) {
-            fprintf(f, "start_monitoring: reusing existing JACK client for id=%d\n", id);
+            fprintf(f, "start_monitoring: reusing existing JACK slot %d for id=%d\n",
+                    tk->jack_mon_slot, id);
             fclose(f);
         }
         return 0;
@@ -2353,7 +2415,7 @@ EXPORT int tuidaw_start_monitoring(int id) {
     if (g_engine.jack_available && !g_engine.use_null_backend) {
         // Diagnostic: log monitoring setup
         {
-            FILE* f = fopen("debug/monitor.log", "w");
+            FILE* f = fopen("debug/monitor.log", "a");
             if (f) {
                 fprintf(f, "start_monitoring: id=%d rec_device_index=%d rec_channel=%d\n",
                         id, tk->rec_device_index, tk->rec_channel);
@@ -2371,16 +2433,9 @@ EXPORT int tuidaw_start_monitoring(int id) {
         }
 
         // ── PipeWire custom node workaround for multi-channel USB devices ──
-        // Check if this capture device needs custom ALSA nodes to avoid
-        // the auto-link/node-group corruption. If so, spawn the helper
-        // process (which sets profile to off and creates clean nodes).
         if (!tk->custom_helper) {
             tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
         } else if (tk->custom_helper->pid > 0) {
-            // Helper already assigned (kept alive from previous monitoring
-            // session or active recording). Just bump ref_count directly —
-            // do NOT call acquire_custom_helper() because the device detection
-            // queries PulseAudio which won't find the device (profile is "off").
             tk->custom_helper->ref_count++;
             FILE* f = fopen("debug/monitor.log", "a");
             if (f) {
@@ -2398,60 +2453,99 @@ EXPORT int tuidaw_start_monitoring(int id) {
             }
         }
 
-        // NOTE: Do NOT set PIPEWIRE_LATENCY — forcing quantum 256 causes
-        // PipeWire to deliver stale/duplicated buffers to the JACK client.
-        // The custom ALSA nodes have their own node.latency + period-size
-        // for ALSA-level buffering. Default PipeWire quantum (1024) works
-        // cleanly, as confirmed by the standalone jack_quick_cap test.
+        // ── Ensure shared JACK monitoring client exists ──
+        // All tracks share a single JACK client to avoid PipeWire graph
+        // reconfiguration when enabling monitoring on additional tracks.
+        // The client is created and activated once, then kept alive.
+        if (!g_engine.jack_mon_client_active) {
+            jack_status_t status;
+            g_engine.jack_mon_client = g_jack.client_open("tuidaw-monitor",
+                JackNoStartServer, &status);
 
-        // Create a unique JACK client name per track
-        char client_name[64];
-        snprintf(client_name, sizeof(client_name), "tuidaw-mon-%d", id);
+            if (!g_engine.jack_mon_client) goto jack_failed;
 
-        jack_status_t status;
-        tk->jack_client = g_jack.client_open(client_name, JackNoStartServer, &status);
+            // Set shared process callback (iterates all tracks)
+            g_jack.set_process_callback(g_engine.jack_mon_client,
+                jack_monitor_process, NULL);
 
-        if (!tk->jack_client) goto jack_failed;
+            // Pre-register all port slots BEFORE activation. Registering ports
+            // on an already-active client triggers PipeWire graph reconfiguration
+            // for each port_register call (24 reconfigurations!), causing
+            // intermittent digital distortion. By registering before activate(),
+            // PipeWire sees the complete port set in a single graph update.
+            for (int s = 0; s < JACK_MON_SLOTS; s++) {
+                char pname[64];
+                snprintf(pname, sizeof(pname), "input_%d", s);
+                g_engine.jack_mon_capture[s] = g_jack.port_register(
+                    g_engine.jack_mon_client, pname,
+                    JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+                snprintf(pname, sizeof(pname), "output_L_%d", s);
+                g_engine.jack_mon_playback_L[s] = g_jack.port_register(
+                    g_engine.jack_mon_client, pname,
+                    JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+                snprintf(pname, sizeof(pname), "output_R_%d", s);
+                g_engine.jack_mon_playback_R[s] = g_jack.port_register(
+                    g_engine.jack_mon_client, pname,
+                    JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+                g_engine.jack_mon_slot_owner[s] = -1;
+            }
 
-        // Register our ports
-        tk->jack_capture = g_jack.port_register(tk->jack_client, "input",
-            JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
-        tk->jack_playback_L = g_jack.port_register(tk->jack_client, "output_L",
-            JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
-        tk->jack_playback_R = g_jack.port_register(tk->jack_client, "output_R",
-            JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+            // Activate client (starts the process callback). All ports are
+            // already registered, so PipeWire does a single graph update.
+            if (g_jack.activate(g_engine.jack_mon_client) != 0) {
+                // Clean up registered ports (client_close does this)
+                g_jack.client_close(g_engine.jack_mon_client);
+                g_engine.jack_mon_client = NULL;
+                for (int s = 0; s < JACK_MON_SLOTS; s++) {
+                    g_engine.jack_mon_capture[s] = NULL;
+                    g_engine.jack_mon_playback_L[s] = NULL;
+                    g_engine.jack_mon_playback_R[s] = NULL;
+                }
+                goto jack_failed;
+            }
 
-        if (!tk->jack_capture || !tk->jack_playback_L || !tk->jack_playback_R) {
-            g_jack.client_close(tk->jack_client);
-            tk->jack_client = NULL;
+            g_engine.jack_mon_client_active = 1;
+
+            // Brief pause to let PipeWire complete the graph registration
+            usleep(50000);  // 50ms
+
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  Created shared JACK monitoring client with %d pre-registered port slots\n",
+                        JACK_MON_SLOTS);
+                fclose(f);
+            }
+        }
+
+        // Find a free port slot for this track
+        int slot = -1;
+        int track_idx = (int)(tk - g_engine.tracks);  // index of this track
+        for (int s = 0; s < JACK_MON_SLOTS; s++) {
+            if (g_engine.jack_mon_slot_owner[s] < 0) {
+                slot = s;
+                break;
+            }
+        }
+        if (slot < 0) {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) { fprintf(f, "  No free JACK monitoring slots!\n"); fclose(f); }
             goto jack_failed;
         }
 
-        // Set process callback
-        g_jack.set_process_callback(tk->jack_client, jack_monitor_process, tk);
-
-        // Activate client (starts the process callback)
-        if (g_jack.activate(tk->jack_client) != 0) {
-            g_jack.client_close(tk->jack_client);
-            tk->jack_client = NULL;
+        // Verify the slot's ports exist
+        if (!g_engine.jack_mon_capture[slot] ||
+            !g_engine.jack_mon_playback_L[slot] ||
+            !g_engine.jack_mon_playback_R[slot]) {
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) { fprintf(f, "  JACK slot %d has NULL ports!\n", slot); fclose(f); }
             goto jack_failed;
         }
 
-        // Brief pause to let PipeWire register the client in its graph
-        // before we query ports and make connections. Without this, port
-        // enumeration or connection can hit a race with graph reconfiguration.
-        usleep(50000);  // 50ms
+        tk->jack_mon_slot = slot;
+        g_engine.jack_mon_slot_owner[slot] = track_idx;
 
         // Find and connect to the right ports.
-        // We search ALL ports (not just physical) to find PipeWire's split/filter ports
-        // like "Scarlett Solo (3rd Gen.) Input 2 Inst/Line:capture_MONO".
-        //
-        // Port selection uses the track's rec_device_index and the engine's
-        // output_device_index to find JACK ports belonging to the correct
-        // devices. miniaudio device names (via PulseAudio) correspond to JACK
-        // node names (the part before the colon in "node:port"). We extract a
-        // keyword from the miniaudio name and match against JACK port names.
-        const char** all_ports = g_jack.get_ports(tk->jack_client, NULL,
+        const char** all_ports = g_jack.get_ports(g_engine.jack_mon_client, NULL,
             JACK_DEFAULT_AUDIO_TYPE, 0);
 
         if (!all_ports) {
@@ -2459,9 +2553,8 @@ EXPORT int tuidaw_start_monitoring(int id) {
                 FILE* f = fopen("debug/monitor.log", "a");
                 if (f) { fprintf(f, "  JACK get_ports returned NULL!\n"); fclose(f); }
             }
-            g_jack.deactivate(tk->jack_client);
-            g_jack.client_close(tk->jack_client);
-            tk->jack_client = NULL;
+            tk->jack_mon_slot = -1;
+            g_engine.jack_mon_slot_owner[slot] = -1;
             goto jack_failed;
         }
 
@@ -2757,20 +2850,25 @@ EXPORT int tuidaw_start_monitoring(int id) {
                     fclose(f);
                 }
             }
-            g_jack.deactivate(tk->jack_client);
-            g_jack.client_close(tk->jack_client);
-            tk->jack_client = NULL;
+            // Release the slot (ports stay pre-registered)
+            tk->jack_mon_slot = -1;
+            g_engine.jack_mon_slot_owner[slot] = -1;
             goto jack_failed;
         }
 
-        // Connect: external capture -> our input
-        const char* our_input = g_jack.port_name(tk->jack_capture);
-        const char* our_out_L = g_jack.port_name(tk->jack_playback_L);
-        const char* our_out_R = g_jack.port_name(tk->jack_playback_R);
+        // Connect: external capture -> our slot's input
+        const char* our_input = g_jack.port_name(g_engine.jack_mon_capture[slot]);
+        const char* our_out_L = g_jack.port_name(g_engine.jack_mon_playback_L[slot]);
+        const char* our_out_R = g_jack.port_name(g_engine.jack_mon_playback_R[slot]);
 
-        int rc1 = g_jack.connect(tk->jack_client, cap_name, our_input);
-        int rc2 = g_jack.connect(tk->jack_client, our_out_L, pb_L_name);
-        int rc3 = g_jack.connect(tk->jack_client, our_out_R, pb_R_name);
+        int rc1 = g_jack.connect(g_engine.jack_mon_client, cap_name, our_input);
+        int rc2 = g_jack.connect(g_engine.jack_mon_client, our_out_L, pb_L_name);
+        int rc3 = g_jack.connect(g_engine.jack_mon_client, our_out_R, pb_R_name);
+
+        // Brief settle after connections to let PipeWire complete graph update.
+        // Without this, the process callback may run before connections are
+        // fully established, producing brief digital distortion.
+        usleep(20000);  // 20ms
 
         // Diagnostic: log connection results
         {
@@ -2860,18 +2958,18 @@ EXPORT int tuidaw_start_monitoring(int id) {
     }
 }
 
-// Stop input monitoring on a track. Instead of closing the JACK client,
-// we just set monitoring=0 — the process callback already outputs silence
-// when monitoring is off. This avoids PipeWire graph reconfiguration on
-// every toggle, which causes crackling/distortion. The JACK client is
-// only closed when the track is removed or the engine shuts down.
+// Stop input monitoring on a track. Instead of removing JACK ports,
+// we just set monitoring=0 — the shared process callback already outputs
+// silence when monitoring is off. This avoids PipeWire graph reconfiguration
+// on every toggle, which causes crackling/distortion. The ports and shared
+// client are only cleaned up when the track is removed or the engine shuts down.
 EXPORT void tuidaw_stop_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return;
 
     atomic_store(&tk->monitoring, 0);
-    // jack_client, jack_capture, jack_playback_L/R stay alive
-    // jack_mon_active stays 1 — the client is still running (just outputting silence)
+    // jack_capture, jack_playback_L/R ports stay registered on the shared client
+    // jack_mon_active stays 1 — the ports are still connected (just outputting silence)
 
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
