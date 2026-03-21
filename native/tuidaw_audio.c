@@ -1060,11 +1060,19 @@ static CustomNodeHelper* acquire_custom_helper(int cap_device_index) {
 
     if (!helper_available()) return NULL;
 
-    // Check if we already have a helper for this card
+    // Check if we already have a helper for this card (even if ref_count is 0 —
+    // the helper stays alive between monitoring toggles to avoid the profile-switch
+    // race condition)
     for (int i = 0; i < g_custom_helper_count; i++) {
         if (g_custom_helpers[i].pid > 0 &&
             strcmp(g_custom_helpers[i].card_name, card_name) == 0) {
             g_custom_helpers[i].ref_count++;
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  acquire_custom_helper: reusing existing helper pid=%d ref_count=%d\n",
+                        g_custom_helpers[i].pid, g_custom_helpers[i].ref_count);
+                fclose(f);
+            }
             return &g_custom_helpers[i];
         }
     }
@@ -1212,29 +1220,46 @@ static CustomNodeHelper* acquire_custom_helper(int cap_device_index) {
     return h;
 }
 
-// Release a custom node helper. Decrements ref count, and if it reaches 0,
-// kills the helper process and restores the card profile.
+// Release a custom node helper. Decrements ref count. Does NOT kill the
+// process — the helper stays alive so it can be reused without the
+// profile-toggle race condition. Use kill_custom_helper() to actually
+// terminate the process (called from track removal / engine shutdown).
 static void release_custom_helper(CustomNodeHelper* h) {
     if (!h || h->pid <= 0) return;
 
-    h->ref_count--;
-    if (h->ref_count > 0) return;  // still in use by other tracks
+    if (h->ref_count > 0)
+        h->ref_count--;
 
-    // Kill the helper process
+    FILE* f = fopen("debug/monitor.log", "a");
+    if (f) {
+        fprintf(f, "  release_custom_helper: pid=%d ref_count=%d (kept alive)\n",
+                h->pid, h->ref_count);
+        fclose(f);
+    }
+}
+
+// Actually kill a custom node helper process and restore the card profile.
+// Called from track removal and engine shutdown — NOT from monitoring toggle.
+static void kill_custom_helper(CustomNodeHelper* h) {
+    if (!h || h->pid <= 0) return;
+
     kill(h->pid, SIGTERM);
     waitpid(h->pid, NULL, 0);
+
+    FILE* f = fopen("debug/monitor.log", "a");
+    if (f) {
+        fprintf(f, "  kill_custom_helper: pid=%d card=%s (killed + restoring profile)\n",
+                h->pid, h->card_name);
+        fclose(f);
+    }
+
     h->pid = 0;
+    h->ref_count = 0;
 
     // Restore the card profile
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null", h->card_name);
     run_command(cmd);
-
-    FILE* f = fopen("debug/monitor.log", "a");
-    if (f) {
-        fprintf(f, "  custom node helper stopped, profile restored for %s\n", h->card_name);
-        fclose(f);
-    }
 }
 
 // Find the custom node helper associated with a capture device index.
@@ -1269,16 +1294,7 @@ static CustomNodeHelper* find_helper_for_device(int cap_device_index) {
 static void cleanup_all_helpers(void) {
     for (int i = 0; i < g_custom_helper_count; i++) {
         if (g_custom_helpers[i].pid > 0) {
-            kill(g_custom_helpers[i].pid, SIGTERM);
-            waitpid(g_custom_helpers[i].pid, NULL, 0);
-
-            // Restore card profile
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd), "pactl set-card-profile %s pro-audio 2>/dev/null",
-                     g_custom_helpers[i].card_name);
-            run_command(cmd);
-
-            g_custom_helpers[i].pid = 0;
+            kill_custom_helper(&g_custom_helpers[i]);
         }
     }
     g_custom_helper_count = 0;
@@ -1670,7 +1686,7 @@ EXPORT void tuidaw_remove_track(int id) {
         tk->mon_device_active = 0;
     }
     if (tk->custom_helper) {
-        release_custom_helper(tk->custom_helper);
+        kill_custom_helper(tk->custom_helper);
         tk->custom_helper = NULL;
     }
 
@@ -2780,9 +2796,6 @@ EXPORT void tuidaw_stop_monitoring(int id) {
         tk->jack_playback_L = NULL;
         tk->jack_playback_R = NULL;
         tk->jack_mon_active = 0;
-        // Brief delay for PipeWire to process the JACK client disconnect
-        // before we kill the custom node helper (prevents residual routing)
-        usleep(50000);  // 50ms
     }
 
     if (tk->mon_device_active) {
@@ -2790,17 +2803,14 @@ EXPORT void tuidaw_stop_monitoring(int id) {
         tk->mon_device_active = 0;
     }
 
-    // Release the custom node helper (decrements ref_count, kills process if 0)
-    // If JACK recording is still active, it holds its own ref — just decrement
-    // monitoring's ref but keep the pointer for the recording path.
+    // Decrement custom helper ref_count. The helper stays alive (not killed)
+    // so it can be reused instantly when monitoring is toggled back on,
+    // avoiding the profile-switch race condition. It will be killed when the
+    // track is removed or the engine shuts down.
     if (tk->custom_helper) {
-        if (tk->jack_rec_active) {
-            // Recording still needs the helper — decrement ref but keep pointer
-            release_custom_helper(tk->custom_helper);
-            // Don't NULL tk->custom_helper — recording still needs it
-        } else {
-            release_custom_helper(tk->custom_helper);
-            tk->custom_helper = NULL;
+        release_custom_helper(tk->custom_helper);
+        if (!tk->jack_rec_active) {
+            tk->custom_helper = NULL;  // recording still needs the pointer
         }
     }
 }
