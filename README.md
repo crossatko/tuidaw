@@ -10,7 +10,7 @@ Practice guitar at half speed without pitch shift. Record multi-track audio. Exp
 
 ![Web UI](web/public/webui.png)
 
-> **Note:** This project is vibecoded -- built entirely through AI-assisted development for personal use on Arch Linux. It works on my machine, but there are no guarantees of support for other platforms or distributions. Contributions and bug reports welcome.
+> **Note:** This project is vibecoded -- built entirely through AI-assisted development for personal use on Arch Linux. It works on my machine, but there are no guarantees of support for other distributions. Contributions and bug reports welcome.
 
 ## Features
 
@@ -18,7 +18,8 @@ Practice guitar at half speed without pitch shift. Record multi-track audio. Exp
 - **Braille waveform display** -- 2x4 dot grid rendering in TUI, Canvas 2D in Web
 - **Native audio engine** -- miniaudio C library via Bun FFI (TUI) or WebAssembly (Web)
 - **WSOLA time-stretch** -- pitch-preserving speed control (0.25x - 2.0x)
-- **Multi-track recording** -- simultaneous capture with per-track input device selection
+- **Multi-track recording** -- simultaneous capture with per-track input device and channel selection
+- **Low-latency input monitoring** -- direct JACK API via dlopen for ~58ms round-trip
 - **Metronome click** -- sample-accurate, configurable volume and pan
 - **Loop regions** -- sample-accurate looping
 - **Beat-based timeline** -- navigate by beats/bars, auto BPM detection on import
@@ -52,29 +53,29 @@ bun run build:web
 
 ## TUI Requirements
 
+- **Linux** (x86_64 or aarch64) -- PipeWire/PulseAudio audio stack required
 - [Bun](https://bun.sh) (JavaScript runtime)
-- Linux (x86_64 or aarch64) or macOS (x86_64 or aarch64)
 - A terminal with Unicode support (Ghostty, Kitty, Alacritty, WezTerm, etc.)
 - **ffmpeg** -- for export mixdown
-- **zenity** -- for file dialogs (Linux only)
+- **zenity** -- for file dialogs
+
+### Linux Audio Stack
+
+The TUI uses miniaudio with the PulseAudio backend, which works with both PipeWire (via pipewire-pulse) and native PulseAudio. Input monitoring uses JACK (via PipeWire's JACK interface or JACK2) for low-latency passthrough. Multi-channel USB audio devices (e.g. Neural DSP Nano Cortex) require PipeWire's Pro Audio profile and are handled via custom ALSA nodes to avoid PipeWire's auto-link corruption.
 
 ### Arch Linux
 
 ```bash
 sudo pacman -S bun ffmpeg zenity
+# PipeWire + JACK (usually pre-installed):
+sudo pacman -S pipewire pipewire-pulse pipewire-jack
 ```
 
 ### Ubuntu / Debian
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
-sudo apt install ffmpeg zenity
-```
-
-### macOS
-
-```bash
-brew install oven-sh/bun/bun ffmpeg
+sudo apt install ffmpeg zenity pipewire pipewire-pulse pipewire-jack
 ```
 
 ## Quick Start
@@ -124,15 +125,18 @@ Press **F1** in the TUI for the full reference. Key shortcuts:
 | `A`              | Add track                                   |
 | `D`              | Delete track (two-step: clear, then delete) |
 | `R`              | Arm/disarm track for recording              |
+| `O`              | Toggle input monitoring                     |
 | `M`              | Mute/unmute track                           |
 | `S`              | Solo/unsolo track                           |
 | `C`              | Toggle metronome click                      |
 | `+` / `-`        | Adjust BPM (changes speed via WSOLA)        |
+| `B`              | Toggle BPM lock                             |
 | `<` / `>`        | Pan left / right                            |
 | `V`              | Cycle volume (25/50/75/100%)                |
 | `Up` / `Down`    | Select track                                |
 | `Left` / `Right` | Scroll timeline (Shift: by bar)             |
 | `[` / `]`        | Scrub playhead by 1 bar                     |
+| `{` / `}`        | Nudge track by 1/16 beat                    |
 | `Home` / `0`     | Jump to beginning                           |
 | `End`            | Jump to end                                 |
 | `F1`             | Help overlay                                |
@@ -171,7 +175,7 @@ Press **F1** in the TUI for the full reference. Key shortcuts:
 │   ├── audio-bridge.ts   # WASM audio engine wrapper
 │   └── public/           # Static assets, WASM, fonts, PWA
 └── native/
-    ├── tuidaw_audio.c    # C audio engine (miniaudio, 32 exports)
+    ├── tuidaw_audio.c    # C audio engine (miniaudio, 40+ exports)
     └── miniaudio.h       # miniaudio single-header library
 ```
 
