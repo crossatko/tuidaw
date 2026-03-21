@@ -89,6 +89,18 @@ export class UIRenderer {
   private filePickerCallback: ((file: string | null) => void) | null = null
   private statusMessage: string | null = null
   private statusMessageTimeout: ReturnType<typeof setTimeout> | null = null
+  // Cached overlay geometry for mouse hit-testing (screen-absolute coords in mainFB space)
+  private overlayBox: {
+    type: 'device' | 'channel' | 'file'
+    boxX: number
+    boxY: number
+    boxW: number
+    boxH: number
+    listY: number // first list row (y in mainFB local coords)
+    maxVisible: number
+    scrollStart: number
+    listCount: number
+  } | null = null
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
@@ -208,10 +220,31 @@ export class UIRenderer {
     }
 
     // Main area: mouse wheel scrolls the timeline horizontally
+    // When an overlay is visible, scroll navigates the overlay list instead
     this.mainFB.onMouseScroll = (event: MouseEvent) => {
       if (!event.scroll) return
       if (!scrollDebounce()) return
       const dir = event.scroll.direction
+
+      // Overlay scroll handling
+      if (
+        this.deviceSelectorVisible ||
+        this.channelSelectorVisible ||
+        this.filePickerVisible
+      ) {
+        if (dir === 'up' || dir === 'left') {
+          if (this.deviceSelectorVisible) this.deviceSelectorUp()
+          else if (this.channelSelectorVisible) this.channelSelectorUp()
+          else if (this.filePickerVisible) this.filePickerUp()
+        } else if (dir === 'down' || dir === 'right') {
+          if (this.deviceSelectorVisible) this.deviceSelectorDown()
+          else if (this.channelSelectorVisible) this.channelSelectorDown()
+          else if (this.filePickerVisible) this.filePickerDown()
+        }
+        this.rerender()
+        return
+      }
+
       // Scroll up/down → scroll timeline left/right (natural mapping for horizontal timeline)
       if (dir === 'up' || dir === 'left') {
         callbacks.onScrollChange(-1)
@@ -273,6 +306,20 @@ export class UIRenderer {
     // Sidebar: click to select track, toggle M/S/R/O buttons, open input device
     this.sidebarFB.onMouse = (event: MouseEvent) => {
       if (event.type !== 'down') return
+
+      // If an overlay is open, clicking the sidebar closes it
+      if (
+        this.deviceSelectorVisible ||
+        this.channelSelectorVisible ||
+        this.filePickerVisible
+      ) {
+        if (this.deviceSelectorVisible) this.deviceSelectorCancel()
+        else if (this.channelSelectorVisible) this.channelSelectorCancel()
+        else if (this.filePickerVisible) this.filePickerCancel()
+        this.rerender()
+        return
+      }
+
       const contentY = event.y - TOPBAR_HEIGHT
       if (contentY < 0) return
 
@@ -331,12 +378,75 @@ export class UIRenderer {
 
     // Main area: click to set playhead (timeline row 0) or select track (waveform rows)
     // Drag on timeline continuously updates playhead position
+    // When an overlay is visible, clicks select items or close on click-outside
     let draggingTimeline = false
     this.mainFB.onMouse = (event: MouseEvent) => {
       // event.x/y are screen-absolute; main area starts at (SIDEBAR_WIDTH, TOPBAR_HEIGHT)
       const localX = event.x - SIDEBAR_WIDTH
       const localY = event.y - TOPBAR_HEIGHT
 
+      // Overlay mouse handling — intercept all clicks when overlay is open
+      if (
+        event.type === 'down' &&
+        (this.deviceSelectorVisible ||
+          this.channelSelectorVisible ||
+          this.filePickerVisible)
+      ) {
+        const ob = this.overlayBox
+        if (ob) {
+          // Check if click is inside the overlay box
+          if (
+            localX >= ob.boxX &&
+            localX < ob.boxX + ob.boxW &&
+            localY >= ob.boxY &&
+            localY < ob.boxY + ob.boxH
+          ) {
+            // Click inside overlay — check if on a list item
+            const itemRow = localY - ob.listY
+            if (itemRow >= 0 && itemRow < ob.maxVisible) {
+              const clickedIndex = ob.scrollStart + itemRow
+              if (clickedIndex < ob.listCount) {
+                // Set selection to clicked item
+                if (ob.type === 'device') {
+                  if (clickedIndex === this.deviceSelectorIndex) {
+                    // Click on already-selected item — confirm
+                    this.deviceSelectorConfirm()
+                  } else {
+                    this.deviceSelectorIndex = clickedIndex
+                  }
+                } else if (ob.type === 'channel') {
+                  if (clickedIndex === this.channelSelectorIndex) {
+                    this.channelSelectorConfirm()
+                  } else {
+                    this.channelSelectorIndex = clickedIndex
+                  }
+                } else if (ob.type === 'file') {
+                  if (clickedIndex === this.filePickerIndex) {
+                    this.filePickerConfirm()
+                  } else {
+                    this.filePickerIndex = clickedIndex
+                  }
+                }
+                this.rerender()
+              }
+            }
+            // Click inside box but not on item — ignore (don't close)
+            return
+          }
+          // Click outside overlay — cancel
+          if (ob.type === 'device') {
+            this.deviceSelectorCancel()
+          } else if (ob.type === 'channel') {
+            this.channelSelectorCancel()
+          } else if (ob.type === 'file') {
+            this.filePickerCancel()
+          }
+          this.rerender()
+        }
+        return
+      }
+
+      // Normal main area mouse handling (no overlay)
       if (event.type === 'down') {
         if (localX < 0 || localY < 0) return
         if (localY === 0) {
@@ -401,6 +511,14 @@ export class UIRenderer {
     }
     if (this.filePickerVisible) {
       this.renderFilePickerOverlay()
+    }
+  }
+
+  // Re-render using cached state (for mouse-driven overlay updates)
+  private rerender(): void {
+    if (this.currentState) {
+      this.render(this.currentState)
+      this.renderer.requestRender()
     }
   }
 
@@ -1199,6 +1317,7 @@ export class UIRenderer {
   closeDeviceSelector(): void {
     this.deviceSelectorVisible = false
     this.deviceSelectorCallback = null
+    this.overlayBox = null
   }
 
   isDeviceSelectorVisible(): boolean {
@@ -1260,6 +1379,7 @@ export class UIRenderer {
   closeChannelSelector(): void {
     this.channelSelectorVisible = false
     this.channelSelectorCallback = null
+    this.overlayBox = null
   }
 
   isChannelSelectorVisible(): boolean {
@@ -1333,7 +1453,7 @@ export class UIRenderer {
     )
 
     // Instructions
-    const instructions = '↑↓:Navigate  Enter:Select  Esc:Cancel'
+    const instructions = '↑↓/Scroll:Navigate  Enter/Click:Select  Esc:Cancel'
     fb.drawText(
       instructions,
       boxX + Math.floor((boxW - instructions.length) / 2),
@@ -1345,6 +1465,19 @@ export class UIRenderer {
     // List items
     const maxVisible = boxH - 3
     const scrollStart = Math.max(0, this.channelSelectorIndex - maxVisible + 1)
+
+    // Cache geometry for mouse hit-testing
+    this.overlayBox = {
+      type: 'channel',
+      boxX,
+      boxY,
+      boxW,
+      boxH,
+      listY: boxY + 2,
+      maxVisible,
+      scrollStart,
+      listCount
+    }
 
     let row = 0
     for (let i = scrollStart; i <= channels && row < maxVisible; i++, row++) {
@@ -1424,7 +1557,7 @@ export class UIRenderer {
     )
 
     // Instructions
-    const instructions = '↑↓:Navigate  Enter:Select  Esc:Cancel'
+    const instructions = '↑↓/Scroll:Navigate  Enter/Click:Select  Esc:Cancel'
     fb.drawText(
       instructions,
       boxX + Math.floor((boxW - instructions.length) / 2),
@@ -1436,6 +1569,19 @@ export class UIRenderer {
     // "Default" entry
     const maxVisible = boxH - 3 // rows available for list items
     const scrollStart = Math.max(0, this.deviceSelectorIndex - maxVisible + 1)
+
+    // Cache geometry for mouse hit-testing
+    this.overlayBox = {
+      type: 'device',
+      boxX,
+      boxY,
+      boxW,
+      boxH,
+      listY: boxY + 2,
+      maxVisible,
+      scrollStart,
+      listCount
+    }
 
     let row = 0
     for (
@@ -1534,6 +1680,7 @@ export class UIRenderer {
     const cb = this.filePickerCallback
     this.filePickerVisible = false
     this.filePickerCallback = null
+    this.overlayBox = null
     if (cb) cb(file ?? null)
   }
 
@@ -1541,6 +1688,7 @@ export class UIRenderer {
     const cb = this.filePickerCallback
     this.filePickerVisible = false
     this.filePickerCallback = null
+    this.overlayBox = null
     if (cb) cb(null)
   }
 
@@ -1585,7 +1733,7 @@ export class UIRenderer {
     )
 
     // Instructions
-    const instructions = '↑↓:Navigate  Enter:Open  Esc:Cancel'
+    const instructions = '↑↓/Scroll:Navigate  Enter/Click:Open  Esc:Cancel'
     fb.drawText(
       instructions,
       boxX + Math.floor((boxW - instructions.length) / 2),
@@ -1597,6 +1745,19 @@ export class UIRenderer {
     // File list
     const maxVisible = boxH - 3
     const scrollStart = Math.max(0, this.filePickerIndex - maxVisible + 1)
+
+    // Cache geometry for mouse hit-testing
+    this.overlayBox = {
+      type: 'file',
+      boxX,
+      boxY,
+      boxW,
+      boxH,
+      listY: boxY + 2,
+      maxVisible,
+      scrollStart,
+      listCount: files.length
+    }
 
     let row = 0
     for (
