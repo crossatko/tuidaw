@@ -49,7 +49,7 @@ Features: sidebar with tracks, waveform display, playhead, BPM/click, recording,
 
 ## Native Audio Engine
 
-C shared library (`native/tuidaw_audio.c`, ~1946 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~42ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
+C shared library (`native/tuidaw_audio.c`, ~2863 lines) wrapping miniaudio. Built with `zig cc` (Zig 0.14.0 in `native/zig-toolchain/`). WASM built with `native/build-wasm.sh` (Emscripten SDK at `native/emsdk/`, gitignored). Single `ma_context` (PulseAudio) for playback/recording. Input monitoring uses direct JACK API via `dlopen("libjack.so.0")` for low latency (~58ms round-trip), falling back to PulseAudio duplex (~68ms) when JACK is unavailable.
 
 ### API surface (all `EXPORT`ed):
 
@@ -145,7 +145,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **JACK port selection uses track's device**: JACK monitoring port connections respect `rec_device_index` and `output_device_index`. Maps miniaudio device names to JACK port node names (before ':') via substring matching with keyword fallback. Falls back to "Inst" capture / any capture if no device-specific match.
 - **Nano Cortex 8-channel surround**: Neural DSP Nano Cortex presents as 8-channel (`s32le 8ch 48000Hz`) in PulseAudio. In default profile uses surround 7.1 channel map; in Pro Audio profile uses AUX0-AUX7. PulseAudio volume must be at 100% (not default 10% / -60dB) or recordings will be silent.
 - **PulseAudio source volume can silence recordings**: Some USB devices default to very low PulseAudio source volume (Nano Cortex: 10% / -60dB). JACK monitoring bypasses PulseAudio volume entirely (direct port connections), so monitoring works while recording captures silence. Fix: check `pactl list sources` for volume levels.
-- **PipeWire quantum must be forced low**: Even with JACK backend, PipeWire's default quantum (1024 frames = ~21ms) applies to all clients. JACK's `periodSizeInFrames` hint is ignored. Fix: `PIPEWIRE_LATENCY=256/48000` env var set before `jack_client_open` — PipeWire lowers the quantum for this client's driver group only, without affecting other apps. `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other applications (Discord chipmunk effect). `unsetenv` after client open to avoid leaking to child processes.
+- **PipeWire quantum — do NOT force low**: `PIPEWIRE_LATENCY=256/48000` causes stale/duplicated 256-sample buffers from custom ALSA nodes, producing crackling. The standalone `jack_quick_cap` at default quantum (1024) captured clean audio. Custom nodes already have `node.latency=256/48000` + `api.alsa.period-size=256` for ALSA-level buffering — PipeWire graph quantum should stay at default. Monitoring latency increases from ~42ms to ~58ms (still under PulseAudio duplex's ~68ms). `pw-metadata clock.force-quantum` is a global sledgehammer that breaks other apps.
 - **Monitoring stays active during recording**: PulseAudio/PipeWire handles multiple clients on the same capture device fine — no need to pause monitoring.
 - **ALSA backend rejected**: Raw ALSA device enumeration shows dozens of unusable hw:/plughw:/dmix/dsnoop entries. PipeWire holds hardware, so ALSA "unable to open slave" errors. Must stay on default (PulseAudio/PipeWire) context.
 - **Debug fprintf in audio callbacks corrupts TUI**: Even with stderr redirect, audio-thread fprintf breaks terminal. Remove all debug prints from callbacks.
@@ -153,6 +153,9 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Multi-channel device capture**: `ma_context_get_devices()` only returns basic info — `nativeDataFormats` is not populated for PulseAudio devices. Must use `ma_context_get_device_info()` for accurate native channel count. When a specific channel is selected (`rec_channel >= 0`), the capture device opens in native channel count and the callback extracts the selected channel from interleaved data. Channel convention: C/TUI uses `-1` = mono downmix, `0+` = 0-indexed specific channel. Web uses `0` = mono mix, `1+` = 1-indexed. Project descriptor uses the C/TUI convention.
 - **Nano Cortex Pro Audio profile**: In PipeWire Pro Audio mode (`pactl set-card-profile ... pro-audio`), Nano Cortex exposes 8 channels as AUX0-AUX7. Official spec is 4in/3out: USB IN 1 (DI/dry) = AUX0, USB IN 2 (processed/wet) = AUX1, USB IN 3 (capture input return) = AUX2, USB IN 4 (capture reference) = AUX3. AUX4-7 are padding. JACK ports appear as `Nano Cortex Pro:capture_AUX0` through `capture_AUX7`.
 - **Stable device IDs**: `ma_device_id.pulse` contains a stable PulseAudio device name string (e.g., `alsa_input.usb-Neural_DSP_Nano_Cortex_NA00AF103-00.pro-input-0`) that persists across enumerations and reboots. Used in project save/load to resolve devices by stable ID instead of fragile ephemeral indices.
+- **Recording via PulseAudio corrupted on custom-node devices**: When a device uses custom ALSA nodes (profile set to "off"), PulseAudio capture goes through profile-managed nodes with `api.alsa.auto-link` which produces the same corruption. Fix: `tuidaw_start_recording()` checks `device_needs_custom_node()` and uses JACK capture-only client (no playback ports) via custom nodes instead of PulseAudio.
+- **Custom nodes need `node.autoconnect=false`**: Without this, WirePlumber auto-links the custom capture node to the custom playback sink, causing sound to continue flowing after monitoring is stopped. Both nodes must have `node.autoconnect=false` to prevent any auto-routing.
+- **JACK client close needs delay before helper kill**: After `g_jack.deactivate` + `g_jack.client_close`, PipeWire needs time to process the disconnect before the custom nodes are destroyed (via helper SIGTERM). A 50ms delay prevents residual audio routing.
 
 ## File Structure
 
@@ -164,7 +167,7 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~1946 lines, 40+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~2863 lines, 40+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)

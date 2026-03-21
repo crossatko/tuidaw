@@ -220,12 +220,17 @@ typedef struct {
     ma_device     mon_device;        // full-duplex device for monitoring (PulseAudio fallback)
     int           mon_device_active; // is mon_device initialized and started
 
-    // Direct JACK monitoring state (preferred — ~42ms vs ~68ms PulseAudio)
+    // Direct JACK monitoring state (preferred — ~58ms vs ~68ms PulseAudio)
     jack_client_t* jack_client;      // JACK client for this track's monitoring
     jack_port_t*   jack_capture;     // JACK input port (receives from selected capture device)
     jack_port_t*   jack_playback_L;  // JACK output port (sends to selected output L)
     jack_port_t*   jack_playback_R;  // JACK output port (sends to selected output R)
     int            jack_mon_active;  // is JACK monitoring active
+
+    // Direct JACK recording state (for devices needing custom nodes, without monitoring)
+    jack_client_t* jack_rec_client;  // JACK client for capture-only recording
+    jack_port_t*   jack_rec_capture; // JACK input port for recording
+    int            jack_rec_active;  // is JACK recording client active
 
     // PipeWire custom node helper for this track's capture device
     CustomNodeHelper* custom_helper; // pointer into g_custom_helpers (NULL if not needed)
@@ -857,6 +862,28 @@ static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
     return 0;
 }
 
+// ── JACK Record-Only Process Callback ───────────────────────────────────────
+// Used for recording from devices that need custom ALSA nodes (multi-channel
+// USB devices with corrupted auto-link nodes) when monitoring is NOT active.
+// Capture only — no output ports, no playback routing.
+
+static int jack_rec_process(jack_nframes_t nframes, void* arg) {
+    TrackState* tk = (TrackState*)arg;
+    if (!tk) return 0;
+
+    if (!atomic_load(&tk->recording) || !tk->rec_buffer) return 0;
+
+    float* in = (float*)g_jack.port_get_buffer(tk->jack_rec_capture, nframes);
+    int write_pos = atomic_load(&tk->rec_write_pos);
+    for (jack_nframes_t i = 0; i < nframes; i++) {
+        if (write_pos >= RECORDING_BUF_LEN) break;
+        tk->rec_buffer[write_pos++] = in[i];
+    }
+    atomic_store(&tk->rec_write_pos, write_pos);
+
+    return 0;
+}
+
 // ── PipeWire Custom Node Helper Management ──────────────────────────────────
 
 // Resolve the path to the pw_custom_node helper binary.
@@ -1099,10 +1126,11 @@ static CustomNodeHelper* acquire_custom_helper(int cap_device_index) {
             close(devnull);
         }
 
-        // Set PIPEWIRE_LATENCY so the custom ALSA nodes request a matching
-        // quantum from PipeWire — prevents xruns when the JACK client also
-        // requests 256/48000.
-        setenv("PIPEWIRE_LATENCY", "256/48000", 1);
+        // NOTE: Do NOT set PIPEWIRE_LATENCY here. The custom nodes already
+        // have node.latency + api.alsa.period-size for ALSA-level buffering.
+        // Forcing a low graph quantum (256) causes PipeWire to deliver stale
+        // (duplicated) buffers to the JACK client — the standalone capture
+        // test at default quantum produced clean audio.
 
         char ch_str[8];
         snprintf(ch_str, sizeof(ch_str), "%d", channels);
@@ -1352,12 +1380,20 @@ EXPORT void tuidaw_deinit(void) {
     for (int i = 0; i < MAX_TRACKS; i++) {
         TrackState* tk = &g_engine.tracks[i];
         atomic_store(&tk->monitoring, 0);
+        atomic_store(&tk->recording, 0);
         // Clean up JACK monitoring
         if (tk->jack_mon_active && g_jack.lib_handle) {
             g_jack.deactivate(tk->jack_client);
             g_jack.client_close(tk->jack_client);
             tk->jack_client = NULL;
             tk->jack_mon_active = 0;
+        }
+        // Clean up JACK recording
+        if (tk->jack_rec_active && g_jack.lib_handle) {
+            g_jack.deactivate(tk->jack_rec_client);
+            g_jack.client_close(tk->jack_rec_client);
+            tk->jack_rec_client = NULL;
+            tk->jack_rec_active = 0;
         }
         // Clean up PulseAudio monitoring fallback
         if (tk->mon_device_active) {
@@ -1616,11 +1652,18 @@ EXPORT void tuidaw_remove_track(int id) {
 
     // Stop monitoring if active (includes custom helper cleanup)
     atomic_store(&tk->monitoring, 0);
+    atomic_store(&tk->recording, 0);
     if (tk->jack_mon_active && g_jack.lib_handle) {
         g_jack.deactivate(tk->jack_client);
         g_jack.client_close(tk->jack_client);
         tk->jack_client = NULL;
         tk->jack_mon_active = 0;
+    }
+    if (tk->jack_rec_active && g_jack.lib_handle) {
+        g_jack.deactivate(tk->jack_rec_client);
+        g_jack.client_close(tk->jack_rec_client);
+        tk->jack_rec_client = NULL;
+        tk->jack_rec_active = 0;
     }
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
@@ -1918,6 +1961,146 @@ EXPORT int tuidaw_start_recording(int id) {
         return 0;
     }
 
+    // ── JACK capture-only recording for devices needing custom nodes ────
+    // If the device needs custom ALSA nodes (multi-channel USB with corrupted
+    // auto-link nodes), PulseAudio capture through the profile-managed nodes
+    // produces the same corruption. Use JACK capture via clean custom nodes.
+    if (g_engine.jack_available && g_jack.lib_handle &&
+        tk->rec_device_index >= 0) {
+        char cn[256], ad[32];
+        int ch;
+        if (device_needs_custom_node(tk->rec_device_index, cn, sizeof(cn),
+                                     ad, sizeof(ad), &ch)) {
+            // Acquire custom helper (spawns helper if not already running)
+            tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
+            if (!tk->custom_helper) {
+                FILE* f = fopen("debug/capture.log", "w");
+                if (f) {
+                    fprintf(f, "start_recording: id=%d custom node helper FAILED\n", id);
+                    fclose(f);
+                }
+                // Fall through to PulseAudio (will likely produce corrupt audio)
+                goto pulseaudio_recording;
+            }
+
+            // Create a JACK client for capture-only recording
+            char client_name[64];
+            snprintf(client_name, sizeof(client_name), "tuidaw-rec-%d", id);
+
+            jack_status_t jstatus;
+            tk->jack_rec_client = g_jack.client_open(client_name, JackNoStartServer, &jstatus);
+            if (!tk->jack_rec_client) {
+                FILE* f = fopen("debug/capture.log", "w");
+                if (f) {
+                    fprintf(f, "start_recording: id=%d JACK client_open FAILED\n", id);
+                    fclose(f);
+                }
+                release_custom_helper(tk->custom_helper);
+                tk->custom_helper = NULL;
+                goto pulseaudio_recording;
+            }
+
+            // Register capture-only port
+            tk->jack_rec_capture = g_jack.port_register(tk->jack_rec_client, "input",
+                JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+            if (!tk->jack_rec_capture) {
+                g_jack.client_close(tk->jack_rec_client);
+                tk->jack_rec_client = NULL;
+                release_custom_helper(tk->custom_helper);
+                tk->custom_helper = NULL;
+                goto pulseaudio_recording;
+            }
+
+            // Set process callback
+            g_jack.set_process_callback(tk->jack_rec_client, jack_rec_process, tk);
+
+            // Activate client
+            if (g_jack.activate(tk->jack_rec_client) != 0) {
+                g_jack.client_close(tk->jack_rec_client);
+                tk->jack_rec_client = NULL;
+                release_custom_helper(tk->custom_helper);
+                tk->custom_helper = NULL;
+                goto pulseaudio_recording;
+            }
+
+            // Find the right capture port from the custom node
+            char custom_cap_node[64];
+            snprintf(custom_cap_node, sizeof(custom_cap_node),
+                     "tuidaw-custom-cap-%d", tk->custom_helper->helper_id);
+
+            const char** all_ports = g_jack.get_ports(tk->jack_rec_client, NULL,
+                JACK_DEFAULT_AUDIO_TYPE, 0);
+
+            char selected_cap[256] = {0};
+            if (all_ports) {
+                const char* cap_matches[16];
+                int cap_match_count = 0;
+                for (int i = 0; all_ports[i] && cap_match_count < 16; i++) {
+                    if (!strstr(all_ports[i], "capture")) continue;
+                    const char* colon = strchr(all_ports[i], ':');
+                    if (!colon) continue;
+                    int node_len = (int)(colon - all_ports[i]);
+                    char node[256] = {0};
+                    if (node_len > 255) node_len = 255;
+                    strncpy(node, all_ports[i], node_len);
+                    if (strstr(node, custom_cap_node)) {
+                        cap_matches[cap_match_count++] = all_ports[i];
+                    }
+                }
+                // Pick the right channel
+                if (cap_match_count > 0) {
+                    int idx = 0;
+                    if (tk->rec_channel >= 0 && tk->rec_channel < cap_match_count) {
+                        idx = tk->rec_channel;
+                    }
+                    strncpy(selected_cap, cap_matches[idx], sizeof(selected_cap) - 1);
+                }
+                g_jack.free(all_ports);
+            }
+
+            if (selected_cap[0] == 0) {
+                // No matching capture port found
+                FILE* f = fopen("debug/capture.log", "w");
+                if (f) {
+                    fprintf(f, "start_recording: id=%d JACK no capture port for '%s'\n",
+                            id, custom_cap_node);
+                    fclose(f);
+                }
+                g_jack.deactivate(tk->jack_rec_client);
+                g_jack.client_close(tk->jack_rec_client);
+                tk->jack_rec_client = NULL;
+                release_custom_helper(tk->custom_helper);
+                tk->custom_helper = NULL;
+                goto pulseaudio_recording;
+            }
+
+            // Connect: custom capture node -> our input
+            const char* our_input = g_jack.port_name(tk->jack_rec_capture);
+            int rc = g_jack.connect(tk->jack_rec_client, selected_cap, our_input);
+
+            // Diagnostic: log JACK recording setup
+            {
+                FILE* f = fopen("debug/capture.log", "w");
+                if (f) {
+                    fprintf(f, "start_recording: id=%d JACK capture-only\n", id);
+                    fprintf(f, "  custom_helper pid=%d helper_id=%d\n",
+                            tk->custom_helper->pid, tk->custom_helper->helper_id);
+                    fprintf(f, "  cap_port='%s' -> our_input='%s' rc=%d\n",
+                            selected_cap, our_input ? our_input : "(null)", rc);
+                    fprintf(f, "  rec_buffer=%p rec_buffer_len=%d\n",
+                            (void*)tk->rec_buffer, RECORDING_BUF_LEN);
+                    fclose(f);
+                }
+            }
+
+            tk->jack_rec_active = 1;
+            atomic_store(&tk->recording, 1);
+            return 0;
+        }
+    }
+
+pulseaudio_recording:;
+
     // Determine channel count: if a specific channel is selected on a
     // multi-channel device, open the device in its native channel count
     // so the callback can extract the right channel. Otherwise open mono
@@ -2008,6 +2191,21 @@ EXPORT int tuidaw_stop_recording(int id) {
 
     atomic_store(&tk->recording, 0);
 
+    // Clean up JACK capture-only recording client
+    if (tk->jack_rec_active && g_jack.lib_handle) {
+        g_jack.deactivate(tk->jack_rec_client);
+        g_jack.client_close(tk->jack_rec_client);
+        tk->jack_rec_client = NULL;
+        tk->jack_rec_capture = NULL;
+        tk->jack_rec_active = 0;
+
+        // Release custom helper if monitoring isn't holding it
+        if (tk->custom_helper && !tk->jack_mon_active) {
+            release_custom_helper(tk->custom_helper);
+            tk->custom_helper = NULL;
+        }
+    }
+
     if (tk->rec_device_active) {
         ma_device_uninit(&tk->rec_device);
         tk->rec_device_active = 0;
@@ -2053,12 +2251,12 @@ EXPORT int tuidaw_get_recording_length(int id) {
 // ── Input Monitoring ────────────────────────────────────────────────────────
 // Low-latency input passthrough. Two strategies:
 //
-// 1. DIRECT JACK API (preferred, ~42ms round-trip): Bypasses miniaudio entirely.
+// 1. DIRECT JACK API (preferred, ~58ms round-trip): Bypasses miniaudio entirely.
 //    Uses dlopen'd libjack.so.0 to register ports and manually connect to the
 //    correct capture/playback ports by name pattern. This avoids miniaudio's
 //    JackPortIsPhysical filtering that breaks with PipeWire's split/filter ports.
-//    PIPEWIRE_LATENCY env var hints PipeWire to lower the quantum for this
-//    client's driver group only, without affecting other apps globally.
+//    For devices needing custom ALSA nodes (multi-channel USB devices with
+//    corrupted auto-link nodes), a helper process creates clean nodes first.
 //
 // 2. PULSEAUDIO DUPLEX FALLBACK (~68ms round-trip): Uses miniaudio full-duplex
 //    device on the main PulseAudio context. Higher latency but works everywhere.
@@ -2094,7 +2292,13 @@ EXPORT int tuidaw_start_monitoring(int id) {
         // Check if this capture device needs custom ALSA nodes to avoid
         // the auto-link/node-group corruption. If so, spawn the helper
         // process (which sets profile to off and creates clean nodes).
-        tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
+        // If recording already acquired a helper, acquire again (bumps ref_count).
+        if (!tk->custom_helper) {
+            tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
+        } else {
+            // Recording already has a helper — acquire again to bump ref_count
+            acquire_custom_helper(tk->rec_device_index);
+        }
         if (tk->custom_helper) {
             FILE* f = fopen("debug/monitor.log", "a");
             if (f) {
@@ -2104,9 +2308,11 @@ EXPORT int tuidaw_start_monitoring(int id) {
             }
         }
 
-        // Set PIPEWIRE_LATENCY before opening the client so PipeWire assigns
-        // a low quantum to this client's driver group.
-        setenv("PIPEWIRE_LATENCY", "256/48000", 1);
+        // NOTE: Do NOT set PIPEWIRE_LATENCY — forcing quantum 256 causes
+        // PipeWire to deliver stale/duplicated buffers to the JACK client.
+        // The custom ALSA nodes have their own node.latency + period-size
+        // for ALSA-level buffering. Default PipeWire quantum (1024) works
+        // cleanly, as confirmed by the standalone jack_quick_cap test.
 
         // Create a unique JACK client name per track
         char client_name[64];
@@ -2114,9 +2320,6 @@ EXPORT int tuidaw_start_monitoring(int id) {
 
         jack_status_t status;
         tk->jack_client = g_jack.client_open(client_name, JackNoStartServer, &status);
-
-        // Unset env var immediately to avoid affecting child processes
-        unsetenv("PIPEWIRE_LATENCY");
 
         if (!tk->jack_client) goto jack_failed;
 
@@ -2577,6 +2780,9 @@ EXPORT void tuidaw_stop_monitoring(int id) {
         tk->jack_playback_L = NULL;
         tk->jack_playback_R = NULL;
         tk->jack_mon_active = 0;
+        // Brief delay for PipeWire to process the JACK client disconnect
+        // before we kill the custom node helper (prevents residual routing)
+        usleep(50000);  // 50ms
     }
 
     if (tk->mon_device_active) {
@@ -2584,10 +2790,18 @@ EXPORT void tuidaw_stop_monitoring(int id) {
         tk->mon_device_active = 0;
     }
 
-    // Release the custom node helper (kills process + restores profile if ref_count hits 0)
+    // Release the custom node helper (decrements ref_count, kills process if 0)
+    // If JACK recording is still active, it holds its own ref — just decrement
+    // monitoring's ref but keep the pointer for the recording path.
     if (tk->custom_helper) {
-        release_custom_helper(tk->custom_helper);
-        tk->custom_helper = NULL;
+        if (tk->jack_rec_active) {
+            // Recording still needs the helper — decrement ref but keep pointer
+            release_custom_helper(tk->custom_helper);
+            // Don't NULL tk->custom_helper — recording still needs it
+        } else {
+            release_custom_helper(tk->custom_helper);
+            tk->custom_helper = NULL;
+        }
     }
 }
 

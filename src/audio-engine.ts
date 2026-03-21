@@ -531,8 +531,8 @@ export class AudioEngine {
   // ── Input Monitoring ──────────────────────────────────────────────────
   // Low-latency input passthrough using a full-duplex device. When JACK is
   // available (via PipeWire), uses a dedicated JACK context for low-latency
-  // round-trip. The C layer sets PIPEWIRE_LATENCY env var before JACK init
-  // so PipeWire gives our client a low quantum without affecting other apps.
+  // round-trip. For multi-channel USB devices that need custom ALSA nodes,
+  // the C layer spawns a helper process to create clean PipeWire nodes.
 
   startMonitoring(trackId: string): boolean {
     const nid = getNativeId(trackId)
