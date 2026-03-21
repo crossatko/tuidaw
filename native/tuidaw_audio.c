@@ -271,10 +271,18 @@ typedef struct {
     ma_device     mon_device;        // full-duplex device for monitoring (PulseAudio fallback)
     int           mon_device_active; // is mon_device initialized and started
 
-    // JACK monitoring uses the shared client's pre-registered port slots.
-    // The slot index is assigned when monitoring starts.
-    int            jack_mon_slot;    // index into g_engine.jack_mon_* arrays (-1 = none)
-    int            jack_mon_active;  // are this track's JACK ports connected
+    // JACK monitoring: capture-only via shared client. Captured audio is written
+    // to a ring buffer and mixed into the main playback callback (no JACK output
+    // ports — avoids PipeWire graph disruption from competing JACK output clients).
+    int            jack_mon_slot;    // index into g_engine.jack_mon_capture[] (-1 = none)
+    int            jack_mon_active;  // are this track's JACK capture ports connected
+
+    // Monitoring ring buffer: JACK capture writes here, playback callback reads.
+    // Lock-free single-producer (JACK thread) single-consumer (playback thread).
+    #define MON_RING_SIZE 8192  // ~170ms at 48kHz — enough for JACK buffer sizes up to 4096
+    float          mon_ring[MON_RING_SIZE];
+    _Atomic int    mon_ring_write;   // JACK thread writes here
+    _Atomic int    mon_ring_read;    // playback thread reads here
 
     // Direct JACK recording state (for devices needing custom nodes, without monitoring)
     jack_client_t* jack_rec_client;  // JACK client for capture-only recording
@@ -300,18 +308,16 @@ typedef struct {
     // vs PulseAudio fallback (~68ms round-trip).
     int           jack_available;
 
-    // Shared JACK monitoring client. All tracks share a single JACK client
-    // to avoid PipeWire graph reconfiguration when enabling monitoring on
-    // additional tracks. Port triples (capture + playback L/R) are pre-registered
-    // at client activation time — tracks just claim a slot and connect/disconnect.
-    // No port_register/unregister after activation = no graph reconfiguration.
+    // Shared JACK monitoring client (capture-only). All tracks share a single
+    // JACK client to avoid PipeWire graph reconfiguration. Capture input ports
+    // are pre-registered at activation time — tracks just claim a slot and
+    // connect/disconnect. Captured audio goes through a per-track ring buffer
+    // to the main playback callback (no JACK output ports needed).
     jack_client_t* jack_mon_client;       // shared JACK monitoring client
     int            jack_mon_client_active; // is the shared client activated
 
     #define JACK_MON_SLOTS 8  // max simultaneous monitoring tracks
     jack_port_t*   jack_mon_capture[JACK_MON_SLOTS];    // pre-registered input ports
-    jack_port_t*   jack_mon_playback_L[JACK_MON_SLOTS]; // pre-registered output L ports
-    jack_port_t*   jack_mon_playback_R[JACK_MON_SLOTS]; // pre-registered output R ports
     int            jack_mon_slot_owner[JACK_MON_SLOTS];  // track index owning each slot (-1 = free)
 
     TrackState    tracks[MAX_TRACKS];
@@ -672,6 +678,32 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             }
         }
 
+        // ── Monitoring mix-in ──
+        // Read from JACK ring buffers for any tracks with active monitoring.
+        // This runs regardless of transport state — you hear your input even
+        // when playback is stopped. Volume and pan are applied here.
+        for (int t = 0; t < MAX_TRACKS; t++) {
+            TrackState* tk = &g_engine.tracks[t];
+            if (!tk->active || !tk->jack_mon_active) continue;
+            if (!atomic_load(&tk->monitoring)) continue;
+
+            int rd = atomic_load(&tk->mon_ring_read);
+            int wr = atomic_load(&tk->mon_ring_write);
+            if (rd == wr) continue;  // ring buffer empty
+
+            float sample = tk->mon_ring[rd];
+            rd = (rd + 1) % MON_RING_SIZE;
+            atomic_store(&tk->mon_ring_read, rd);
+
+            float vol = atomic_load(&tk->volume);
+            float pan = atomic_load(&tk->pan);
+            float lg = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+            float rg = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
+
+            left  += sample * vol * lg;
+            right += sample * vol * rg;
+        }
+
         // Clamp
         if (left > 1.0f) left = 1.0f;
         if (left < -1.0f) left = -1.0f;
@@ -880,14 +912,12 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
     }
 }
 
-// ── JACK Monitor Process Callback ───────────────────────────────────────────
-// Direct JACK API process callback for input monitoring. Receives mono capture
-// audio and outputs stereo with volume/pan applied. Same logic as the miniaudio
-// duplex callback above, but uses JACK port buffers directly.
-
 // ── Shared JACK Monitoring Process Callback ─────────────────────────────────
-// Single callback for the shared JACK monitoring client. Iterates all active
-// tracks and processes audio for each one that has monitoring enabled.
+// Capture-only JACK client. Reads from JACK input ports and writes raw samples
+// into per-track ring buffers. The main miniaudio playback callback reads from
+// these ring buffers and mixes monitoring audio into the stereo output. This
+// avoids any JACK output ports competing with miniaudio on the same ALSA sink,
+// eliminating PipeWire mixer node insertion and graph disruption.
 
 static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
     (void)arg;  // unused — we use g_engine directly
@@ -899,43 +929,23 @@ static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
         if (slot < 0 || slot >= JACK_MON_SLOTS) continue;
 
         jack_port_t* cap_port = g_engine.jack_mon_capture[slot];
-        jack_port_t* pb_L_port = g_engine.jack_mon_playback_L[slot];
-        jack_port_t* pb_R_port = g_engine.jack_mon_playback_R[slot];
-        if (!cap_port || !pb_L_port || !pb_R_port) continue;
+        if (!cap_port) continue;
 
         float* in = (float*)g_jack.port_get_buffer(cap_port, nframes);
-        float* out_L = (float*)g_jack.port_get_buffer(pb_L_port, nframes);
-        float* out_R = (float*)g_jack.port_get_buffer(pb_R_port, nframes);
+        if (!in) continue;
 
-        if (!atomic_load(&tk->monitoring)) {
-            memset(out_L, 0, nframes * sizeof(float));
-            memset(out_R, 0, nframes * sizeof(float));
-            // Still capture for recording even when monitoring is off
-            if (atomic_load(&tk->recording) && tk->rec_buffer) {
-                int write_pos = atomic_load(&tk->rec_write_pos);
-                for (jack_nframes_t j = 0; j < nframes; j++) {
-                    if (write_pos >= RECORDING_BUF_LEN) break;
-                    tk->rec_buffer[write_pos++] = in[j];
-                }
-                atomic_store(&tk->rec_write_pos, write_pos);
-            }
-            continue;
-        }
-
-        float vol = atomic_load(&tk->volume);
-        float pan = atomic_load(&tk->pan);
-        float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-        float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
-
+        // Write raw captured samples into the ring buffer.
+        // Volume/pan is applied later in the playback callback.
+        int wr = atomic_load(&tk->mon_ring_write);
         for (jack_nframes_t j = 0; j < nframes; j++) {
-            float sample = in[j] * vol;
-            out_L[j] = sample * left_gain;
-            out_R[j] = sample * right_gain;
+            tk->mon_ring[wr] = in[j];
+            wr = (wr + 1) % MON_RING_SIZE;
         }
+        atomic_store(&tk->mon_ring_write, wr);
 
-        // If the track is recording, also capture the raw input into the recording
-        // buffer. This handles the case where the PulseAudio device is unavailable
-        // (card profile set to "off" for custom node workaround).
+        // If the track is recording, also capture the raw input into the
+        // recording buffer. This handles the case where the PulseAudio device
+        // is unavailable (card profile set to "off" for custom node workaround).
         if (atomic_load(&tk->recording) && tk->rec_buffer) {
             int write_pos = atomic_load(&tk->rec_write_pos);
             for (jack_nframes_t j = 0; j < nframes; j++) {
@@ -1285,8 +1295,11 @@ static CustomNodeHelper* acquire_custom_helper(int cap_device_index) {
         return NULL;
     }
 
-    // Wait for JACK ports to appear (the custom nodes need a moment to register)
-    usleep(300000);  // 300ms
+    // Wait for JACK ports to appear and the ALSA nodes to start streaming.
+    // For Implicit Feedback Mode devices (like Nano Cortex), the capture node
+    // depends on the playback node driving the ALSA device. PipeWire needs time
+    // to wire them together and start the ALSA DMA transfers.
+    usleep(500000);  // 500ms
 
     // Success — save state
     strncpy(h->card_name, card_name, sizeof(h->card_name) - 1);
@@ -1528,8 +1541,6 @@ EXPORT void tuidaw_deinit(void) {
         g_engine.jack_mon_client_active = 0;
         for (int s = 0; s < JACK_MON_SLOTS; s++) {
             g_engine.jack_mon_capture[s] = NULL;
-            g_engine.jack_mon_playback_L[s] = NULL;
-            g_engine.jack_mon_playback_R[s] = NULL;
             g_engine.jack_mon_slot_owner[s] = -1;
         }
     }
@@ -1767,6 +1778,8 @@ EXPORT int tuidaw_add_track(int id) {
     tk->mon_device_active = 0;
     tk->jack_mon_slot = -1;
     tk->jack_mon_active = 0;
+    atomic_store(&tk->mon_ring_write, 0);
+    atomic_store(&tk->mon_ring_read, 0);
     return 0;
 }
 
@@ -2470,23 +2483,17 @@ EXPORT int tuidaw_start_monitoring(int id) {
 
             // Pre-register all port slots BEFORE activation. Registering ports
             // on an already-active client triggers PipeWire graph reconfiguration
-            // for each port_register call (24 reconfigurations!), causing
-            // intermittent digital distortion. By registering before activate(),
-            // PipeWire sees the complete port set in a single graph update.
+            // for each port_register call, causing intermittent digital
+            // distortion. By registering before activate(), PipeWire sees the
+            // complete port set in a single graph update.
+            // CAPTURE-ONLY: No output ports registered — monitoring audio is
+            // routed through the miniaudio playback callback via ring buffers.
             for (int s = 0; s < JACK_MON_SLOTS; s++) {
                 char pname[64];
                 snprintf(pname, sizeof(pname), "input_%d", s);
                 g_engine.jack_mon_capture[s] = g_jack.port_register(
                     g_engine.jack_mon_client, pname,
                     JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
-                snprintf(pname, sizeof(pname), "output_L_%d", s);
-                g_engine.jack_mon_playback_L[s] = g_jack.port_register(
-                    g_engine.jack_mon_client, pname,
-                    JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
-                snprintf(pname, sizeof(pname), "output_R_%d", s);
-                g_engine.jack_mon_playback_R[s] = g_jack.port_register(
-                    g_engine.jack_mon_client, pname,
-                    JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
                 g_engine.jack_mon_slot_owner[s] = -1;
             }
 
@@ -2498,8 +2505,6 @@ EXPORT int tuidaw_start_monitoring(int id) {
                 g_engine.jack_mon_client = NULL;
                 for (int s = 0; s < JACK_MON_SLOTS; s++) {
                     g_engine.jack_mon_capture[s] = NULL;
-                    g_engine.jack_mon_playback_L[s] = NULL;
-                    g_engine.jack_mon_playback_R[s] = NULL;
                 }
                 goto jack_failed;
             }
@@ -2532,10 +2537,8 @@ EXPORT int tuidaw_start_monitoring(int id) {
             goto jack_failed;
         }
 
-        // Verify the slot's ports exist
-        if (!g_engine.jack_mon_capture[slot] ||
-            !g_engine.jack_mon_playback_L[slot] ||
-            !g_engine.jack_mon_playback_R[slot]) {
+        // Verify the slot's capture port exists
+        if (!g_engine.jack_mon_capture[slot]) {
             FILE* f = fopen("debug/monitor.log", "a");
             if (f) { fprintf(f, "  JACK slot %d has NULL ports!\n", slot); fclose(f); }
             goto jack_failed;
@@ -2587,25 +2590,14 @@ EXPORT int tuidaw_start_monitoring(int id) {
             cap_device_name = custom_cap_node;
         }
 
-        // Get the miniaudio device name for the selected output device.
-        const char* pb_device_name = NULL;
-        if (g_engine.output_device_index >= 0 &&
-            (ma_uint32)g_engine.output_device_index < g_engine.playback_count) {
-            pb_device_name = g_engine.playback_infos[g_engine.output_device_index].name;
-        }
-
         // Helper: extract a short keyword from a miniaudio device name to match
-        // against JACK port names. PulseAudio names are verbose descriptions like
+        // against JACK port names. PipeWire names are verbose descriptions like
         // "Scarlett Solo (3rd Gen.) Input 2 Inst/Line" while JACK node names are
         // similar but not identical. We extract the first significant word (>3 chars)
-        // that isn't generic. If the name contains "Nano" we use that. If it
-        // contains "Scarlett" we use that. Otherwise use the first word >=4 chars.
-        // This is intentionally simple — we iterate all ports looking for matches
-        // and fall back to generic patterns if no match is found.
+        // that isn't generic. This is intentionally simple — we iterate all ports
+        // looking for matches and fall back to generic patterns if no match is found.
 
         char cap_name[256] = {0};
-        char pb_L_name[256] = {0};
-        char pb_R_name[256] = {0};
 
         // ── Capture port selection ──
         // Strategy: if we have a device name, find ALL JACK capture ports
@@ -2718,135 +2710,23 @@ EXPORT int tuidaw_start_monitoring(int id) {
             }
         }
 
-        // ── Playback port selection ──
-        // Strategy: if we have an output device name, find JACK playback ports
-        // whose node name matches. Need both FL/L and FR/R for stereo output.
-        if (pb_device_name) {
-            for (int i = 0; all_ports[i]; i++) {
-                if (!strstr(all_ports[i], "playback")) continue;
-
-                const char* colon = strchr(all_ports[i], ':');
-                if (!colon) continue;
-                int node_len = (int)(colon - all_ports[i]);
-                char node[256] = {0};
-                if (node_len > 255) node_len = 255;
-                strncpy(node, all_ports[i], node_len);
-
-                if (!strstr(node, pb_device_name) && !strstr(pb_device_name, node))
-                    continue;
-
-                // Match L/FL/AUX0 and R/FR/AUX1 channels
-                // Pro Audio profile uses AUX0/AUX1 instead of FL/FR
-                const char* port_part = colon + 1;
-                if (pb_L_name[0] == 0 &&
-                    (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                     strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
-                    strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
-                }
-                if (pb_R_name[0] == 0 &&
-                    (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                     strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
-                    strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
-                }
-            }
-
-            // Keyword fallback for playback (same as capture)
-            if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
-                char name_copy[256];
-                strncpy(name_copy, pb_device_name, sizeof(name_copy) - 1);
-                name_copy[sizeof(name_copy) - 1] = '\0';
-
-                char* keywords[16];
-                int kw_count = 0;
-                char* tok = strtok(name_copy, " ()-/.,");
-                while (tok && kw_count < 16) {
-                    if (strlen(tok) >= 4 &&
-                        strcasecmp(tok, "Input") != 0 &&
-                        strcasecmp(tok, "Output") != 0 &&
-                        strcasecmp(tok, "Line") != 0 &&
-                        strcasecmp(tok, "Audio") != 0 &&
-                        strcasecmp(tok, "Analog") != 0 &&
-                        strcasecmp(tok, "Digital") != 0 &&
-                        strcasecmp(tok, "Stereo") != 0 &&
-                        strcasecmp(tok, "Mono") != 0 &&
-                        strcasecmp(tok, "Surround") != 0 &&
-                        strcasecmp(tok, "Monitor") != 0) {
-                        keywords[kw_count++] = tok;
-                    }
-                    tok = strtok(NULL, " ()-/.,");
-                }
-
-                for (int k = 0; k < kw_count; k++) {
-                    for (int i = 0; all_ports[i]; i++) {
-                        if (!strstr(all_ports[i], "playback")) continue;
-                        if (!strstr(all_ports[i], keywords[k])) continue;
-                        const char* colon2 = strchr(all_ports[i], ':');
-                        const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
-                        if (pb_L_name[0] == 0 &&
-                            (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                             strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
-                            strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
-                        }
-                        if (pb_R_name[0] == 0 &&
-                            (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                             strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
-                            strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
-                        }
-                    }
-                    if (pb_L_name[0] != 0 && pb_R_name[0] != 0) break;
-                }
-            }
-        }
-
-        // Diagnostic: log playback port matching results after device matching
-        {
-            FILE* f = fopen("debug/monitor.log", "a");
-            if (f) {
-                fprintf(f, "  pb_L_name (after device match)='%s'\n", pb_L_name[0] ? pb_L_name : "(none)");
-                fprintf(f, "  pb_R_name (after device match)='%s'\n", pb_R_name[0] ? pb_R_name : "(none)");
-                fclose(f);
-            }
-        }
-
-        // Fallback: any playback ports with FL/FR, _1/_2, or AUX0/AUX1
-        if (pb_L_name[0] == 0 || pb_R_name[0] == 0) {
-            for (int i = 0; all_ports[i]; i++) {
-                if (!strstr(all_ports[i], "playback")) continue;
-                const char* colon2 = strchr(all_ports[i], ':');
-                const char* port_part = colon2 ? colon2 + 1 : all_ports[i];
-                if (pb_L_name[0] == 0 &&
-                    (strstr(port_part, "FL") || strstr(port_part, "_1") ||
-                     strstr(port_part, "_L") || strstr(port_part, "AUX0"))) {
-                    strncpy(pb_L_name, all_ports[i], sizeof(pb_L_name) - 1);
-                }
-                if (pb_R_name[0] == 0 &&
-                    (strstr(port_part, "FR") || strstr(port_part, "_2") ||
-                     strstr(port_part, "_R") || strstr(port_part, "AUX1"))) {
-                    strncpy(pb_R_name, all_ports[i], sizeof(pb_R_name) - 1);
-                }
-            }
-        }
-
         g_jack.free(all_ports);
 
-        // Diagnostic: log final selected ports
+        // Diagnostic: log final selected capture port
         {
             FILE* f = fopen("debug/monitor.log", "a");
             if (f) {
                 fprintf(f, "  FINAL cap_name='%s'\n", cap_name[0] ? cap_name : "(none)");
-                fprintf(f, "  FINAL pb_L_name='%s'\n", pb_L_name[0] ? pb_L_name : "(none)");
-                fprintf(f, "  FINAL pb_R_name='%s'\n", pb_R_name[0] ? pb_R_name : "(none)");
                 fclose(f);
             }
         }
 
-        if (cap_name[0] == 0 || pb_L_name[0] == 0 || pb_R_name[0] == 0) {
+        if (cap_name[0] == 0) {
             // Diagnostic: log failure reason
             {
                 FILE* f = fopen("debug/monitor.log", "a");
                 if (f) {
-                    fprintf(f, "  JACK FAILED: missing ports (cap=%d pb_L=%d pb_R=%d)\n",
-                            cap_name[0] != 0, pb_L_name[0] != 0, pb_R_name[0] != 0);
+                    fprintf(f, "  JACK FAILED: no capture port found\n");
                     fclose(f);
                 }
             }
@@ -2856,31 +2736,29 @@ EXPORT int tuidaw_start_monitoring(int id) {
             goto jack_failed;
         }
 
-        // Connect: external capture -> our slot's input
+        // Connect: external capture -> our slot's input port (capture-only).
+        // No output port connections — monitoring audio goes through the ring
+        // buffer to the miniaudio playback callback. This avoids competing
+        // JACK output clients on the same ALSA sink as miniaudio.
         const char* our_input = g_jack.port_name(g_engine.jack_mon_capture[slot]);
-        const char* our_out_L = g_jack.port_name(g_engine.jack_mon_playback_L[slot]);
-        const char* our_out_R = g_jack.port_name(g_engine.jack_mon_playback_R[slot]);
 
         int rc1 = g_jack.connect(g_engine.jack_mon_client, cap_name, our_input);
-        int rc2 = g_jack.connect(g_engine.jack_mon_client, our_out_L, pb_L_name);
-        int rc3 = g_jack.connect(g_engine.jack_mon_client, our_out_R, pb_R_name);
 
-        // Brief settle after connections to let PipeWire complete graph update.
-        // Without this, the process callback may run before connections are
-        // fully established, producing brief digital distortion.
-        usleep(20000);  // 20ms
+        // Brief settle after connection
+        usleep(50000);  // 50ms
+
+        // Reset ring buffer pointers for clean start
+        atomic_store(&tk->mon_ring_write, 0);
+        atomic_store(&tk->mon_ring_read, 0);
+        memset(tk->mon_ring, 0, sizeof(tk->mon_ring));
 
         // Diagnostic: log connection results
         {
             FILE* f = fopen("debug/monitor.log", "a");
             if (f) {
                 fprintf(f, "  jack_connect cap->input: rc=%d\n", rc1);
-                fprintf(f, "  jack_connect out_L->pb_L: rc=%d\n", rc2);
-                fprintf(f, "  jack_connect out_R->pb_R: rc=%d\n", rc3);
                 fprintf(f, "  our_input='%s'\n", our_input ? our_input : "(null)");
-                fprintf(f, "  our_out_L='%s'\n", our_out_L ? our_out_L : "(null)");
-                fprintf(f, "  our_out_R='%s'\n", our_out_R ? our_out_R : "(null)");
-                fprintf(f, "  JACK monitoring ACTIVE\n");
+                fprintf(f, "  JACK monitoring ACTIVE (capture-only, ring buffer playback)\n");
                 fclose(f);
             }
         }
