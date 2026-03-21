@@ -227,7 +227,14 @@ TUI: native capture devices with linear buffers, polled every ~33ms. Native `rec
 
 ### UI rendering
 
-TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouseHandlers(callbacks)` for zone-based mouse handling. Web: Vue composables + Canvas for waveforms.
+TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouseHandlers(callbacks)` for zone-based mouse handling with button hit-testing. Web: Vue composables + Canvas for waveforms.
+
+### Mouse interactivity (TUI sidebar)
+
+- **M/S/R/O buttons** (row 1): clickable with x-coordinate hit-testing. M at x=1-2, S at x=4-5, R at x=7-8, O at x=10-11. Active buttons have dark tinted backgrounds (BG_MUTE_ACTIVE, BG_SOLO_ACTIVE, BG_ARM_ACTIVE, BG_MON_ACTIVE). Click triggers same logic as keyboard handlers including punch-in/out for R during transport.
+- **Input device row** (row 4): clickable to open F2-style input device selector with channel selection for multi-channel devices.
+- **Volume/Pan/Gain** (rows 2-3): mouse wheel adjusts values on selected track.
+- **Track selection**: click anywhere else on track to select it.
 
 ### Playhead visibility
 
