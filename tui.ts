@@ -193,6 +193,20 @@ export default async function main() {
   // Per-track: the playhead position when that track's recording began (for punch-in)
   const trackRecordStartPositions: Map<string, number> = new Map()
 
+  // During recording, accumulate chunks without full-buffer realloc.
+  // Key = trackId, value = recording state
+  const trackRecordingBuffers: Map<
+    string,
+    {
+      base: Float32Array | null // pre-existing audio before recording start
+      baseLen: number // length of base
+      recStart: number // timeline position where recording starts
+      totalRecLen: number // total recorded samples so far
+      preview: Float32Array | null // pre-allocated preview buffer for UI
+      previewCapacity: number // allocated capacity of preview
+    }
+  > = new Map()
+
   // Playhead update interval
   let playheadInterval: ReturnType<typeof setInterval> | null = null
 
@@ -354,6 +368,60 @@ export default async function main() {
       // Loop region handling is done natively in the audio callback,
       // but we need to read back the looped position for UI updates.
 
+      // If punch-in recording is active, poll recording data for waveform
+      for (const track of state.tracks) {
+        if (!track.armed) continue
+        const recBuf = trackRecordingBuffers.get(track.id)
+        if (!recBuf) continue
+
+        audioEngine.pollRecordingData(track.id, (newSamples: Float32Array) => {
+          const nativeStart = audioEngine.getRecordingStartPlayhead(track.id)
+          if (nativeStart >= 0 && recBuf.recStart !== nativeStart) {
+            recBuf.recStart = nativeStart
+            trackRecordStartPositions.set(track.id, nativeStart)
+          }
+
+          const writePos = recBuf.recStart + recBuf.totalRecLen
+          const neededLen = writePos + newSamples.length
+          const neededCapacity = Math.max(neededLen, recBuf.baseLen)
+
+          if (!recBuf.preview || neededCapacity > recBuf.previewCapacity) {
+            const newCap = Math.max(
+              neededCapacity * 2,
+              recBuf.recStart + 48000 * 30
+            )
+            const newPreview = new Float32Array(newCap)
+            if (recBuf.preview) {
+              newPreview.set(
+                recBuf.preview.subarray(
+                  0,
+                  Math.min(
+                    recBuf.recStart + recBuf.totalRecLen,
+                    recBuf.previewCapacity
+                  )
+                )
+              )
+            } else if (recBuf.base) {
+              newPreview.set(
+                recBuf.base.subarray(0, Math.min(recBuf.base.length, newCap))
+              )
+            }
+            recBuf.preview = newPreview
+            recBuf.previewCapacity = newCap
+          }
+
+          recBuf.preview.set(newSamples, writePos)
+          recBuf.totalRecLen += newSamples.length
+
+          const viewLen = Math.max(
+            recBuf.recStart + recBuf.totalRecLen,
+            recBuf.baseLen
+          )
+          track.samples = recBuf.preview.subarray(0, viewLen)
+          track.sampleRate = state.sampleRate
+        })
+      }
+
       autoScroll()
       render()
     }, 33) // ~30fps
@@ -371,9 +439,21 @@ export default async function main() {
 
     renderer.requestLive()
 
-    // Remember the start position for each armed track
+    // Remember the start position for each armed track (JS-side fallback).
+    // The native engine will capture a more accurate position when the first
+    // audio sample actually arrives (rec_start_playhead).
     for (const track of armedTracks) {
       trackRecordStartPositions.set(track.id, state.playheadPosition)
+
+      // Set up lightweight recording buffer state
+      trackRecordingBuffers.set(track.id, {
+        base: track.samples,
+        baseLen: track.samples ? track.samples.length : 0,
+        recStart: state.playheadPosition,
+        totalRecLen: 0,
+        preview: null,
+        previewCapacity: 0
+      })
     }
 
     // Sync all tracks and start native transport (plays non-muted tracks)
@@ -384,48 +464,73 @@ export default async function main() {
       await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
     }
 
-    // Playhead update interval — polls recording data and merges into tracks
+    // Playhead update interval — lightweight: just update playhead + render.
+    // Recording data stays in the native rec_buffer until stop.
+    // We poll only to update waveform preview for the UI.
     playheadInterval = setInterval(() => {
       state.playheadPosition = audioEngine.getPlayhead()
 
-      // Poll recording data for each armed track
+      // Update recording waveform preview (read-only from native buffer)
       for (const track of state.tracks) {
         if (!track.armed) continue
-        if (!trackRecordStartPositions.has(track.id)) continue
+        const recBuf = trackRecordingBuffers.get(track.id)
+        if (!recBuf) continue
 
+        // Poll new samples for waveform display only
         audioEngine.pollRecordingData(track.id, (newSamples: Float32Array) => {
-          const recStart = trackRecordStartPositions.get(track.id) ?? 0
-
-          // Get current total recorded length from native engine
-          // (pollRecordingData gives us only the NEW chunk since last poll)
-          const existingRecLen = track.samples
-            ? Math.max(0, track.samples.length - recStart)
-            : 0
-
-          // Merge: preserve [0..recStart], append new audio after existing recorded data
-          const writeOffset = recStart + existingRecLen
-          const totalLen = writeOffset + newSamples.length
-          const existing = track.samples
-          const merged = new Float32Array(
-            Math.max(totalLen, existing ? existing.length : 0)
-          )
-
-          // Copy all existing audio
-          if (existing) {
-            merged.set(
-              existing.subarray(0, Math.min(existing.length, merged.length)),
-              0
-            )
+          // Use native start playhead if available (more accurate than JS-side)
+          const nativeStart = audioEngine.getRecordingStartPlayhead(track.id)
+          if (nativeStart >= 0 && recBuf.recStart !== nativeStart) {
+            recBuf.recStart = nativeStart
+            trackRecordStartPositions.set(track.id, nativeStart)
           }
 
-          // Write new recorded audio at the write offset
-          merged.set(newSamples, writeOffset)
+          // Grow preview buffer if needed (doubling strategy to avoid
+          // constant realloc). Write new samples directly without
+          // rebuilding from scratch.
+          const writePos = recBuf.recStart + recBuf.totalRecLen
+          const neededLen = writePos + newSamples.length
+          const neededCapacity = Math.max(neededLen, recBuf.baseLen)
 
-          track.samples = merged
+          if (!recBuf.preview || neededCapacity > recBuf.previewCapacity) {
+            // Allocate with 2x headroom (min 30 seconds of recording)
+            const newCap = Math.max(
+              neededCapacity * 2,
+              recBuf.recStart + 48000 * 30
+            )
+            const newPreview = new Float32Array(newCap)
+            if (recBuf.preview) {
+              // Copy existing preview data (already has base + prior chunks)
+              newPreview.set(
+                recBuf.preview.subarray(
+                  0,
+                  Math.min(
+                    recBuf.recStart + recBuf.totalRecLen,
+                    recBuf.previewCapacity
+                  )
+                )
+              )
+            } else if (recBuf.base) {
+              // First allocation — copy base audio
+              newPreview.set(
+                recBuf.base.subarray(0, Math.min(recBuf.base.length, newCap))
+              )
+            }
+            recBuf.preview = newPreview
+            recBuf.previewCapacity = newCap
+          }
+
+          // Append new samples directly (no full-buffer rebuild)
+          recBuf.preview.set(newSamples, writePos)
+          recBuf.totalRecLen += newSamples.length
+
+          // Expose a view of the preview for UI rendering
+          const viewLen = Math.max(
+            recBuf.recStart + recBuf.totalRecLen,
+            recBuf.baseLen
+          )
+          track.samples = recBuf.preview.subarray(0, viewLen)
           track.sampleRate = state.sampleRate
-
-          // Update native engine's track buffer so playback reflects new audio
-          audioEngine.updateTrackSamples(track)
         })
       }
 
@@ -443,42 +548,104 @@ export default async function main() {
     startPosition: number
   ): Promise<void> {
     trackRecordStartPositions.set(track.id, startPosition)
+    trackRecordingBuffers.set(track.id, {
+      base: track.samples,
+      baseLen: track.samples ? track.samples.length : 0,
+      recStart: startPosition,
+      totalRecLen: 0,
+      preview: null,
+      previewCapacity: 0
+    })
     await audioEngine.startRecording(track.id, () => {}, track.inputDeviceId)
   }
 
   // Punch-out: stop recording on a single track and finalize its audio.
-  // Note: pollRecordingData() already merges audio incrementally during
-  // recording, so we just need to do a final poll, stop the capture device,
-  // and save. We do NOT re-merge the full buffer — that would duplicate audio.
+  // Does a final merge of all recorded data using the native-level start
+  // playhead for accurate timeline placement.
   async function punchOutTrack(track: Track): Promise<void> {
-    // Final poll to capture any remaining samples not yet merged
+    // Get the accurate recording start position from the native engine
+    const nativeStart = audioEngine.getRecordingStartPlayhead(track.id)
+    const recBuf = trackRecordingBuffers.get(track.id)
+
+    // Final poll to capture any remaining samples into preview
     audioEngine.pollRecordingData(track.id, (newSamples: Float32Array) => {
-      const recStart = trackRecordStartPositions.get(track.id) ?? 0
-      const existingRecLen = track.samples
-        ? Math.max(0, track.samples.length - recStart)
-        : 0
-      const writeOffset = recStart + existingRecLen
-      const totalLen = writeOffset + newSamples.length
-      const existing = track.samples
-      const merged = new Float32Array(
-        Math.max(totalLen, existing ? existing.length : 0)
-      )
-      if (existing) {
-        merged.set(
-          existing.subarray(0, Math.min(existing.length, merged.length)),
-          0
-        )
+      if (recBuf) {
+        const writePos = recBuf.recStart + recBuf.totalRecLen
+        // Ensure preview has capacity for final samples
+        const neededLen = writePos + newSamples.length
+        const neededCapacity = Math.max(neededLen, recBuf.baseLen)
+        if (!recBuf.preview || neededCapacity > recBuf.previewCapacity) {
+          const newCap = Math.max(neededCapacity, recBuf.recStart + 48000 * 30)
+          const newPreview = new Float32Array(newCap)
+          if (recBuf.preview) {
+            newPreview.set(
+              recBuf.preview.subarray(
+                0,
+                Math.min(
+                  recBuf.recStart + recBuf.totalRecLen,
+                  recBuf.previewCapacity
+                )
+              )
+            )
+          } else if (recBuf.base) {
+            newPreview.set(
+              recBuf.base.subarray(0, Math.min(recBuf.base.length, newCap))
+            )
+          }
+          recBuf.preview = newPreview
+          recBuf.previewCapacity = newCap
+        }
+        recBuf.preview.set(newSamples, writePos)
+        recBuf.totalRecLen += newSamples.length
       }
-      merged.set(newSamples, writeOffset)
-      track.samples = merged
-      track.sampleRate = state.sampleRate
-      audioEngine.updateTrackSamples(track)
     })
 
-    // Stop the capture device (discard the returned buffer — already merged)
+    // Stop the capture device
     await audioEngine.stopTrackRecording(track.id)
 
+    // Determine the recording start position:
+    // Prefer the native-measured position (captured when first audio sample
+    // arrived in the audio callback) over the JS-side estimate.
+    const jsStart = trackRecordStartPositions.get(track.id) ?? 0
+    const recStart = nativeStart >= 0 ? nativeStart : jsStart
+
+    if (recBuf && recBuf.totalRecLen > 0) {
+      // If the native start differs from JS estimate, we need to reposition
+      // the recorded audio. The preview buffer has data starting at
+      // recBuf.recStart (which may have been updated during polling).
+      // If recStart differs from recBuf.recStart, rebuild.
+      if (recBuf.preview && recStart === recBuf.recStart) {
+        // Preview already has correct placement — just trim to final length
+        const viewLen = Math.max(recStart + recBuf.totalRecLen, recBuf.baseLen)
+        const final = new Float32Array(viewLen)
+        final.set(recBuf.preview.subarray(0, viewLen))
+        track.samples = final
+      } else if (recBuf.preview) {
+        // Need to shift: recording data in preview starts at recBuf.recStart,
+        // but should be at recStart. Extract recorded portion and reposition.
+        const viewLen = Math.max(recStart + recBuf.totalRecLen, recBuf.baseLen)
+        const final = new Float32Array(viewLen)
+        // Copy base audio
+        if (recBuf.base) {
+          final.set(
+            recBuf.base.subarray(0, Math.min(recBuf.base.length, viewLen))
+          )
+        }
+        // Copy recorded audio from preview at its original position
+        const recData = recBuf.preview.subarray(
+          recBuf.recStart,
+          recBuf.recStart + recBuf.totalRecLen
+        )
+        final.set(recData, recStart)
+        track.samples = final
+      }
+
+      track.sampleRate = state.sampleRate
+      audioEngine.updateTrackSamples(track)
+    }
+
     trackRecordStartPositions.delete(track.id)
+    trackRecordingBuffers.delete(track.id)
 
     // Save the recorded audio to file
     if (track.samples) {
@@ -524,6 +691,7 @@ export default async function main() {
         }
       }
       trackRecordStartPositions.clear()
+      trackRecordingBuffers.clear()
 
       // Disarm all armed tracks after recording stops
       for (const track of state.tracks) {

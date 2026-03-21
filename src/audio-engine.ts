@@ -118,6 +118,10 @@ const lib = dlopen(findLibrary(), {
   tuidaw_stop_recording: { returns: FFIType.i32, args: [FFIType.i32] },
   tuidaw_get_recording_buffer: { returns: FFIType.ptr, args: [FFIType.i32] },
   tuidaw_get_recording_length: { returns: FFIType.i32, args: [FFIType.i32] },
+  tuidaw_get_recording_start_playhead: {
+    returns: FFIType.i64,
+    args: [FFIType.i32]
+  },
   tuidaw_set_speed: { returns: FFIType.void, args: [FFIType.f32] },
   tuidaw_get_speed: { returns: FFIType.f32 },
   tuidaw_render: { returns: FFIType.i32, args: [FFIType.ptr, FFIType.i32] },
@@ -505,6 +509,14 @@ export class AudioEngine {
 
     this.lastRecLengths.set(trackId, currentLen)
     onChunk(newSamples)
+  }
+
+  // Get the playhead position when the first recording sample arrived (native-level).
+  // Returns -1 if no sample has arrived yet.
+  getRecordingStartPlayhead(trackId: string): number {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return -1
+    return Number(lib.symbols.tuidaw_get_recording_start_playhead(nid))
   }
 
   // Stop recording on a single track and return its full buffer

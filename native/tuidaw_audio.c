@@ -262,6 +262,7 @@ typedef struct {
     _Atomic int   recording;         // currently recording
     float*        rec_buffer;        // ring buffer for captured audio (owned by us)
     _Atomic int   rec_write_pos;     // write position in rec_buffer
+    _Atomic long  rec_start_playhead; // playhead position when first sample arrived (-1 = not yet)
     int           rec_device_index;  // miniaudio capture device index (-1 = default)
     int           rec_channel;       // which channel to capture from multi-ch device (0-based, -1 = mono downmix)
     ma_device     rec_device;        // capture device (active only while recording)
@@ -824,6 +825,12 @@ static void capture_callback(ma_device* pDevice, void* pOutput, const void* pInp
     int channels = (int)pDevice->capture.channels;
     int sel_ch = tk->rec_channel; // -1 = mono downmix, >=0 = specific channel
 
+    // Capture playhead position on first sample arrival for latency compensation
+    if (write_pos == 0) {
+        long ph = atomic_load(&g_engine.playhead_samples);
+        atomic_store(&tk->rec_start_playhead, ph);
+    }
+
     // Diagnostic: log first few callbacks to file
     int diag = atomic_fetch_add(&capture_diag_counter, 1);
     if (diag < 5) {
@@ -952,6 +959,11 @@ static int jack_monitor_process(jack_nframes_t nframes, void* arg) {
         // is unavailable (card profile set to "off" for custom node workaround).
         if (atomic_load(&tk->recording) && tk->rec_buffer) {
             int write_pos = atomic_load(&tk->rec_write_pos);
+            // Capture playhead on first sample for latency compensation
+            if (write_pos == 0) {
+                long ph = atomic_load(&g_engine.playhead_samples);
+                atomic_store(&tk->rec_start_playhead, ph);
+            }
             for (jack_nframes_t j = 0; j < nframes; j++) {
                 if (write_pos >= RECORDING_BUF_LEN) break;
                 tk->rec_buffer[write_pos++] = in[j];
@@ -976,6 +988,11 @@ static int jack_rec_process(jack_nframes_t nframes, void* arg) {
 
     float* in = (float*)g_jack.port_get_buffer(tk->jack_rec_capture, nframes);
     int write_pos = atomic_load(&tk->rec_write_pos);
+    // Capture playhead on first sample for latency compensation
+    if (write_pos == 0) {
+        long ph = atomic_load(&g_engine.playhead_samples);
+        atomic_store(&tk->rec_start_playhead, ph);
+    }
     for (jack_nframes_t i = 0; i < nframes; i++) {
         if (write_pos >= RECORDING_BUF_LEN) break;
         tk->rec_buffer[write_pos++] = in[i];
@@ -2094,6 +2111,7 @@ EXPORT int tuidaw_start_recording(int id) {
         if (!tk->rec_buffer) return -1;
     }
     atomic_store(&tk->rec_write_pos, 0);
+    atomic_store(&tk->rec_start_playhead, -1L);  // will be set on first sample
 
     // If JACK monitoring is active on this track, the JACK process callback
     // will handle recording directly (it already receives the capture audio).
@@ -2399,6 +2417,14 @@ EXPORT int tuidaw_get_recording_length(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return 0;
     return atomic_load(&tk->rec_write_pos);
+}
+
+// Get the playhead position when the first recording sample arrived.
+// Returns -1 if no sample has arrived yet. Used for latency compensation.
+EXPORT long tuidaw_get_recording_start_playhead(int id) {
+    TrackState* tk = find_track(id);
+    if (!tk) return -1;
+    return atomic_load(&tk->rec_start_playhead);
 }
 
 // ── Input Monitoring ────────────────────────────────────────────────────────
