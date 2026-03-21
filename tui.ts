@@ -18,6 +18,63 @@ import type { ProjectState, Track } from './src/types'
 import { CLICK_TRACK_INDEX } from './src/types'
 
 export default async function main() {
+  // ── Emergency Terminal Restore ──────────────────────────────────────────
+  // If the process crashes (e.g. native segfault), renderer.destroy() never
+  // runs, leaving the terminal in raw mode with mouse reporting enabled.
+  // This causes garbage output on mouse movement and makes the terminal
+  // unusable. Write raw escape sequences to restore terminal state on any
+  // unexpected exit. These are synchronous writes to fd 1 (stdout).
+  const emergencyRestore = () => {
+    try {
+      const buf = Buffer.from(
+        '\x1b[?1000l' + // disable mouse press/release reporting
+          '\x1b[?1002l' + // disable mouse motion reporting
+          '\x1b[?1003l' + // disable all mouse tracking
+          '\x1b[?1006l' + // disable SGR mouse mode
+          '\x1b[?25h' + // show cursor
+          '\x1b[?1049l' + // exit alternate screen buffer
+          '\x1b[0m' + // reset all text attributes
+          '\n'
+      )
+      const fd = process.stdout.fd ?? 1
+      // Use synchronous write — we may be in a signal handler
+      require('fs').writeSync(fd, buf)
+      // Try to restore terminal to cooked mode
+      try {
+        process.stdin.setRawMode?.(false)
+      } catch {}
+    } catch {}
+  }
+
+  // Handle uncaught exceptions (JS-level crashes)
+  process.on('uncaughtException', (err) => {
+    emergencyRestore()
+    console.error('TUIDAW FATAL:', err)
+    process.exit(1)
+  })
+
+  // Handle unhandled promise rejections
+  process.on('unhandledRejection', (err) => {
+    emergencyRestore()
+    console.error('TUIDAW FATAL (promise):', err)
+    process.exit(1)
+  })
+
+  // Handle signals that indicate crashes (SIGSEGV, SIGABRT, SIGBUS)
+  // Note: Bun may not deliver SIGSEGV to JS signal handlers for native
+  // segfaults, but this covers cases where the signal is catchable.
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGABRT'] as const) {
+    process.on(sig, () => {
+      emergencyRestore()
+      process.exit(1)
+    })
+  }
+
+  // Also handle normal exit to ensure cleanup
+  process.on('exit', () => {
+    emergencyRestore()
+  })
+
   // ── Initialize ──────────────────────────────────────────────────────────
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

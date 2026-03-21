@@ -22,6 +22,60 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <execinfo.h>
+
+// ── Crash Signal Handler ────────────────────────────────────────────────────
+// Restore terminal state on SIGSEGV/SIGABRT so the terminal isn't left in
+// raw mode with mouse reporting enabled. Also logs backtrace to debug/crash.log.
+static void crash_signal_handler(int sig) {
+    // Restore terminal: disable mouse tracking, show cursor, exit alt screen
+    const char restore[] =
+        "\033[?1000l\033[?1002l\033[?1003l\033[?1006l"  // disable mouse
+        "\033[?25h"                                      // show cursor
+        "\033[?1049l"                                    // exit alt screen
+        "\033[0m"                                        // reset attrs
+        "\n";
+    (void)write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+
+    // Log crash info to file (async-signal-safe: use write() not fprintf)
+    int fd = open("debug/crash.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        const char* msg = sig == SIGSEGV ? "SIGSEGV (segfault)\n"
+                        : sig == SIGABRT ? "SIGABRT (abort)\n"
+                        : sig == SIGBUS  ? "SIGBUS\n"
+                        :                  "Unknown signal\n";
+        (void)write(fd, msg, strlen(msg));
+
+        // Backtrace (not async-signal-safe but best-effort for crash debugging)
+        void* bt[64];
+        int bt_size = backtrace(bt, 64);
+        backtrace_symbols_fd(bt, bt_size, fd);
+        close(fd);
+    }
+
+    // Print to stderr too
+    const char* msg2 = sig == SIGSEGV
+        ? "\n[TUIDAW] CRASH: Segmentation fault. See debug/crash.log\n"
+        : "\n[TUIDAW] CRASH: Signal caught. See debug/crash.log\n";
+    (void)write(STDERR_FILENO, msg2, strlen(msg2));
+
+    // Re-raise with default handler so the process actually terminates
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void install_crash_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = crash_signal_handler;
+    sa.sa_flags = SA_RESETHAND;  // one-shot: reset to default after first catch
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+}
 
 // ── JACK API (dynamically loaded via dlopen) ────────────────────────────────
 // We load libjack.so.0 at runtime to avoid a hard build/link dependency.
@@ -139,10 +193,7 @@ static void jack_unload(void) {
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <libgen.h>  // dirname
-#include <unistd.h>  // fork, exec, atexit
 
 // State for a custom node helper process associated with a capture device.
 // Multiple tracks can share the same helper if they use the same device.
@@ -1310,6 +1361,8 @@ static void cleanup_all_helpers(void) {
 
 // Initialize the audio engine. Returns 0 on success, -1 on failure.
 EXPORT int tuidaw_init(void) {
+    install_crash_handlers();
+
     memset(&g_engine, 0, sizeof(g_engine));
     atomic_store(&g_engine.loop_start, -1);
     atomic_store(&g_engine.loop_end, -1);
@@ -2281,7 +2334,20 @@ EXPORT int tuidaw_get_recording_length(int id) {
 EXPORT int tuidaw_start_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return -1;
-    if (tk->jack_mon_active || tk->mon_device_active) return 0; // already monitoring
+    if (atomic_load(&tk->monitoring)) return 0; // already monitoring
+
+    // If the JACK client is already running (kept alive from a previous
+    // monitoring session), just re-enable monitoring via the atomic flag.
+    // The process callback checks this flag and starts passing audio through.
+    if (tk->jack_mon_active && tk->jack_client) {
+        atomic_store(&tk->monitoring, 1);
+        FILE* f = fopen("debug/monitor.log", "a");
+        if (f) {
+            fprintf(f, "start_monitoring: reusing existing JACK client for id=%d\n", id);
+            fclose(f);
+        }
+        return 0;
+    }
 
     // ── Strategy 1: Direct JACK API ────────────────────────────────────
     if (g_engine.jack_available && !g_engine.use_null_backend) {
@@ -2308,12 +2374,20 @@ EXPORT int tuidaw_start_monitoring(int id) {
         // Check if this capture device needs custom ALSA nodes to avoid
         // the auto-link/node-group corruption. If so, spawn the helper
         // process (which sets profile to off and creates clean nodes).
-        // If recording already acquired a helper, acquire again (bumps ref_count).
         if (!tk->custom_helper) {
             tk->custom_helper = acquire_custom_helper(tk->rec_device_index);
-        } else {
-            // Recording already has a helper — acquire again to bump ref_count
-            acquire_custom_helper(tk->rec_device_index);
+        } else if (tk->custom_helper->pid > 0) {
+            // Helper already assigned (kept alive from previous monitoring
+            // session or active recording). Just bump ref_count directly —
+            // do NOT call acquire_custom_helper() because the device detection
+            // queries PulseAudio which won't find the device (profile is "off").
+            tk->custom_helper->ref_count++;
+            FILE* f = fopen("debug/monitor.log", "a");
+            if (f) {
+                fprintf(f, "  reusing existing custom_helper pid=%d ref_count=%d\n",
+                        tk->custom_helper->pid, tk->custom_helper->ref_count);
+                fclose(f);
+            }
         }
         if (tk->custom_helper) {
             FILE* f = fopen("debug/monitor.log", "a");
@@ -2362,6 +2436,11 @@ EXPORT int tuidaw_start_monitoring(int id) {
             tk->jack_client = NULL;
             goto jack_failed;
         }
+
+        // Brief pause to let PipeWire register the client in its graph
+        // before we query ports and make connections. Without this, port
+        // enumeration or connection can hit a race with graph reconfiguration.
+        usleep(50000);  // 50ms
 
         // Find and connect to the right ports.
         // We search ALL ports (not just physical) to find PipeWire's split/filter ports
@@ -2781,38 +2860,25 @@ EXPORT int tuidaw_start_monitoring(int id) {
     }
 }
 
-// Stop input monitoring on a track. Closes JACK client or duplex device.
+// Stop input monitoring on a track. Instead of closing the JACK client,
+// we just set monitoring=0 — the process callback already outputs silence
+// when monitoring is off. This avoids PipeWire graph reconfiguration on
+// every toggle, which causes crackling/distortion. The JACK client is
+// only closed when the track is removed or the engine shuts down.
 EXPORT void tuidaw_stop_monitoring(int id) {
     TrackState* tk = find_track(id);
     if (!tk) return;
 
     atomic_store(&tk->monitoring, 0);
-
-    if (tk->jack_mon_active && g_jack.lib_handle) {
-        g_jack.deactivate(tk->jack_client);
-        g_jack.client_close(tk->jack_client);
-        tk->jack_client = NULL;
-        tk->jack_capture = NULL;
-        tk->jack_playback_L = NULL;
-        tk->jack_playback_R = NULL;
-        tk->jack_mon_active = 0;
-    }
+    // jack_client, jack_capture, jack_playback_L/R stay alive
+    // jack_mon_active stays 1 — the client is still running (just outputting silence)
 
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
         tk->mon_device_active = 0;
     }
 
-    // Decrement custom helper ref_count. The helper stays alive (not killed)
-    // so it can be reused instantly when monitoring is toggled back on,
-    // avoiding the profile-switch race condition. It will be killed when the
-    // track is removed or the engine shuts down.
-    if (tk->custom_helper) {
-        release_custom_helper(tk->custom_helper);
-        if (!tk->jack_rec_active) {
-            tk->custom_helper = NULL;  // recording still needs the pointer
-        }
-    }
+    // Don't touch custom_helper — it stays alive for reuse
 }
 
 // Check if a track is currently monitoring input.

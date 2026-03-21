@@ -156,6 +156,10 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 - **Recording via PulseAudio corrupted on custom-node devices**: When a device uses custom ALSA nodes (profile set to "off"), PulseAudio capture goes through profile-managed nodes with `api.alsa.auto-link` which produces the same corruption. Fix: `tuidaw_start_recording()` checks `device_needs_custom_node()` and uses JACK capture-only client (no playback ports) via custom nodes instead of PulseAudio.
 - **Custom nodes need `node.autoconnect=false`**: Without this, WirePlumber auto-links the custom capture node to the custom playback sink, causing sound to continue flowing after monitoring is stopped. Both nodes must have `node.autoconnect=false` to prevent any auto-routing.
 - **Helper must stay alive between monitoring toggles**: Killing the helper on monitoring-off and respawning on monitoring-on triggers a profile-switch race condition (off→pro-audio→off) that causes intermittent digital corruption (~50% of the time). Fix: `release_custom_helper()` only decrements ref_count; `kill_custom_helper()` actually terminates the process (called from track removal / engine shutdown). `acquire_custom_helper()` reuses existing helpers with `pid > 0` regardless of ref_count.
+- **JACK client must stay alive between monitoring toggles**: Closing and reopening the JACK client on every monitoring off→on cycle causes PipeWire graph reconfiguration, which produces crackling/distortion (~30-40% of toggles, first enable always affected). Fix: `tuidaw_stop_monitoring()` only sets `monitoring=0` — the JACK process callback already outputs silence when the flag is off. `tuidaw_start_monitoring()` detects the existing client (`jack_mon_active && jack_client`) and just sets `monitoring=1` — instant re-enable with zero graph reconfiguration. The standalone `jack_quick_cap` test (which kept one client open) produced clean audio, confirming graph churn was the cause.
+- **custom_helper pointer must NOT be NULLed on monitoring stop**: The helper process stays alive with profile "off" and custom ALSA nodes active. If `tk->custom_helper` is NULLed, `tuidaw_start_monitoring` calls `acquire_custom_helper` → `device_needs_custom_node` which queries PulseAudio for the device — but the device doesn't exist (profile is "off") → detection fails → falls through to PulseAudio duplex → crash. Fix: keep `tk->custom_helper` pointer across toggles. On re-enable, bump `ref_count` directly instead of calling `acquire_custom_helper`.
+- **Crash signal handler for terminal restore**: Native segfaults leave the terminal in raw mode with mouse reporting enabled (garbage on mouse move, can't Ctrl+C). Fix: install SIGSEGV/SIGABRT/SIGBUS handlers in C (`install_crash_handlers()`) that write raw escape sequences to restore terminal and log backtrace to `debug/crash.log`. JS side has `uncaughtException`/`unhandledRejection`/signal handlers with same terminal restore sequences.
+- **PulseAudio Monitor sources filtered from device list**: `enumerateDevices()` skips capture devices whose name starts with "Monitor of " — these are loopback captures of output devices, never useful as DAW inputs.
 
 ## File Structure
 
@@ -163,11 +167,11 @@ File operations use **zenity** (GTK native dialogs). Ctrl+key shortcuts don't wo
 ./
 ├── AGENTS.md, LICENSE, README.md, setup.sh
 ├── index.ts              # Entry dispatcher: --host → web/server.ts, else → tui.ts
-├── tui.ts                # TUI mode (~1282 lines)
+├── tui.ts                # TUI mode (~1339 lines)
 ├── package.json, tsconfig.json, .prettierrc, bun.lock
 ├── .github/workflows/build.yml  # CI: multi-arch native lib build on tag push
 ├── native/
-│   ├── tuidaw_audio.c    # C audio engine (~2863 lines, 40+ exported symbols)
+│   ├── tuidaw_audio.c    # C audio engine (~2939 lines, 40+ exported symbols)
 │   ├── miniaudio.h       # miniaudio single-header (committed)
 │   ├── build.sh          # Native .so build (zig cc)
 │   ├── build-wasm.sh     # WASM build (emcc)

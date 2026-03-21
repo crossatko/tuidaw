@@ -285,6 +285,10 @@ export class AudioEngine {
     const inputCount = lib.symbols.tuidaw_get_device_count(1)
     for (let i = 0; i < inputCount; i++) {
       const name = readName(1, i)
+      // Filter out PulseAudio monitor sources (e.g. "Monitor of Built-in Audio
+      // Analog Stereo") — these are loopback captures of output devices, never
+      // useful as recording inputs in a DAW.
+      if (name.startsWith('Monitor of ')) continue
       const isDefault = lib.symbols.tuidaw_is_device_default(1, i) !== 0
       const stableId = readStableId(1, i)
       const channels = lib.symbols.tuidaw_get_device_channels(1, i)
