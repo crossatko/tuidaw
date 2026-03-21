@@ -21,6 +21,7 @@ interface TuidawWasmModule {
   _tuidaw_remove_track(id: number): void
   _tuidaw_set_track_samples(id: number, ptr: number, len: number): void
   _tuidaw_set_track_volume(id: number, volume: number): void
+  _tuidaw_set_track_gain(id: number, gain: number): void
   _tuidaw_set_track_pan(id: number, pan: number): void
   _tuidaw_set_track_muted(id: number, muted: number): void
   _tuidaw_set_track_solo(id: number, solo: number): void
@@ -179,6 +180,12 @@ export class WebAudioBridge {
     const nativeId = this.trackIdMap.get(trackId)
     if (nativeId !== undefined)
       this.m._tuidaw_set_track_volume(nativeId, volume)
+  }
+
+  setTrackGain(trackId: string, gain: number): void {
+    const nativeId = this.trackIdMap.get(trackId)
+    if (nativeId !== undefined)
+      this.m._tuidaw_set_track_gain(nativeId, Math.max(0, Math.min(4, gain)))
   }
 
   setTrackPan(trackId: string, pan: number): void {
@@ -646,6 +653,7 @@ export class WebAudioBridge {
     this.ensureTrack(track.id)
     this.setTrackSamples(track.id, track.samples)
     this.setTrackVolume(track.id, track.volume)
+    this.setTrackGain(track.id, track.gain)
     this.setTrackPan(track.id, track.pan)
     this.setTrackMuted(track.id, track.muted)
     this.setTrackSolo(track.id, track.solo)
@@ -658,6 +666,7 @@ export interface WebTrack {
   name: string
   color: string
   volume: number
+  gain: number // 0.0 - 4.0 (pre-fader input gain, 1.0 = 0dB, 4.0 = +12dB)
   pan: number
   muted: boolean
   solo: boolean

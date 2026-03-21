@@ -74,6 +74,10 @@ const lib = dlopen(findLibrary(), {
     returns: FFIType.void,
     args: [FFIType.i32, FFIType.f32]
   },
+  tuidaw_set_track_gain: {
+    returns: FFIType.void,
+    args: [FFIType.i32, FFIType.f32]
+  },
   tuidaw_set_track_pan: {
     returns: FFIType.void,
     args: [FFIType.i32, FFIType.f32]
@@ -367,6 +371,7 @@ export class AudioEngine {
 
     // Sync parameters (these are all instant atomic updates in native code)
     lib.symbols.tuidaw_set_track_volume(nid, track.volume)
+    lib.symbols.tuidaw_set_track_gain(nid, track.gain)
     lib.symbols.tuidaw_set_track_pan(nid, track.pan)
     lib.symbols.tuidaw_set_track_muted(nid, track.muted ? 1 : 0)
     lib.symbols.tuidaw_set_track_solo(nid, track.solo ? 1 : 0)
@@ -414,6 +419,12 @@ export class AudioEngine {
     const nid = trackIdMap.get(trackId)
     if (nid === undefined) return
     lib.symbols.tuidaw_set_track_volume(nid, Math.max(0, Math.min(1, volume)))
+  }
+
+  setTrackGain(trackId: string, gain: number): void {
+    const nid = trackIdMap.get(trackId)
+    if (nid === undefined) return
+    lib.symbols.tuidaw_set_track_gain(nid, Math.max(0, Math.min(4, gain)))
   }
 
   setTrackPan(trackId: string, pan: number): void {
@@ -1079,6 +1090,7 @@ export class AudioEngine {
           armed: false,
           monitoring: false,
           volume: state.clickVolume,
+          gain: 1.0,
           pan: state.clickPan,
           samples: clickSamples,
           sampleRate: state.sampleRate,
@@ -1098,7 +1110,7 @@ export class AudioEngine {
     }
 
     if (tracksToMix.length === 1) {
-      const vol = tracksToMix[0].track.volume
+      const vol = tracksToMix[0].track.volume * (tracksToMix[0].track.gain ?? 1)
       const pan = tracksToMix[0].track.pan
       const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
       const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
@@ -1113,7 +1125,8 @@ export class AudioEngine {
       const mixInputs: string[] = []
 
       for (let i = 0; i < tracksToMix.length; i++) {
-        const vol = tracksToMix[i].track.volume
+        const vol =
+          tracksToMix[i].track.volume * (tracksToMix[i].track.gain ?? 1)
         const pan = tracksToMix[i].track.pan
         const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2))
         const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2))
@@ -1181,6 +1194,7 @@ export class AudioEngine {
           solo: track.solo,
           armed: track.armed,
           volume: track.volume,
+          gain: track.gain,
           pan: track.pan,
           sampleRate: track.sampleRate,
           inputDeviceId: track.inputDeviceId,
@@ -1296,6 +1310,7 @@ export class AudioEngine {
           armed: td.armed,
           monitoring: false,
           volume: td.volume,
+          gain: td.gain ?? 1.0,
           pan: td.pan,
           samples,
           sampleRate: td.sampleRate,

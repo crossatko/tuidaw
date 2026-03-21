@@ -183,6 +183,7 @@ export class UIRenderer {
     onScrollChange: (deltaSamples: number) => void
     onVolumeChange: (delta: number) => void
     onPanChange: (delta: number) => void
+    onGainChange: (delta: number) => void
     onTrackClick: (trackIndex: number) => void
     onTimelineClick: (x: number, mainWidth: number) => void
     onClickVolumeChange: (delta: number) => void
@@ -248,6 +249,12 @@ export class UIRenderer {
       // Pan control: row 2, x >= 9 (where pan indicator is drawn)
       if (rowInTrack === 2 && event.x >= 9) {
         callbacks.onPanChange(delta * 0.05)
+        return
+      }
+
+      // Gain control: row 3 (gain display row)
+      if (rowInTrack === 3) {
+        callbacks.onGainChange(delta * 0.1)
         return
       }
 
@@ -651,7 +658,20 @@ export class UIRenderer {
       }
       fb.drawText(`Pan:${panStr}`, 9, y + 2, FG_DIM, bg)
 
-      // Row 3: Level meter (if track has audio) or input device indicator
+      // Row 3: Gain (dB display)
+      {
+        const gainDb =
+          track.gain <= 0
+            ? '-inf'
+            : track.gain === 1.0
+              ? '0'
+              : (track.gain > 1 ? '+' : '') +
+                (20 * Math.log10(track.gain)).toFixed(0)
+        const gainStr = `G:${gainDb}dB`
+        fb.drawText(gainStr, 1, y + 3, FG_DIM, bg)
+      }
+
+      // Row 4: Level meter (if track has audio) or input device indicator
       if (
         track.inputDeviceId != null &&
         !(track.samples && track.samples.length > 0)
@@ -669,7 +689,7 @@ export class UIRenderer {
           devLabel.length > w - 4
             ? devLabel.substring(0, w - 7) + '...'
             : devLabel
-        fb.drawText(truncated, 1, y + 3, FG_DIM, bg)
+        fb.drawText(truncated, 1, y + 4, FG_DIM, bg)
       } else if (track.samples && track.samples.length > 0) {
         const level = getPeakLevel(
           track.samples,
@@ -677,9 +697,9 @@ export class UIRenderer {
           Math.floor(state.sampleRate * 0.05)
         )
         const meterStr = renderLevelMeter(level, w - 3)
-        fb.drawText(meterStr, 1, y + 3, trackColor, bg)
+        fb.drawText(meterStr, 1, y + 4, trackColor, bg)
       } else {
-        fb.drawText('(empty)', 1, y + 3, FG_DIM, bg)
+        fb.drawText('(empty)', 1, y + 4, FG_DIM, bg)
       }
 
       // Separator rows drawn AFTER content
@@ -983,6 +1003,8 @@ export class UIRenderer {
       'M:Mute',
       'S:Solo',
       'O:Monitor',
+      'V:Vol',
+      'G:Gain',
       '[/]:Scrub',
       '{/}:Nudge',
       '</>:Pan',
@@ -1016,7 +1038,7 @@ export class UIRenderer {
     const h = this.mainFB.height
 
     const boxW = 50
-    const boxH = 27
+    const boxH = 30
     const boxX = Math.floor((w - boxW) / 2)
     const boxY = Math.floor((h - boxH) / 2)
     const bgHelp = RGBA.fromHex('#181825')
@@ -1063,7 +1085,8 @@ export class UIRenderer {
       ['B', 'Toggle BPM lock (label-only vs speed change)'],
       ['C', 'Toggle metronome click'],
       ['P', 'Practice loop (start/end/clear)'],
-      ['V', 'Volume up on selected track'],
+      ['V / Shift+V', 'Volume up / down on selected track'],
+      ['G / Shift+G', 'Gain up / down (0dB to +12dB)'],
       ['[ / ]', 'Scrub playhead left / right'],
       ['{ / }', 'Nudge track earlier / later (1/16 beat)'],
       ['< / >', 'Pan left / right'],

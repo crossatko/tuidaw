@@ -43,6 +43,7 @@ export function createTrack(name?: string): Track {
     armed: false,
     monitoring: false,
     volume: 0.8,
+    gain: 1.0,
     pan: 0,
     samples: null,
     sampleRate: 48000,

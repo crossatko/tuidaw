@@ -124,6 +124,16 @@ export default async function main() {
       audioEngine.setTrackPan(track.id, track.pan)
       render()
     },
+    onGainChange: (delta: number) => {
+      const track = getSelectedTrack(state)
+      if (!track) return
+      track.gain = Math.max(
+        0,
+        Math.min(4, Math.round((track.gain + delta) * 100) / 100)
+      )
+      audioEngine.setTrackGain(track.id, track.gain)
+      render()
+    },
     onTrackClick: (trackIndex: number) => {
       if (trackIndex === CLICK_TRACK_INDEX) {
         state.selectedTrackIndex = CLICK_TRACK_INDEX
@@ -1180,23 +1190,40 @@ export default async function main() {
       return
     }
 
-    // V - Volume up (instant in native engine)
-    // When click track is selected: increase click volume
-    if (key.name === 'v' && !key.shift) {
+    // V - Volume up, Shift+V - Volume down (instant in native engine)
+    // When click track is selected: adjust click volume
+    if (key.name === 'v') {
+      const delta = key.shift ? -0.05 : 0.05
       if (state.selectedTrackIndex === CLICK_TRACK_INDEX) {
-        state.clickVolume = Math.min(
-          2,
-          Math.round((state.clickVolume + 0.05) * 100) / 100
+        state.clickVolume = Math.max(
+          0,
+          Math.min(2, Math.round((state.clickVolume + delta) * 100) / 100)
         )
         audioEngine.setClickVolume(state.clickVolume)
         render()
       } else {
         const track = getSelectedTrack(state)
         if (track) {
-          track.volume = Math.min(1, track.volume + 0.05)
+          track.volume = Math.max(0, Math.min(1, track.volume + delta))
           audioEngine.setTrackVolume(track.id, track.volume)
           render()
         }
+      }
+      return
+    }
+
+    // G - Gain up, Shift+G - Gain down (instant in native engine)
+    // Range: 0.0 to 4.0 (0dB to +12dB)
+    if (key.name === 'g') {
+      const track = getSelectedTrack(state)
+      if (track) {
+        const delta = key.shift ? -0.1 : 0.1
+        track.gain = Math.max(
+          0,
+          Math.min(4, Math.round((track.gain + delta) * 100) / 100)
+        )
+        audioEngine.setTrackGain(track.id, track.gain)
+        render()
       }
       return
     }

@@ -252,7 +252,8 @@ typedef struct {
     int           id;                // track ID (from JS)
     float*        samples;           // playback sample buffer (mono, owned by JS — NOT freed here)
     int           samples_len;       // length of samples buffer
-    _Atomic float volume;            // 0.0 - 1.0
+    _Atomic float volume;            // 0.0 - 1.0 (post-gain fader)
+    _Atomic float gain;              // 0.0 - 4.0 (pre-fader input gain, 1.0 = 0dB)
     _Atomic float pan;               // -1.0 (L) to 1.0 (R)
     _Atomic int   muted;             // boolean
     _Atomic int   solo;              // boolean
@@ -649,14 +650,15 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
                 }
 
                 float vol = atomic_load(&tk->volume);
+                float gn = atomic_load(&tk->gain);
                 float pan = atomic_load(&tk->pan);
 
-                // Equal-power panning
+                // Signal chain: sample * gain (pre-fader) * volume (post-gain fader) * pan
                 float left_gain = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
                 float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
 
-                left  += sample * vol * left_gain;
-                right += sample * vol * right_gain;
+                left  += sample * gn * vol * left_gain;
+                right += sample * gn * vol * right_gain;
             }
 
             // Click (metronome) — pre-rendered long buffer in OUTPUT-SPACE.
@@ -696,12 +698,13 @@ static void playback_callback(ma_device* pDevice, void* pOutput, const void* pIn
             atomic_store(&tk->mon_ring_read, rd);
 
             float vol = atomic_load(&tk->volume);
+            float gn = atomic_load(&tk->gain);
             float pan = atomic_load(&tk->pan);
             float lg = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
             float rg = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
 
-            left  += sample * vol * lg;
-            right += sample * vol * rg;
+            left  += sample * gn * vol * lg;
+            right += sample * gn * vol * rg;
         }
 
         // Clamp
@@ -885,6 +888,7 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
     float* output = (float*)pOutput;
 
     float vol = atomic_load(&tk->volume);
+    float gn = atomic_load(&tk->gain);
     float pan = atomic_load(&tk->pan);
     float left_gain  = cosf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
     float right_gain = sinf(((pan + 1.0f) / 2.0f) * (float)(M_PI / 2.0));
@@ -896,16 +900,16 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
         float sample;
         if (cap_channels > 1 && sel_ch >= 0 && sel_ch < cap_channels) {
             // Extract specific channel from interleaved multi-channel input
-            sample = input[i * cap_channels + sel_ch] * vol;
+            sample = input[i * cap_channels + sel_ch] * gn * vol;
         } else if (cap_channels > 1) {
             // Mono downmix of all channels
             float sum = 0.0f;
             for (int c = 0; c < cap_channels; c++) {
                 sum += input[i * cap_channels + c];
             }
-            sample = (sum / cap_channels) * vol;
+            sample = (sum / cap_channels) * gn * vol;
         } else {
-            sample = input[i] * vol;
+            sample = input[i] * gn * vol;
         }
         output[i * 2 + 0] = sample * left_gain;
         output[i * 2 + 1] = sample * right_gain;
@@ -1765,6 +1769,7 @@ EXPORT int tuidaw_add_track(int id) {
     tk->active = 1;
     tk->id = id;
     atomic_store(&tk->volume, 0.8f);
+    atomic_store(&tk->gain, 1.0f);
     atomic_store(&tk->pan, 0.0f);
     atomic_store(&tk->muted, 0);
     atomic_store(&tk->solo, 0);
@@ -1845,6 +1850,12 @@ EXPORT void tuidaw_set_track_volume(int id, float volume) {
     TrackState* tk = find_track(id);
     if (!tk) return;
     atomic_store(&tk->volume, volume);
+}
+
+EXPORT void tuidaw_set_track_gain(int id, float gain) {
+    TrackState* tk = find_track(id);
+    if (!tk) return;
+    atomic_store(&tk->gain, gain);
 }
 
 EXPORT void tuidaw_set_track_pan(int id, float pan) {

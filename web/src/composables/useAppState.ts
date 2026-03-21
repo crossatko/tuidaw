@@ -118,6 +118,7 @@ export function createTrack(name: string, colorIndex: number): WebTrack {
     name,
     color: TRACK_COLORS[colorIndex % TRACK_COLORS.length],
     volume: DEFAULT_VOLUME,
+    gain: 1.0,
     pan: DEFAULT_PAN,
     muted: false,
     solo: false,

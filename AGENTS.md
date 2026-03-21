@@ -97,7 +97,8 @@ C shared library (`native/tuidaw_audio.c`, ~3037 lines) wrapping miniaudio. Buil
 | [ / ]      | Scrub playhead ±1 bar                         | Yes               |
 | { / }      | Nudge track ±1/16 beat                        | -                 |
 | Home/0/End | Jump to start/end                             | Yes               |
-| V          | Volume adjust                                 | -                 |
+| V/Shift+V  | Volume up/down                                | Yes               |
+| G/Shift+G  | Gain up/down (0dB to +12dB)                   | Yes               |
 | < / >      | Pan ±0.1                                      | -                 |
 | F1         | Help overlay                                  | -                 |
 | F2/F3      | Input/output device selector                  | -                 |
@@ -230,13 +231,14 @@ TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouse
 
 `ensurePlayheadVisible()` recenters on manual moves. `autoScroll()` at 80% threshold during playback. Free-scroll mode on manual scroll — re-engages when playhead enters visible area.
 
-## TUI Sidebar Layout (TRACK_ROW_HEIGHT=4)
+## TUI Sidebar Layout (TRACK_ROW_HEIGHT=5)
 
 ```
 y+0: [▌] [●] [name............] [input]
-y+1: [▌]  M  S  R
+y+1: [▌]  M  S  R  O
 y+2: [▌]  V:80%  Pan:C
-y+3: [▌] [level meter / input device / "(empty)"]
+y+3: [▌]  G:0dB
+y+4: [▌] [level meter / input device / "(empty)"]
 ─── separator (SEPARATOR_HEIGHT=1) ───
 ```
 
