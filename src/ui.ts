@@ -293,22 +293,22 @@ export class UIRenderer {
       if (rowInTrack >= TRACK_ROW_HEIGHT) return
 
       // Row 1: M/S/R/O button hit-testing
-      // Button positions: M at x=1-2, S at x=4-5, R at x=7-8, O at x=10-11
+      // Button positions (3 cols each): M at x=1-3, S at x=4-6, R at x=7-9, O at x=10-12
       if (rowInTrack === 1) {
         const x = event.x
-        if (x >= 1 && x <= 2) {
+        if (x >= 1 && x <= 3) {
           callbacks.onButtonClick(trackIndex, 'M')
           return
         }
-        if (x >= 4 && x <= 5) {
+        if (x >= 4 && x <= 6) {
           callbacks.onButtonClick(trackIndex, 'S')
           return
         }
-        if (x >= 7 && x <= 8) {
+        if (x >= 7 && x <= 9) {
           callbacks.onButtonClick(trackIndex, 'R')
           return
         }
-        if (x >= 10 && x <= 11) {
+        if (x >= 10 && x <= 12) {
           callbacks.onButtonClick(trackIndex, 'O')
           return
         }
@@ -648,6 +648,7 @@ export class UIRenderer {
       }
 
       // Row 1: Mute / Solo / Arm / Monitor buttons (colored bg when active)
+      // Each button is 3 columns wide with letter centered: ' M '' S '' R '' O '
       const muteColor = track.muted ? FG_RED : FG_DIM
       const muteBg = track.muted ? BG_MUTE_ACTIVE : bg
       const soloColor = track.solo ? FG_YELLOW : FG_DIM
@@ -658,7 +659,7 @@ export class UIRenderer {
       const monBg = track.monitoring ? BG_MON_ACTIVE : bg
 
       fb.drawText(
-        ' M',
+        ' M ',
         1,
         y + 1,
         muteColor,
@@ -666,7 +667,7 @@ export class UIRenderer {
         track.muted ? TextAttributes.BOLD : 0
       )
       fb.drawText(
-        ' S',
+        ' S ',
         4,
         y + 1,
         soloColor,
@@ -674,7 +675,7 @@ export class UIRenderer {
         track.solo ? TextAttributes.BOLD : 0
       )
       fb.drawText(
-        ' R',
+        ' R ',
         7,
         y + 1,
         armColor,
@@ -682,7 +683,7 @@ export class UIRenderer {
         track.armed ? TextAttributes.BOLD : 0
       )
       fb.drawText(
-        ' O',
+        ' O ',
         10,
         y + 1,
         monColor,

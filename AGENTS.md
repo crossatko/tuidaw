@@ -231,7 +231,7 @@ TUI: `UIRenderer.render(state)` redraws 4 frame buffers every frame. `setupMouse
 
 ### Mouse interactivity (TUI sidebar)
 
-- **M/S/R/O buttons** (row 1): clickable with x-coordinate hit-testing. M at x=1-2, S at x=4-5, R at x=7-8, O at x=10-11. Active buttons have dark tinted backgrounds (BG_MUTE_ACTIVE, BG_SOLO_ACTIVE, BG_ARM_ACTIVE, BG_MON_ACTIVE). Click triggers same logic as keyboard handlers including punch-in/out for R during transport.
+- **M/S/R/O buttons** (row 1): clickable with x-coordinate hit-testing. Each button is 3 columns wide with centered letter. M at x=1-3, S at x=4-6, R at x=7-9, O at x=10-12. Active buttons have dark tinted backgrounds (BG_MUTE_ACTIVE, BG_SOLO_ACTIVE, BG_ARM_ACTIVE, BG_MON_ACTIVE). Click triggers same logic as keyboard handlers including punch-in/out for R during transport.
 - **Input device row** (row 4): clickable to open F2-style input device selector with channel selection for multi-channel devices.
 - **Volume/Pan/Gain** (rows 2-3): mouse wheel adjusts values on selected track.
 - **Track selection**: click anywhere else on track to select it.
