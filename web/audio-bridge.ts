@@ -184,7 +184,7 @@ export class WebAudioBridge {
 
   setTrackGain(trackId: string, gain: number): void {
     const nativeId = this.trackIdMap.get(trackId)
-    if (nativeId !== undefined)
+    if (nativeId !== undefined && this.m._tuidaw_set_track_gain)
       this.m._tuidaw_set_track_gain(nativeId, Math.max(0, Math.min(4, gain)))
   }
 

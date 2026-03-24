@@ -66,6 +66,7 @@ export const NUDGE_BTN_PAD = 8
 // Default values for double-click reset
 export const DEFAULT_VOLUME = 0.8
 export const DEFAULT_PAN = 0
+export const DEFAULT_GAIN = 1.0
 export const DEFAULT_CLICK_VOLUME = 0.5
 export const DEFAULT_CLICK_PAN = 0
 

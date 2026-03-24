@@ -335,6 +335,46 @@ export function useKeyboard(): void {
         exportMixdown()
         break
 
+      case 'v':
+      case 'V': {
+        if (state.selectedTrackIndex === -1) {
+          // Click volume
+          const delta = e.shiftKey ? -0.05 : 0.05
+          state.clickVolume = Math.max(
+            0,
+            Math.min(2, Math.round((state.clickVolume + delta) * 100) / 100)
+          )
+          if (audio.isReady) audio.setClickVolume(state.clickVolume)
+        } else {
+          const track = state.tracks[state.selectedTrackIndex]
+          if (track) {
+            const delta = e.shiftKey ? -0.05 : 0.05
+            track.volume = Math.max(
+              0,
+              Math.min(1, Math.round((track.volume + delta) * 100) / 100)
+            )
+            if (audio.isReady) audio.setTrackVolume(track.id, track.volume)
+          }
+        }
+        requestRender()
+        break
+      }
+
+      case 'g':
+      case 'G': {
+        const track = state.tracks[state.selectedTrackIndex]
+        if (track) {
+          const delta = e.shiftKey ? -0.1 : 0.1
+          track.gain = Math.max(
+            0,
+            Math.min(4, Math.round((track.gain + delta) * 100) / 100)
+          )
+          if (audio.isReady) audio.setTrackGain(track.id, track.gain)
+          requestRender()
+        }
+        break
+      }
+
       default:
         return // Don't prevent default for unhandled keys
     }

@@ -8,6 +8,7 @@ import {
   SAMPLE_RATE,
   DEFAULT_VOLUME,
   DEFAULT_PAN,
+  DEFAULT_GAIN,
   useAppState,
   showStatus
 } from '../composables/useAppState'
@@ -73,6 +74,19 @@ function resetPan() {
   props.track.pan = DEFAULT_PAN
   const audio = getAudio()
   if (audio.isReady) audio.setTrackPan(props.track.id, props.track.pan)
+}
+
+// ── Gain ────────────────────────────────────────────────────────────
+const gainFrac = computed(() => props.track.gain / 4)
+function setGainFrac(frac: number) {
+  props.track.gain = Math.max(0, Math.min(4, frac * 4))
+  const audio = getAudio()
+  if (audio.isReady) audio.setTrackGain(props.track.id, props.track.gain)
+}
+function resetGain() {
+  props.track.gain = DEFAULT_GAIN
+  const audio = getAudio()
+  if (audio.isReady) audio.setTrackGain(props.track.id, props.track.gain)
 }
 
 // ── Input device info ───────────────────────────────────────────────
@@ -223,6 +237,18 @@ const durationText = computed(() => {
         :color="track.color"
         @update:model-value="setPanFrac"
         @dblclick="resetPan"
+      />
+    </div>
+
+    <!-- Row 5: Gain slider (full width) -->
+    <div class="px-2">
+      <MiniSlider
+        label="G"
+        :model-value="gainFrac"
+        :max="4"
+        :color="track.color"
+        @update:model-value="setGainFrac"
+        @dblclick="resetGain"
       />
     </div>
   </div>

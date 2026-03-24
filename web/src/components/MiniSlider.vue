@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { formatPan } from '../composables/useAppState'
 
 const props = defineProps<{
-  label: string // 'V' for volume, 'P' for pan
+  label: string // 'V' for volume, 'P' for pan, 'G' for gain
   /** Normalized fraction 0..1 representing the visual position */
   modelValue: number
   /** Max raw value — used only for display text (e.g. 2 for click volume = 200%) */
@@ -20,6 +20,14 @@ const emit = defineEmits<{
 }>()
 
 const displayText = computed(() => {
+  if (props.label === 'G') {
+    // Gain: frac 0..1 → linear 0..4, display as dB
+    const rawMax = props.max ?? 4
+    const linear = props.modelValue * rawMax
+    if (linear <= 0) return '-inf'
+    const db = 20 * Math.log10(linear)
+    return `${db >= 0 ? '+' : ''}${db.toFixed(0)}dB`
+  }
   if (props.label === 'V') {
     const rawMax = props.max ?? 1
     return `${Math.round(props.modelValue * rawMax * 100)}%`

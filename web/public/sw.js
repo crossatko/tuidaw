@@ -1,10 +1,9 @@
 // tuidaw Service Worker — offline PWA support
 // Cache version: bump this to force update on all clients
-const CACHE_VERSION = 'v3'
+const CACHE_VERSION = 'v4'
 const CACHE_NAME = `tuidaw-${CACHE_VERSION}`
 
-// Assets to pre-cache on install (no hashed JS/CSS — those are cached on
-// first navigation via the stale-while-revalidate fetch handler)
+// Assets to pre-cache on install for offline use
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -55,7 +54,8 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-// Fetch: cache-first with network fallback + background update
+// Fetch: network-first with cache fallback
+// Always serve fresh content when online — cache is only for offline use
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
 
@@ -65,27 +65,20 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      // Return cached response immediately, but also fetch fresh copy in background
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          // Update cache with fresh response (if valid)
-          if (networkResponse && networkResponse.status === 200) {
-            const responseToCache = networkResponse.clone()
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache)
-            })
-          }
-          return networkResponse
-        })
-        .catch(() => {
-          // Network failed — cached response was already returned (or will 404)
-          return cached
-        })
-
-      // If we have a cached version, return it immediately (stale-while-revalidate)
-      // If not, wait for network
-      return cached || fetchPromise
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        // Update cache with fresh response
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone()
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache)
+          })
+        }
+        return networkResponse
+      })
+      .catch(() => {
+        // Network failed — fall back to cache (offline mode)
+        return caches.match(event.request)
+      })
   )
 })
