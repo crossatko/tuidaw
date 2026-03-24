@@ -1257,7 +1257,7 @@ export class UIRenderer {
       ['< / >', 'Pan left / right'],
       ['F2', 'Select input device for track'],
       ['F3', 'Select output device (global)'],
-      ['I', 'Import WAV into selected track'],
+      ['I', 'Import audio (WAV/MP3) into track'],
       ['E', 'Export mixdown (WAV)'],
       ['F5', 'Save project (.tuidaw)'],
       ['F6', 'Open project (.tuidaw)'],

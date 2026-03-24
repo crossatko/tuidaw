@@ -144,7 +144,17 @@ const lib = dlopen(findLibrary(), {
   tuidaw_find_device_by_id: {
     returns: FFIType.i32,
     args: [FFIType.i32, FFIType.ptr]
-  }
+  },
+  // MP3 decoding
+  tuidaw_mp3_decode: {
+    returns: FFIType.i32,
+    args: [FFIType.ptr, FFIType.i32]
+  },
+  tuidaw_mp3_get_samples: { returns: FFIType.ptr },
+  tuidaw_mp3_get_length: { returns: FFIType.i32 },
+  tuidaw_mp3_get_sample_rate: { returns: FFIType.i32 },
+  tuidaw_mp3_get_channels: { returns: FFIType.i32 },
+  tuidaw_mp3_free: { returns: FFIType.void }
 })
 
 // ── Zenity File Dialog Helpers ─────────────────────────────────────────────
@@ -878,10 +888,29 @@ export class AudioEngine {
     sampleRate: number
     detectedBPM: number | null
   } | null> {
+    return this.loadAudioFile(filePath)
+  }
+
+  async loadAudioFile(filePath: string): Promise<{
+    samples: Float32Array
+    sampleRate: number
+    detectedBPM: number | null
+  } | null> {
     try {
       const file = Bun.file(filePath)
       const buf = new Uint8Array(await file.arrayBuffer())
-      const result = parseWav(buf)
+
+      // Detect format by magic bytes
+      let result: { samples: Float32Array; sampleRate: number } | null = null
+      if (buf.length >= 4 && buf[0] === 0x52 && buf[1] === 0x49) {
+        // RIFF header → WAV
+        result = parseWav(buf)
+      } else {
+        // Try MP3 (ID3 tag, or raw MP3 sync word 0xFF 0xE0+)
+        result = this.decodeMp3(buf)
+        // If MP3 decode failed, try WAV as fallback
+        if (!result) result = parseWav(buf)
+      }
       if (!result) return null
 
       // Detect BPM before resampling (use original sample rate for accuracy)
@@ -913,6 +942,43 @@ export class AudioEngine {
 
       return { ...result, detectedBPM }
     } catch {
+      return null
+    }
+  }
+
+  // Decode MP3 data via native minimp3 library.
+  // Returns mono Float32Array samples and sample rate, or null on failure.
+  private decodeMp3(
+    data: Uint8Array
+  ): { samples: Float32Array; sampleRate: number } | null {
+    try {
+      const rc = lib.symbols.tuidaw_mp3_decode(ptr(data), data.length)
+      if (rc !== 0) return null
+
+      const length = lib.symbols.tuidaw_mp3_get_length() as number
+      const sampleRate = lib.symbols.tuidaw_mp3_get_sample_rate() as number
+      const samplesPtr = lib.symbols.tuidaw_mp3_get_samples()
+
+      if (!samplesPtr || length <= 0 || sampleRate <= 0) {
+        lib.symbols.tuidaw_mp3_free()
+        return null
+      }
+
+      // Copy samples from native buffer into a JS-owned Float32Array
+      const nativeBuf = toArrayBuffer(samplesPtr as Pointer, 0, length * 4)
+      const samples = new Float32Array(length)
+      samples.set(new Float32Array(nativeBuf))
+
+      // Free native buffer
+      lib.symbols.tuidaw_mp3_free()
+
+      return { samples, sampleRate }
+    } catch {
+      try {
+        lib.symbols.tuidaw_mp3_free()
+      } catch {
+        /* ignore */
+      }
       return null
     }
   }

@@ -190,13 +190,13 @@ async function gzipDecompress(data: Uint8Array): Promise<Uint8Array> {
 // MUST be synchronous entry — Safari blocks programmatic .click() on file
 // inputs unless it occurs in the synchronous call stack of a user gesture.
 
-export function importWav(): void {
+export function importAudio(): void {
   const state = useAppState()
   const audio = getAudio()
 
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.wav,audio/wav,audio/x-wav,audio/*'
+  input.accept = '.wav,.mp3,audio/wav,audio/x-wav,audio/mpeg,audio/*'
   input.style.display = 'none'
   document.body.appendChild(input)
 
@@ -213,10 +213,23 @@ export function importWav(): void {
 
     try {
       const arrayBuf = await file.arrayBuffer()
-      const parsed = parseWav(new Uint8Array(arrayBuf))
+      let parsed: { samples: Float32Array; sampleRate: number } | null = null
+
+      // Detect format by magic bytes
+      const header = new Uint8Array(arrayBuf.slice(0, 4))
+      const isWav = header[0] === 0x52 && header[1] === 0x49 // 'RI' (RIFF)
+
+      if (isWav) {
+        parsed = parseWav(new Uint8Array(arrayBuf))
+      } else {
+        // MP3 or other format — use browser's built-in decoder
+        parsed = await decodeAudioBuffer(arrayBuf)
+        // Fallback: try WAV parser in case magic bytes were unusual
+        if (!parsed) parsed = parseWav(new Uint8Array(arrayBuf))
+      }
 
       if (!parsed) {
-        showStatus('Failed to parse WAV file!')
+        showStatus('Failed to parse audio file!')
         return
       }
 
@@ -248,7 +261,7 @@ export function importWav(): void {
       if (track) {
         track.samples = samples
         track.sampleRate = SAMPLE_RATE
-        track.name = file.name.replace(/\.wav$/i, '')
+        track.name = file.name.replace(/\.(wav|mp3)$/i, '')
         if (audio.isReady) audio.setTrackSamples(track.id, samples)
         requestRender()
         const bpmInfo = detectedBPM ? ` | ${detectedBPM} BPM` : ''
@@ -258,11 +271,46 @@ export function importWav(): void {
       }
     } catch (err) {
       showStatus(`Import error: ${err}`)
-      console.error('WAV import failed:', err)
+      console.error('Audio import failed:', err)
     }
   })
 
   input.click()
+}
+
+// Keep old name as alias for backward compat
+export const importWav = importAudio
+
+// Decode audio using the browser's built-in AudioContext.decodeAudioData().
+// Handles MP3, AAC, OGG, FLAC, and any format the browser supports.
+// Returns mono Float32Array samples and sample rate, or null on failure.
+async function decodeAudioBuffer(
+  arrayBuf: ArrayBuffer
+): Promise<{ samples: Float32Array; sampleRate: number } | null> {
+  try {
+    const ctx = new AudioContext()
+    const audioBuf = await ctx.decodeAudioData(arrayBuf.slice(0))
+    const sampleRate = audioBuf.sampleRate
+    let samples: Float32Array
+
+    if (audioBuf.numberOfChannels >= 2) {
+      // Stereo to mono downmix
+      const left = audioBuf.getChannelData(0)
+      const right = audioBuf.getChannelData(1)
+      samples = new Float32Array(left.length)
+      for (let i = 0; i < left.length; i++) {
+        samples[i] = (left[i] + right[i]) * 0.5
+      }
+    } else {
+      // Already mono — copy to avoid detached buffer issues
+      samples = new Float32Array(audioBuf.getChannelData(0))
+    }
+
+    ctx.close()
+    return { samples, sampleRate }
+  } catch {
+    return null
+  }
 }
 
 // ── Save Project ────────────────────────────────────────────────────────

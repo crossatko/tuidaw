@@ -16,6 +16,10 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_FLOAT_OUTPUT
+#include "minimp3.h"
+
 #include <string.h>
 #include <strings.h>  // strcasecmp
 #include <stdlib.h>
@@ -2949,4 +2953,130 @@ EXPORT int tuidaw_render(float* output, int frame_count) {
     if (!output || frame_count <= 0) return 0;
     playback_callback(NULL, output, NULL, (ma_uint32)frame_count);
     return frame_count;
+}
+
+// ── MP3 Decoding ────────────────────────────────────────────────────────────
+// Decode an MP3 file from memory into mono float samples. Uses minimp3 for
+// frame-by-frame decoding with automatic stereo-to-mono downmix.
+// The output buffer is malloc'd by this function — the caller (JS) must call
+// tuidaw_mp3_free() to release it.
+
+typedef struct {
+    float*  samples;      // malloc'd mono float buffer (caller frees via tuidaw_mp3_free)
+    int     length;       // number of mono samples
+    int     sample_rate;  // detected sample rate (e.g. 44100, 48000)
+    int     channels;     // original channel count before downmix
+} Mp3DecodeResult;
+
+static Mp3DecodeResult g_mp3_result = {0};
+
+// Decode MP3 data. Returns 0 on success, -1 on failure.
+// After success, use tuidaw_mp3_get_* to read results.
+EXPORT int tuidaw_mp3_decode(const uint8_t* data, int data_len) {
+    // Free any previous result
+    if (g_mp3_result.samples) {
+        free(g_mp3_result.samples);
+        memset(&g_mp3_result, 0, sizeof(g_mp3_result));
+    }
+
+    if (!data || data_len <= 0) return -1;
+
+    mp3dec_t dec;
+    mp3dec_init(&dec);
+
+    // First pass: count total samples to allocate exact buffer size
+    // (avoids realloc storm on large files)
+    int total_samples = 0;
+    int detected_rate = 0;
+    int detected_channels = 0;
+    {
+        mp3dec_t count_dec;
+        mp3dec_init(&count_dec);
+        const uint8_t* p = data;
+        int remaining = data_len;
+        float pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        mp3dec_frame_info_t info;
+
+        while (remaining > 0) {
+            int samples = mp3dec_decode_frame(&count_dec, p, remaining, pcm, &info);
+            if (info.frame_bytes <= 0) break;  // no more valid frames
+            if (samples > 0) {
+                if (detected_rate == 0) {
+                    detected_rate = info.hz;
+                    detected_channels = info.channels;
+                }
+                // mono sample count = samples (minimp3 returns per-channel count)
+                total_samples += samples;
+            }
+            p += info.frame_bytes;
+            remaining -= info.frame_bytes;
+        }
+    }
+
+    if (total_samples == 0 || detected_rate == 0) return -1;
+
+    // Allocate output buffer (mono)
+    float* output = (float*)malloc((size_t)total_samples * sizeof(float));
+    if (!output) return -1;
+
+    // Second pass: decode and downmix to mono
+    const uint8_t* p = data;
+    int remaining = data_len;
+    float pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    mp3dec_frame_info_t info;
+    int write_pos = 0;
+
+    while (remaining > 0 && write_pos < total_samples) {
+        int samples = mp3dec_decode_frame(&dec, p, remaining, pcm, &info);
+        if (info.frame_bytes <= 0) break;
+        if (samples > 0) {
+            if (detected_channels == 2) {
+                // Stereo to mono downmix
+                for (int i = 0; i < samples && write_pos < total_samples; i++) {
+                    output[write_pos++] = (pcm[i * 2] + pcm[i * 2 + 1]) * 0.5f;
+                }
+            } else {
+                // Already mono (or multi-channel — just take first channel)
+                for (int i = 0; i < samples && write_pos < total_samples; i++) {
+                    output[write_pos++] = pcm[i * detected_channels];
+                }
+            }
+        }
+        p += info.frame_bytes;
+        remaining -= info.frame_bytes;
+    }
+
+    g_mp3_result.samples = output;
+    g_mp3_result.length = write_pos;
+    g_mp3_result.sample_rate = detected_rate;
+    g_mp3_result.channels = detected_channels;
+    return 0;
+}
+
+// Get pointer to decoded MP3 sample buffer.
+EXPORT float* tuidaw_mp3_get_samples(void) {
+    return g_mp3_result.samples;
+}
+
+// Get number of decoded mono samples.
+EXPORT int tuidaw_mp3_get_length(void) {
+    return g_mp3_result.length;
+}
+
+// Get sample rate of decoded MP3.
+EXPORT int tuidaw_mp3_get_sample_rate(void) {
+    return g_mp3_result.sample_rate;
+}
+
+// Get original channel count of decoded MP3.
+EXPORT int tuidaw_mp3_get_channels(void) {
+    return g_mp3_result.channels;
+}
+
+// Free the decoded MP3 buffer.
+EXPORT void tuidaw_mp3_free(void) {
+    if (g_mp3_result.samples) {
+        free(g_mp3_result.samples);
+    }
+    memset(&g_mp3_result, 0, sizeof(g_mp3_result));
 }

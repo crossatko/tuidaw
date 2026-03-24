@@ -1386,16 +1386,18 @@ export default async function main() {
       return
     }
 
-    // I - Import WAV (zenity open dialog)
+    // I - Import audio file (zenity open dialog)
     if (key.name === 'i') {
       const track = getSelectedTrack(state)
       if (track) {
-        const filePath = await zenityOpen('Import WAV', [
+        const filePath = await zenityOpen('Import Audio', [
+          'Audio files | *.wav *.WAV *.mp3 *.MP3',
           'WAV files | *.wav *.WAV',
+          'MP3 files | *.mp3 *.MP3',
           'All files | *'
         ])
         if (filePath) {
-          const result = await audioEngine.loadWavFile(filePath)
+          const result = await audioEngine.loadAudioFile(filePath)
           if (result) {
             track.samples = result.samples
             track.sampleRate = result.sampleRate
@@ -1418,7 +1420,7 @@ export default async function main() {
               ui.showStatusMessage(`Imported: ${filePath}`)
             }
           } else {
-            ui.showStatusMessage('Failed to import WAV!')
+            ui.showStatusMessage('Failed to import audio file!')
           }
           render()
         }
