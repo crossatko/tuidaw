@@ -43,7 +43,7 @@ export const SIDEBAR_W = 260
 export const TOPBAR_H = 56
 export const STATUSBAR_H = 36
 export const TIMELINE_H = 48
-export const TRACK_H = 120
+export const TRACK_H = 130
 export const CLICK_ROW_H = TIMELINE_H // must match so sidebar aligns with waveform
 
 // Button sizing

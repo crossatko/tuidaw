@@ -5,6 +5,7 @@ native/zig-toolchain
 native/emsdk
 native/*.so
 web/wasm
+web/public/wasm
 web/dist
 bun.lock
 recordings

@@ -25,15 +25,18 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdatomic.h>
+#ifndef __EMSCRIPTEN__
 #include <dlfcn.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <execinfo.h>
+#endif
 
 // ── Crash Signal Handler ────────────────────────────────────────────────────
 // Restore terminal state on SIGSEGV/SIGABRT so the terminal isn't left in
 // raw mode with mouse reporting enabled. Also logs backtrace to debug/crash.log.
+#ifndef __EMSCRIPTEN__
 static void crash_signal_handler(int sig) {
     // Restore terminal: disable mouse tracking, show cursor, exit alt screen
     const char restore[] =
@@ -80,6 +83,7 @@ static void install_crash_handlers(void) {
     sigaction(SIGABRT, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
 }
+#endif // !__EMSCRIPTEN__
 
 // ── JACK API (dynamically loaded via dlopen) ────────────────────────────────
 // We load libjack.so.0 at runtime to avoid a hard build/link dependency.
@@ -100,6 +104,7 @@ typedef float   jack_default_audio_sample_t;
 typedef struct _jack_client jack_client_t;
 typedef struct _jack_port   jack_port_t;
 
+#ifndef __EMSCRIPTEN__
 // JACK constants
 #define JACK_DEFAULT_AUDIO_TYPE "32 bit float mono audio"
 #define JackPortIsInput   0x1
@@ -179,6 +184,7 @@ static void jack_unload(void) {
         memset(&g_jack, 0, sizeof(g_jack));
     }
 }
+#endif // !__EMSCRIPTEN__
 
 // ── PipeWire Custom Node Helper ─────────────────────────────────────────────
 // Some multi-channel USB devices (e.g. Neural DSP Nano Cortex) produce corrupt
@@ -194,6 +200,7 @@ static void jack_unload(void) {
 // This is only needed on Linux with PipeWire. The helper binary is built
 // alongside libtuidaw_audio.so by build.sh.
 
+#ifndef __EMSCRIPTEN__
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
@@ -216,6 +223,10 @@ static int g_custom_helper_count = 0;
 
 // Path to the pw_custom_node binary (resolved relative to the .so at init time)
 static char g_helper_path[512] = {0};
+#else
+// Stub type for WASM — custom node helpers are Linux-only
+typedef struct { int _unused; } CustomNodeHelper;
+#endif // !__EMSCRIPTEN__
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -927,6 +938,7 @@ static void duplex_monitor_callback(ma_device* pDevice, void* pOutput, const voi
     }
 }
 
+#ifndef __EMSCRIPTEN__
 // ── Shared JACK Monitoring Process Callback ─────────────────────────────────
 // Capture-only JACK client. Reads from JACK input ports and writes raw samples
 // into per-track ring buffers. The main miniaudio playback callback reads from
@@ -1424,6 +1436,7 @@ static void cleanup_all_helpers(void) {
     }
     g_custom_helper_count = 0;
 }
+#endif // !__EMSCRIPTEN__
 
 // ── Exported API ────────────────────────────────────────────────────────────
 
@@ -1435,7 +1448,9 @@ static void cleanup_all_helpers(void) {
 
 // Initialize the audio engine. Returns 0 on success, -1 on failure.
 EXPORT int tuidaw_init(void) {
+#ifndef __EMSCRIPTEN__
     install_crash_handlers();
+#endif
 
     memset(&g_engine, 0, sizeof(g_engine));
     atomic_store(&g_engine.loop_start, -1);
@@ -1451,21 +1466,25 @@ EXPORT int tuidaw_init(void) {
     for (int s = 0; s < JACK_MON_SLOTS; s++)
         g_engine.jack_mon_slot_owner[s] = -1;
 
+#ifndef __EMSCRIPTEN__
     // Register atexit handler to clean up custom node helpers if the process
     // exits without calling tuidaw_deinit(). This ensures the card profile is
     // restored even on unexpected exit (the helper process itself also has
     // PR_SET_PDEATHSIG as a further safety net).
     atexit(cleanup_all_helpers);
+#endif
 
     ma_context_config ctxConfig = ma_context_config_init();
     if (ma_context_init(NULL, 0, &ctxConfig, &g_engine.context) != MA_SUCCESS) {
         return -1;
     }
 
+#ifndef __EMSCRIPTEN__
     // Try to load JACK library for low-latency monitoring.
     // Direct JACK API gives ~42ms round-trip vs PulseAudio's ~68ms.
     // If JACK is unavailable, monitoring falls back to PulseAudio duplex.
     g_engine.jack_available = jack_load();
+#endif
 
     // Enumerate devices
     ma_context_get_devices(&g_engine.context,
@@ -1535,6 +1554,7 @@ EXPORT void tuidaw_deinit(void) {
             tk->jack_mon_slot = -1;
             tk->jack_mon_active = 0;
         }
+#ifndef __EMSCRIPTEN__
         // Clean up JACK recording
         if (tk->jack_rec_active && g_jack.lib_handle) {
             g_jack.deactivate(tk->jack_rec_client);
@@ -1542,6 +1562,7 @@ EXPORT void tuidaw_deinit(void) {
             tk->jack_rec_client = NULL;
             tk->jack_rec_active = 0;
         }
+#endif
         // Clean up PulseAudio monitoring fallback
         if (tk->mon_device_active) {
             ma_device_uninit(&tk->mon_device);
@@ -1558,6 +1579,7 @@ EXPORT void tuidaw_deinit(void) {
         tk->active = 0;
     }
 
+#ifndef __EMSCRIPTEN__
     // Close the shared JACK monitoring client (ports are destroyed with it)
     if (g_engine.jack_mon_client_active && g_jack.lib_handle) {
         g_jack.deactivate(g_engine.jack_mon_client);
@@ -1569,6 +1591,7 @@ EXPORT void tuidaw_deinit(void) {
             g_engine.jack_mon_slot_owner[s] = -1;
         }
     }
+#endif
 
     // Stop playback device
     if (g_engine.playback_active) {
@@ -1578,6 +1601,7 @@ EXPORT void tuidaw_deinit(void) {
 
     ma_context_uninit(&g_engine.context);
 
+#ifndef __EMSCRIPTEN__
     // Clean up any remaining custom node helpers (kill processes, restore profiles)
     cleanup_all_helpers();
 
@@ -1586,6 +1610,7 @@ EXPORT void tuidaw_deinit(void) {
         jack_unload();
         g_engine.jack_available = 0;
     }
+#endif
 }
 
 // ── Device Enumeration ──────────────────────────────────────────────────────
@@ -1827,20 +1852,24 @@ EXPORT void tuidaw_remove_track(int id) {
         tk->jack_mon_slot = -1;
         tk->jack_mon_active = 0;
     }
+#ifndef __EMSCRIPTEN__
     if (tk->jack_rec_active && g_jack.lib_handle) {
         g_jack.deactivate(tk->jack_rec_client);
         g_jack.client_close(tk->jack_rec_client);
         tk->jack_rec_client = NULL;
         tk->jack_rec_active = 0;
     }
+#endif
     if (tk->mon_device_active) {
         ma_device_uninit(&tk->mon_device);
         tk->mon_device_active = 0;
     }
+#ifndef __EMSCRIPTEN__
     if (tk->custom_helper) {
         kill_custom_helper(tk->custom_helper);
         tk->custom_helper = NULL;
     }
+#endif
 
     // Stop recording if active
     if (tk->rec_device_active) {
@@ -2136,6 +2165,7 @@ EXPORT int tuidaw_start_recording(int id) {
         return 0;
     }
 
+#ifndef __EMSCRIPTEN__
     // ── JACK capture-only recording for devices needing custom nodes ────
     // If the device needs custom ALSA nodes (multi-channel USB with corrupted
     // auto-link nodes), PulseAudio capture through the profile-managed nodes
@@ -2275,6 +2305,7 @@ EXPORT int tuidaw_start_recording(int id) {
     }
 
 pulseaudio_recording:;
+#endif // !__EMSCRIPTEN__
 
     // Determine channel count: if a specific channel is selected on a
     // multi-channel device, open the device in its native channel count
@@ -2366,6 +2397,7 @@ EXPORT int tuidaw_stop_recording(int id) {
 
     atomic_store(&tk->recording, 0);
 
+#ifndef __EMSCRIPTEN__
     // Clean up JACK capture-only recording client
     if (tk->jack_rec_active && g_jack.lib_handle) {
         g_jack.deactivate(tk->jack_rec_client);
@@ -2380,6 +2412,7 @@ EXPORT int tuidaw_stop_recording(int id) {
             tk->custom_helper = NULL;
         }
     }
+#endif
 
     if (tk->rec_device_active) {
         ma_device_uninit(&tk->rec_device);
@@ -2465,6 +2498,7 @@ EXPORT int tuidaw_start_monitoring(int id) {
         return 0;
     }
 
+#ifndef __EMSCRIPTEN__
     // ── Strategy 1: Direct JACK API ────────────────────────────────────
     if (g_engine.jack_available && !g_engine.use_null_backend) {
         // Diagnostic: log monitoring setup
@@ -2821,6 +2855,7 @@ EXPORT int tuidaw_start_monitoring(int id) {
         }
         // Fall through to PulseAudio duplex
     }
+#endif // !__EMSCRIPTEN__
 
     // ── Strategy 2: PulseAudio Duplex Fallback ─────────────────────────
     {

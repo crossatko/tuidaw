@@ -43,6 +43,7 @@ CFLAGS="$CFLAGS -sEXPORTED_FUNCTIONS=$EXPORTED_FUNCTIONS"
 CFLAGS="$CFLAGS -sEXPORTED_RUNTIME_METHODS=$EXPORTED_RUNTIME"
 CFLAGS="$CFLAGS -sALLOW_MEMORY_GROWTH=1"
 CFLAGS="$CFLAGS -sINITIAL_MEMORY=134217728"  # 128MB initial (DAW needs memory for audio + click buffers)
+CFLAGS="$CFLAGS -sMAXIMUM_MEMORY=268435456"   # 256MB max (iPad Safari OOM with default 2GB shared memory)
 CFLAGS="$CFLAGS -sSTACK_SIZE=1048576"        # 1MB stack (WSOLA uses stack arrays)
 CFLAGS="$CFLAGS -DMA_ENABLE_AUDIO_WORKLETS"   # Tell miniaudio to compile AudioWorklet path (not ScriptProcessorNode)
 CFLAGS="$CFLAGS -sAUDIO_WORKLET=1"           # Emscripten AudioWorklet support
@@ -51,7 +52,7 @@ CFLAGS="$CFLAGS -sASYNCIFY"                  # Required: miniaudio's AudioWorkle
 CFLAGS="$CFLAGS -sMODULARIZE=1"             # Wrap in a factory function
 CFLAGS="$CFLAGS -sEXPORT_NAME='TuidawAudio'" # Factory function name
 CFLAGS="$CFLAGS -sENVIRONMENT=web,worker"    # Browser-only (no Node.js)
-CFLAGS="$CFLAGS -sPTHREAD_POOL_SIZE=4"       # Thread pool for audio callbacks
+CFLAGS="$CFLAGS -sPTHREAD_POOL_SIZE=2"       # Thread pool for audio callbacks
 CFLAGS="$CFLAGS -sUSE_PTHREADS=1"            # miniaudio uses pthreads for audio thread
 CFLAGS="$CFLAGS -lm"
 

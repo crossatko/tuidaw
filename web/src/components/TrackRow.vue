@@ -240,6 +240,15 @@ const durationText = computed(() => {
       />
     </div>
 
-    <!-- Gain slider hidden until WASM is rebuilt with _tuidaw_set_track_gain -->
+    <!-- Row 5: Gain slider (full width) -->
+    <div class="px-2">
+      <MiniSlider
+        label="G"
+        :model-value="gainFrac"
+        :color="track.color"
+        @update:model-value="setGainFrac"
+        @dblclick="resetGain"
+      />
+    </div>
   </div>
 </template>
