@@ -360,20 +360,7 @@ export function useKeyboard(): void {
         break
       }
 
-      case 'g':
-      case 'G': {
-        const track = state.tracks[state.selectedTrackIndex]
-        if (track) {
-          const delta = e.shiftKey ? -0.1 : 0.1
-          track.gain = Math.max(
-            0,
-            Math.min(4, Math.round((track.gain + delta) * 100) / 100)
-          )
-          if (audio.isReady) audio.setTrackGain(track.id, track.gain)
-          requestRender()
-        }
-        break
-      }
+      // G/Shift+G gain shortcuts disabled until WASM is rebuilt
 
       default:
         return // Don't prevent default for unhandled keys
